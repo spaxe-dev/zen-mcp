@@ -74,6 +74,30 @@ interface WrappedScriptResult {
   error?: string;
 }
 
+export interface LockdownResult {
+  ok: boolean;
+  reason?: string;
+  competingSessions?: number;
+  closedConnections?: number;
+  listenerClosed?: boolean;
+  mySession?: number;
+  connections?: number;
+  error?: string;
+}
+
+function describeLockdown(result: LockdownResult | null | undefined): string {
+  if (!result) return "the browser returned no result";
+  const parts = [result.reason ?? "unknown reason"];
+  if (typeof result.competingSessions === "number") {
+    parts.push(`${result.competingSessions} competing session(s)`);
+  }
+  if (typeof result.mySession === "number") {
+    parts.push(`own session count ${result.mySession}`);
+  }
+  if (result.error) parts.push(result.error);
+  return parts.join(", ");
+}
+
 export class MarionetteClient {
   readonly host: string;
   readonly port: number;
@@ -117,6 +141,25 @@ export class MarionetteClient {
 
   get sessionId(): string | null {
     return this.#session?.sessionId ?? null;
+  }
+
+  /** Capabilities returned by `WebDriver:NewSession`. */
+  get capabilities(): Record<string, unknown> {
+    return this.#session?.capabilities ?? {};
+  }
+
+  /**
+   * The browser process id reported by Gecko. On Windows the spawned pid can
+   * belong to a short-lived launcher, so this is the pid to watch or kill.
+   */
+  get browserProcessId(): number | null {
+    const value = this.capabilities["moz:processID"];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  get profilePath(): string | null {
+    const value = this.capabilities["moz:profile"];
+    return typeof value === "string" && value ? value : null;
   }
 
   /**
@@ -541,6 +584,93 @@ export class MarionetteClient {
     const result = this.#contentQueue.then(run, run);
     this.#contentQueue = result.catch(() => undefined);
     return result;
+  }
+
+  /**
+   * Closes every Marionette connection except this session, then stops the
+   * browser from accepting new ones. Zen has no Marionette authentication, so
+   * any local process that reaches the port before this runs could create a
+   * chrome session. The lockdown makes this session the only one and removes
+   * the listening socket for the rest of the browser's life.
+   */
+  async lockdown(): Promise<LockdownResult> {
+    const sessionId = this.sessionId;
+    if (!sessionId) {
+      throw new MarionetteConnectionError(
+        "Cannot lock down Marionette before a session exists"
+      );
+    }
+    const result = await this.executeChrome<LockdownResult>(
+      `
+      const mod = ChromeUtils.importESModule(
+        "chrome://remote/content/components/Marionette.sys.mjs"
+      );
+      const server = mod.Marionette && mod.Marionette.server;
+      if (!server) return { ok: false, reason: "no-server" };
+      const ours = ${JSON.stringify(sessionId)};
+      const conns = Array.from(server.conns || []);
+      const mine = conns.filter(
+        (conn) => conn.driver && conn.driver.currentSession &&
+          conn.driver.currentSession.id === ours
+      );
+      if (mine.length !== 1) {
+        return {
+          ok: false,
+          reason: "session-not-found",
+          mySession: mine.length,
+          connections: conns.length,
+        };
+      }
+      const others = conns.filter((conn) => conn !== mine[0]);
+      const competing = others.filter(
+        (conn) => conn.driver && conn.driver.currentSession
+      );
+      let closed = 0;
+      for (const conn of others) {
+        try {
+          conn.conn.close();
+          closed++;
+        } catch (error) {}
+      }
+      try {
+        await server.setAcceptConnections(false);
+      } catch (error) {
+        return {
+          ok: false,
+          reason: "listener-close-failed",
+          error: String((error && error.message) || error),
+          competingSessions: competing.length,
+          closedConnections: closed,
+        };
+      }
+      return {
+        ok: competing.length === 0 && !server.socket,
+        competingSessions: competing.length,
+        closedConnections: closed,
+        listenerClosed: !server.socket,
+      };
+      `,
+      { timeoutMs: 15_000 }
+    );
+    if (!result?.ok) {
+      throw new MarionetteConnectionError(
+        `Marionette lockdown failed: ${describeLockdown(result)}`
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Asks Gecko to quit. The socket usually closes before the reply arrives,
+   * so callers should treat a connection error as success and verify the
+   * process id instead.
+   */
+  async quit(options: { force?: boolean } = {}): Promise<void> {
+    await this.sendRaw(
+      "Marionette:Quit",
+      { flags: [options.force ? "eForceQuit" : "eAttemptQuit"] },
+      5_000
+    );
   }
 
   async disconnect(): Promise<void> {
