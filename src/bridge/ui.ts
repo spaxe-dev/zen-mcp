@@ -3,6 +3,9 @@ import type {
   AnswerStatus,
   UiActivity,
   UiActivityAction,
+  UiBanner,
+  UiConsent,
+  UiProgress,
   UiQuestion,
 } from "../shared/protocol.js";
 
@@ -22,9 +25,31 @@ export interface ActivityHandlers {
   action(action: UiActivityAction): Promise<{ ok: boolean; error?: string }>;
 }
 
+export interface ProgressHandlers {
+  /** Called once when the user presses Stop on a progress card. */
+  onStop?(progressId: string): void;
+  /** Returns false when the approval could not be delivered. */
+  onConsent?(id: string, granted: boolean): boolean;
+  /** Returns false when the pause or resume request could not be delivered. */
+  onBannerAction?(action: "pause" | "resume"): boolean;
+}
+
 interface StoredQuestion {
   element: HTMLElement;
   dismiss(): void;
+}
+
+interface ProgressView {
+  id: string;
+  card: HTMLElement;
+  title: HTMLElement;
+  step: HTMLElement;
+  detail: HTMLElement;
+  bar: HTMLElement;
+  fill: HTMLElement;
+  stop: HTMLButtonElement;
+  stopRequested: boolean;
+  removed: boolean;
 }
 
 const FALLBACK_ACCENT = "#4ec3f7";
@@ -67,13 +92,141 @@ const STYLE = `
   --sk-danger: #ff7b72;
   --sk-shadow: 0 22px 54px rgba(0, 0, 0, .5), 0 2px 10px rgba(0, 0, 0, .3);
 }
-.sk-questions, .sk-activities {
+.sk-questions, .sk-progress, .sk-activities, .sk-consent-stack {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
   width: 100%;
   pointer-events: none;
+}
+.sk-banner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sk-bg) 94%, transparent);
+  border: 1px solid var(--sk-border);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .16);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+.sk-banner[hidden] { display: none; }
+.sk-banner[data-state="pending"] {
+  border-color: color-mix(in srgb, var(--sk-warning) 48%, transparent);
+}
+.sk-banner[data-state="paused"] {
+  border-color: color-mix(in srgb, var(--sk-danger) 52%, transparent);
+  background: color-mix(in srgb, var(--sk-danger) 10%, var(--sk-bg));
+}
+.banner-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sk-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sk-success) 16%, transparent);
+}
+.sk-banner[data-state="pending"] .banner-dot {
+  background: var(--sk-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sk-warning) 16%, transparent);
+  animation: sk-pulse 2.6s ease-in-out infinite;
+}
+.sk-banner[data-state="paused"] .banner-dot {
+  background: var(--sk-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sk-danger) 16%, transparent);
+}
+.banner-text { flex: 1; min-width: 0; }
+.banner-title {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.banner-detail {
+  margin: 1px 0 0;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--sk-muted);
+  overflow-wrap: anywhere;
+}
+.banner-button {
+  flex: none;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--sk-fg) 18%, transparent);
+  background: var(--sk-faint);
+  color: var(--sk-fg);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.banner-button:hover { background: var(--sk-hover); }
+.banner-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-accent) 65%, transparent);
+  outline-offset: 1px;
+}
+.sk-banner[data-state="paused"] .banner-button {
+  border-color: color-mix(in srgb, var(--sk-success) 42%, transparent);
+  background: color-mix(in srgb, var(--sk-success) 12%, transparent);
+  color: var(--sk-success);
+}
+.consent { padding: 14px 15px 13px; }
+.consent-title {
+  margin: 0 0 6px;
+  font-size: 14.5px;
+  line-height: 1.35;
+  font-weight: 650;
+  letter-spacing: -.005em;
+  overflow-wrap: anywhere;
+}
+.consent-detail {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sk-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.consent-actions { display: flex; align-items: center; gap: 8px; }
+.consent-allow {
+  border: none;
+  border-radius: 9px;
+  background: var(--sk-accent);
+  color: var(--sk-on-accent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.consent-allow:hover { filter: brightness(1.05); }
+.consent-allow:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-accent) 65%, transparent);
+  outline-offset: 2px;
+}
+.consent-deny {
+  border: none;
+  background: none;
+  color: var(--sk-muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  padding: 7px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.consent-deny:hover { color: var(--sk-fg); background: var(--sk-faint); }
+.consent-hint {
+  margin: 9px 0 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--sk-muted);
 }
 .card {
   pointer-events: auto;
@@ -316,6 +469,76 @@ const STYLE = `
 .action:hover { background: color-mix(in srgb, var(--sk-accent) 18%, transparent); }
 .action[disabled] { opacity: .6; cursor: default; }
 .action-error { margin: 6px 0 0; font-size: 10.5px; color: var(--sk-danger); }
+.progress-card { --sk-tone: var(--sk-accent); }
+.progress-card[data-tone="success"] { --sk-tone: var(--sk-success); }
+.progress-card[data-tone="warning"] { --sk-tone: var(--sk-warning); }
+.progress-card .dot {
+  background: var(--sk-tone);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sk-tone) 16%, transparent);
+}
+.progress-row { display: flex; align-items: flex-start; gap: 10px; }
+.progress-body { flex: 1; min-width: 0; }
+.progress-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.progress-step {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--sk-fg);
+  overflow-wrap: anywhere;
+}
+.progress-detail {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--sk-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.progress-bar {
+  margin-top: 9px;
+  height: 4px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--sk-faint);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--sk-tone) 55%, transparent),
+    var(--sk-tone)
+  );
+  transition: width .3s ease;
+}
+.stop-button {
+  flex: none;
+  align-self: center;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--sk-danger) 38%, transparent);
+  background: color-mix(in srgb, var(--sk-danger) 11%, transparent);
+  color: var(--sk-danger);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.stop-button:hover:not([disabled]) { background: color-mix(in srgb, var(--sk-danger) 18%, transparent); }
+.stop-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-danger) 55%, transparent);
+  outline-offset: 1px;
+}
+.stop-button[disabled] { opacity: .6; cursor: default; }
 .progress {
   position: absolute;
   left: 0;
@@ -335,6 +558,7 @@ const STYLE = `
   .dot { animation: none; }
   .option { transition: none; }
   .progress { animation: none; display: none; }
+  .progress-fill { transition: none; }
 }
 `;
 
@@ -343,13 +567,24 @@ export class ZenMcpUi {
   readonly #host: HTMLElement;
   readonly #root: ShadowRoot;
   readonly #wrap: HTMLElement;
+  readonly #bannerEl: HTMLElement;
+  readonly #bannerTitle: HTMLElement;
+  readonly #bannerDetail: HTMLElement;
+  readonly #bannerButton: HTMLButtonElement;
+  readonly #consentEl: HTMLElement;
   readonly #questionsEl: HTMLElement;
+  readonly #progressEl: HTMLElement;
   readonly #activitiesEl: HTMLElement;
   readonly #questions = new Map<string, StoredQuestion>();
   readonly #activities = new Map<string, { element: HTMLElement; dismiss(): void }>();
+  readonly #handlers: ProgressHandlers;
+  #progressView: ProgressView | null = null;
+  #consentView: { id: string; element: HTMLElement } | null = null;
+  #bannerState: "pending" | "active" | "paused" = "active";
 
-  constructor(doc: Document) {
+  constructor(doc: Document, handlers: ProgressHandlers = {}) {
     this.#doc = doc;
+    this.#handlers = handlers;
     this.#host = doc.createElement("div");
     this.#host.id = "zen-mcp-host";
     this.#host.style.cssText =
@@ -362,13 +597,51 @@ export class ZenMcpUi {
     this.#wrap = doc.createElement("div");
     this.#wrap.className = "sk-wrap";
 
+    this.#bannerEl = doc.createElement("div");
+    this.#bannerEl.className = "sk-banner";
+    this.#bannerEl.hidden = true;
+    this.#bannerEl.dataset.state = "active";
+    this.#bannerEl.setAttribute("role", "status");
+    this.#bannerEl.setAttribute("aria-live", "polite");
+    const bannerDot = doc.createElement("span");
+    bannerDot.className = "banner-dot";
+    const bannerText = doc.createElement("div");
+    bannerText.className = "banner-text";
+    this.#bannerTitle = doc.createElement("p");
+    this.#bannerTitle.className = "banner-title";
+    this.#bannerDetail = doc.createElement("p");
+    this.#bannerDetail.className = "banner-detail";
+    this.#bannerDetail.hidden = true;
+    bannerText.append(this.#bannerTitle, this.#bannerDetail);
+    this.#bannerButton = doc.createElement("button");
+    this.#bannerButton.type = "button";
+    this.#bannerButton.className = "banner-button";
+    this.#bannerButton.textContent = "Pause";
+    this.#bannerButton.addEventListener("click", () => {
+      const action = this.#bannerState === "paused" ? "resume" : "pause";
+      this.#handlers.onBannerAction?.(action);
+    });
+    this.#bannerEl.append(bannerDot, bannerText, this.#bannerButton);
+
+    this.#consentEl = doc.createElement("div");
+    this.#consentEl.className = "sk-consent-stack";
+
     this.#questionsEl = doc.createElement("div");
     this.#questionsEl.className = "sk-questions";
+
+    this.#progressEl = doc.createElement("div");
+    this.#progressEl.className = "sk-progress";
 
     this.#activitiesEl = doc.createElement("div");
     this.#activitiesEl.className = "sk-activities";
 
-    this.#wrap.append(this.#questionsEl, this.#activitiesEl);
+    this.#wrap.append(
+      this.#bannerEl,
+      this.#consentEl,
+      this.#questionsEl,
+      this.#progressEl,
+      this.#activitiesEl
+    );
     this.#root.append(style, this.#wrap);
     doc.documentElement.appendChild(this.#host);
   }
@@ -398,6 +671,100 @@ export class ZenMcpUi {
         relativeLuminance(accent) > 0.5 ? "#08131a" : "#ffffff"
       );
     }
+  }
+
+  /** Shows, updates or (with null) hides the persistent agent banner. */
+  showBanner(banner: UiBanner | null): void {
+    if (!banner) {
+      this.#bannerEl.hidden = true;
+      return;
+    }
+    this.#refreshTheme();
+    this.#bannerState = banner.state;
+    this.#bannerEl.dataset.state = banner.state;
+    this.#bannerEl.hidden = false;
+    this.#bannerTitle.textContent = banner.text;
+    setOptionalText(this.#bannerDetail, banner.detail);
+    this.#bannerButton.hidden = banner.state === "pending";
+    this.#bannerButton.textContent =
+      banner.state === "paused" ? "Resume" : "Pause";
+    this.#bannerButton.setAttribute(
+      "aria-label",
+      banner.state === "paused" ? "Resume agent access" : "Pause agent access"
+    );
+  }
+
+  showConsent(consent: UiConsent): void {
+    this.#refreshTheme();
+    this.cancelConsent();
+
+    const doc = this.#doc;
+    const card = doc.createElement("article");
+    card.className = "card consent";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", consent.title);
+
+    const head = doc.createElement("div");
+    head.className = "head";
+    const brand = doc.createElement("span");
+    brand.className = "brand";
+    const dot = doc.createElement("span");
+    dot.className = "dot";
+    brand.append(dot, doc.createTextNode("ZEN MCP"));
+    const chip = doc.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Permission";
+    head.append(brand, chip);
+    card.appendChild(head);
+
+    const title = doc.createElement("h2");
+    title.className = "consent-title";
+    title.textContent = consent.title;
+    card.appendChild(title);
+
+    const detail = doc.createElement("p");
+    detail.className = "consent-detail";
+    detail.textContent = consent.detail;
+    card.appendChild(detail);
+
+    const actions = doc.createElement("div");
+    actions.className = "consent-actions";
+    const deny = doc.createElement("button");
+    deny.type = "button";
+    deny.className = "consent-deny deny";
+    deny.textContent = consent.denyLabel;
+    const allow = doc.createElement("button");
+    allow.type = "button";
+    allow.className = "consent-allow allow";
+    allow.textContent = consent.allowLabel;
+    actions.append(allow, deny);
+    card.appendChild(actions);
+
+    const hint = doc.createElement("p");
+    hint.className = "consent-hint";
+    hint.textContent =
+      "Only this MCP session gets access. Zen MCP closes the Marionette port " +
+      "and never attaches to a browser it did not start.";
+    card.appendChild(hint);
+
+    const finish = (granted: boolean) => {
+      const delivered = this.#handlers.onConsent?.(consent.id, granted);
+      if (delivered === false) return;
+      this.cancelConsent(consent.id);
+    };
+    allow.addEventListener("click", () => finish(true));
+    deny.addEventListener("click", () => finish(false));
+
+    this.#consentEl.appendChild(card);
+    this.#consentView = { id: consent.id, element: card };
+  }
+
+  cancelConsent(id?: string): void {
+    const view = this.#consentView;
+    if (!view) return;
+    if (id && view.id !== id) return;
+    this.#consentView = null;
+    view.element.remove();
   }
 
   showQuestion(question: UiQuestion, handlers: QuestionHandlers): void {
@@ -669,6 +1036,165 @@ export class ZenMcpUi {
       .finished.finally(() => stored.element.remove());
   }
 
+  /**
+   * Create, update or (with null) hide the persistent progress card.
+   * Repeated updates mutate the existing nodes, so nothing leaks and keyboard
+   * focus inside the card survives. Focus is never taken unless it was
+   * already inside the card.
+   */
+  showProgress(progress: UiProgress | null): void {
+    if (!progress) {
+      this.#hideProgress();
+      return;
+    }
+    this.#refreshTheme();
+
+    const current = this.#progressView;
+    if (current && current.id === progress.id) {
+      this.#updateProgress(current, progress);
+      return;
+    }
+
+    // document.activeElement only reports the shadow host, so look inside.
+    const active = this.#root.activeElement;
+    const restoreFocus = !!current && !!active && current.card.contains(active);
+    if (current) this.#removeProgress(current, true);
+    this.#createProgress(progress, restoreFocus);
+  }
+
+  #createProgress(progress: UiProgress, restoreFocus: boolean): void {
+    const doc = this.#doc;
+    const card = doc.createElement("article");
+    card.className = "card progress-card";
+    card.dataset.tone = normalizeTone(progress.tone);
+
+    const head = doc.createElement("div");
+    head.className = "head";
+    const brand = doc.createElement("span");
+    brand.className = "brand";
+    const dot = doc.createElement("span");
+    dot.className = "dot";
+    brand.append(dot, doc.createTextNode("ZEN MCP"));
+    head.appendChild(brand);
+    card.appendChild(head);
+
+    const row = doc.createElement("div");
+    row.className = "progress-row";
+    const body = doc.createElement("div");
+    body.className = "progress-body";
+    const title = doc.createElement("p");
+    title.className = "progress-title";
+    const step = doc.createElement("p");
+    step.className = "progress-step";
+    step.hidden = true;
+    const detail = doc.createElement("p");
+    detail.className = "progress-detail";
+    detail.hidden = true;
+    const bar = doc.createElement("div");
+    bar.className = "progress-bar";
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.hidden = true;
+    const fill = doc.createElement("div");
+    fill.className = "progress-fill";
+    bar.appendChild(fill);
+    body.append(title, step, detail, bar);
+
+    const stop = doc.createElement("button");
+    stop.type = "button";
+    stop.className = "stop-button";
+    stop.textContent = "Stop";
+
+    row.append(body, stop);
+    card.appendChild(row);
+    this.#progressEl.appendChild(card);
+
+    const view: ProgressView = {
+      id: progress.id,
+      card,
+      title,
+      step,
+      detail,
+      bar,
+      fill,
+      stop,
+      stopRequested: false,
+      removed: false,
+    };
+    this.#progressView = view;
+
+    stop.addEventListener("click", () => {
+      if (view.removed || view.stop.disabled) return;
+      view.stopRequested = true;
+      view.stop.disabled = true;
+      view.stop.textContent = "Stopping\u2026";
+      try {
+        this.#handlers.onStop?.(view.id);
+      } catch {
+        // The host clears or resends the card on reconnect.
+      }
+    });
+
+    this.#updateProgress(view, progress);
+
+    if (restoreFocus && !stop.hidden && !stop.disabled) {
+      stop.focus({ preventScroll: true });
+    }
+  }
+
+  #updateProgress(view: ProgressView, progress: UiProgress): void {
+    view.card.dataset.tone = normalizeTone(progress.tone);
+    view.title.textContent = progress.title;
+    setOptionalText(view.step, progress.step);
+    setOptionalText(view.detail, progress.detail);
+
+    const ratio =
+      typeof progress.progress === "number" && Number.isFinite(progress.progress)
+        ? Math.min(1, Math.max(0, progress.progress))
+        : null;
+    if (ratio === null) {
+      view.bar.hidden = true;
+      view.bar.removeAttribute("aria-valuenow");
+      view.fill.style.width = "0%";
+    } else {
+      const percent = Math.round(ratio * 100);
+      view.bar.hidden = false;
+      view.bar.setAttribute("aria-valuenow", String(percent));
+      view.fill.style.width = `${percent}%`;
+    }
+
+    if (progress.stopRequested) view.stopRequested = true;
+    const stopping = view.stopRequested;
+    view.stop.hidden = !progress.stoppable;
+    view.stop.disabled = stopping;
+    view.stop.textContent = stopping ? "Stopping\u2026" : "Stop";
+  }
+
+  #hideProgress(): void {
+    const view = this.#progressView;
+    if (view) this.#removeProgress(view, true);
+  }
+
+  #removeProgress(view: ProgressView, animate: boolean): void {
+    if (view.removed) return;
+    view.removed = true;
+    if (this.#progressView === view) this.#progressView = null;
+    if (!animate) {
+      view.card.remove();
+      return;
+    }
+    view.card
+      .animate(
+        [
+          { opacity: 1, transform: "none" },
+          { opacity: 0, transform: "translateY(6px) scale(.985)" },
+        ],
+        { duration: 150, easing: "ease-in" }
+      )
+      .finished.finally(() => view.card.remove());
+  }
+
   showActivity(activity: UiActivity, handlers: ActivityHandlers): void {
     this.#refreshTheme();
     const existing = this.#activities.get(activity.id);
@@ -789,7 +1315,7 @@ export class ZenMcpUi {
       button.addEventListener("click", async () => {
         if (button.disabled) return;
         button.disabled = true;
-        button.textContent = "Opening\u2026";
+        button.textContent = "Working\u2026";
         paused = true;
         if (timer) clearTimeout(timer);
         timer = null;
@@ -798,7 +1324,7 @@ export class ZenMcpUi {
         try {
           const result = await handlers.action(action);
           if (result.ok) {
-            button.textContent = "Opened";
+            button.textContent = "Done";
             setTimeout(dismiss, 900);
           } else {
             paused = false;
@@ -806,7 +1332,8 @@ export class ZenMcpUi {
             button.textContent = `${action.label} \u2192`;
             actionError = doc.createElement("p");
             actionError.className = "action-error";
-            actionError.textContent = result.error || "Could not open that space.";
+            actionError.textContent =
+              result.error || "That action could not be completed.";
             card.appendChild(actionError);
             if (!paused && remaining > 0) {
               remaining = Math.min(remaining + 3000, 15000);
@@ -833,16 +1360,26 @@ export class ZenMcpUi {
   }
 
   destroy(): void {
+    this.cancelConsent();
+    this.#bannerEl.remove();
     for (const question of this.#questions.values()) {
       question.element.remove();
     }
     this.#questions.clear();
+    const progress = this.#progressView;
+    if (progress) this.#removeProgress(progress, false);
     for (const activity of this.#activities.values()) {
       activity.dismiss();
     }
     this.#activities.clear();
     this.#host.remove();
   }
+}
+
+function setOptionalText(element: HTMLElement, value: string | undefined): void {
+  const text = value?.trim() ?? "";
+  element.textContent = text;
+  element.hidden = !text;
 }
 
 function normalizeTone(tone: ActivityTone | undefined): ActivityTone {

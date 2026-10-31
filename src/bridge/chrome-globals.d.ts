@@ -6,6 +6,8 @@
 declare const Services: any;
 declare const Components: any;
 declare const ChromeUtils: any;
+/** Firefox's container identity service, exposed on some chrome windows. */
+declare const ContextualIdentityService: any;
 
 interface Window {
   gBrowser?: any;

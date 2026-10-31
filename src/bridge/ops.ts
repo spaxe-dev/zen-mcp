@@ -6,39 +6,77 @@ import type {
   BridgeMethod,
   BridgeMethodMap,
   BridgeStatus,
+  ClipboardWriteParams,
+  ClipboardWriteResult,
   CloseTabsParams,
   CloseTabsResult,
+  ContainerInfo,
+  ContainersResult,
   CreateFolderParams,
   CreateFolderResult,
   CreateSpaceParams,
   CreateSpaceResult,
   DeleteSpaceResult,
+  EssentialsParams,
+  EssentialsResult,
+  EvidenceClearParams,
+  EvidenceClearResult,
+  EvidenceErrorCode,
+  EvidenceOpResult,
+  EvidenceShowParams,
   FolderInfo,
   FoldersResult,
+  GlanceParams,
+  GlanceResult,
+  HistoryEntry,
+  HistoryGroup,
   HistoryResult,
   HistorySearchParams,
   OpenTabsParams,
   OpenTabsResult,
   OpenedTab,
   PageReadResult,
+  PinTabsParams,
+  PinTabsResult,
+  RecentlyClosedEntry,
+  RecentlyClosedResult,
   SelectTabParams,
   SelectTabResult,
   Space,
   SpaceInfo,
   SpacesResult,
   SpaceTargetParams,
+  SplitParams,
+  SplitResult,
   SwitchSpaceParams,
   SwitchSpaceResult,
   TabReadParams,
   TabInfo,
   TabsListParams,
   TabsResult,
+  TextSearchParams,
+  TextSearchResult,
+  UnsplitParams,
+  UnsplitResult,
 } from "../shared/protocol.js";
 import {
   buildReadScript,
   coercePageSnapshot,
   toPageReadResult,
 } from "../shared/read-script.js";
+import {
+  buildEvidenceClearScript,
+  buildEvidenceHighlightScript,
+  buildEvidenceIndexScript,
+  buildEvidenceStateScript,
+  coerceEvidenceClear,
+  coerceEvidenceHighlight,
+  coerceEvidenceIndex,
+  coerceEvidenceState,
+  createEvidenceMarker,
+} from "../shared/evidence-script.js";
+import { findEvidenceQuote } from "../shared/evidence.js";
+import { findLiteralMatches } from "../shared/search.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -47,6 +85,45 @@ type ChromeSpace = any;
 
 const MAX_TABS_PER_OPEN = 30;
 const MAX_RESULTS = 100;
+/** Rows scanned before the post-query domain filter is applied. */
+const HISTORY_SCAN_LIMIT = 200;
+const MAX_CLIPBOARD_CHARS = 1_048_576;
+const PDF_WAIT_MS = 8_000;
+const EVIDENCE_WAIT_MS = 12_000;
+const EVIDENCE_POLL_MS = 250;
+const EVIDENCE_SETTLE_MS = 200;
+const EVIDENCE_MAX_TEXT = 600_000;
+const EVIDENCE_HIGHLIGHT_MS = 20_000;
+const EVIDENCE_MAX_ATTEMPTS = 3;
+
+function isHttpUrl(url: string): boolean {
+  try {
+    const scheme = new URL(url).protocol;
+    return scheme === "http:" || scheme === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isPrivilegedUrl(url: string): boolean {
+  try {
+    const scheme = new URL(url).protocol;
+    return [
+      "about:",
+      "chrome:",
+      "resource:",
+      "view-source:",
+      "moz-extension:",
+      "javascript:",
+    ].includes(scheme);
+  } catch {
+    return true;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 class OpsError extends Error {
   readonly code: string;
@@ -63,6 +140,18 @@ class OpsError extends Error {
 export function createOps(win: ChromeWindow, windowId: string) {
   const tabIds = new WeakMap<ChromeTab, string>();
   const tabsById = new Map<string, ChromeTab>();
+  /** Overlay attribute names created by this bridge session, per tab. */
+  const evidenceMarkers = new Map<string, string[]>();
+
+  const markersFor = (tabId: string): string[] =>
+    evidenceMarkers.get(tabId) ?? [];
+  const rememberMarkers = (tabId: string, markers: string[]): void => {
+    if (markers.length === 0) {
+      evidenceMarkers.delete(tabId);
+      return;
+    }
+    evidenceMarkers.set(tabId, markers.slice(-20));
+  };
 
   const idForTab = (tab: ChromeTab): string => {
     let id = tabIds.get(tab);
@@ -182,6 +271,13 @@ export function createOps(win: ChromeWindow, windowId: string) {
     return url || "(untitled tab)";
   };
 
+  const containerIdOf = (tab: ChromeTab): number =>
+    Number(tab.userContextId ?? tab.getAttribute("usercontextid") ?? 0) || 0;
+
+  const isEssentialTab = (tab: ChromeTab): boolean =>
+    tab.hasAttribute("zen-essential") ||
+    tab.getAttribute("zen-essential") === "true";
+
   const folderOf = (tab: ChromeTab): ChromeFolder | null => {
     const group = tab.group;
     if (!group) return null;
@@ -202,9 +298,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       url: tabUrl(tab),
       requestedUrl: tabUrl(tab),
       pinned: !!tab.pinned,
-      essential:
-        tab.hasAttribute("zen-essential") ||
-        tab.getAttribute("zen-essential") === "true",
+      essential: isEssentialTab(tab),
       active: !!tab.selected,
       audible: tab.hasAttribute("soundplaying"),
       muted: !!tab.muted || tab.hasAttribute("muted"),
@@ -212,6 +306,9 @@ export function createOps(win: ChromeWindow, windowId: string) {
       folderId: folder?.id ?? null,
       folderLabel: folder?.label ?? null,
       index,
+      lastAccessed: Number(tab.lastAccessed) || null,
+      containerId: containerIdOf(tab),
+      splitView: !!tab.splitView,
     };
   };
 
@@ -308,11 +405,222 @@ export function createOps(win: ChromeWindow, windowId: string) {
     return parsed.href;
   };
 
-  const openTab = (url: string, inBackground: boolean): ChromeTab => {
-    return win.gBrowser.addTab(url, {
+  const contextualIdentityService = (): any => {
+    try {
+      if (win.ContextualIdentityService) return win.ContextualIdentityService;
+    } catch {
+      // Fall through to the bare global.
+    }
+    try {
+      if (typeof ContextualIdentityService !== "undefined") {
+        return ContextualIdentityService;
+      }
+    } catch {
+      // The service is not exposed on this window.
+    }
+    return null;
+  };
+
+  const containerIdentities = (): ContainerInfo[] => {
+    const service = contextualIdentityService();
+    if (!service || typeof service.getPublicIdentities !== "function") {
+      return [];
+    }
+    try {
+      const identities = service.getPublicIdentities() ?? [];
+      if (!Array.isArray(identities)) return [];
+      return identities.map((identity: any) => {
+        const userContextId = Number(identity?.userContextId ?? 0) || 0;
+        return {
+          userContextId,
+          name: String(identity?.name ?? ""),
+          icon: String(identity?.icon ?? ""),
+          color: String(identity?.color ?? ""),
+          public: userContextId > 0 && identity?.public !== false,
+        } satisfies ContainerInfo;
+      });
+    } catch {
+      return [];
+    }
+  };
+
+  const resolveContainer = (
+    target: string | number | undefined | null
+  ): ContainerInfo => {
+    const identities = containerIdentities();
+    const names = identities
+      .filter((identity) => identity.userContextId > 0)
+      .map((identity) => identity.name || `#${identity.userContextId}`)
+      .filter(Boolean);
+    const known = names.length ? names.join(", ") : "(none)";
+    if (!identities.length) {
+      throw new OpsError(
+        "container_not_found",
+        `Firefox containers are not available in this window. Known containers: ${known}.`
+      );
+    }
+    const raw = String(target ?? "").trim();
+    let match: ContainerInfo | undefined;
+    if (/^\d+$/.test(raw)) {
+      const userContextId = Number(raw);
+      match = identities.find(
+        (identity) => identity.userContextId === userContextId
+      );
+    }
+    if (!match && raw) {
+      const needle = raw.toLowerCase();
+      match = identities.find(
+        (identity) => identity.name.toLowerCase() === needle
+      );
+    }
+    if (!match) {
+      throw new OpsError(
+        "container_not_found",
+        `No container matches "${raw}". Known containers: ${known}.`
+      );
+    }
+    return match;
+  };
+
+  const contentTypeOf = (tab: ChromeTab): string | null => {
+    try {
+      const value = tab.linkedBrowser?.contentDocument?.contentType;
+      return value ? String(value) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const isPdfUrl = (url: string): boolean =>
+    url.split("#")[0].split("?")[0].toLowerCase().endsWith(".pdf");
+
+  const isPdfTab = (tab: ChromeTab): boolean => {
+    const contentType = contentTypeOf(tab);
+    if (contentType && contentType.toLowerCase().includes("pdf")) return true;
+    return isPdfUrl(tabUrl(tab));
+  };
+
+  /**
+   * Runs a fixed script inside a tab's content process. Unlike Marionette's
+   * content context this also reaches tabs in inactive spaces, and the agent
+   * never supplies the script text.
+   */
+  const runEvidenceScript = async (
+    tab: ChromeTab,
+    script: string,
+    timeoutMs: number
+  ): Promise<unknown> => {
+    const global = tab.linkedBrowser?.browsingContext?.currentWindowGlobal;
+    if (!global) {
+      throw new OpsError(
+        "tab_not_loaded",
+        `The tab "${tabTitle(tab)}" has not loaded a page yet.`
+      );
+    }
+    const actor =
+      typeof global.getActor === "function"
+        ? global.getActor("MarionetteCommands")
+        : null;
+    if (!actor) {
+      throw new OpsError(
+        "actor_unavailable",
+        "Zen MCP's Marionette session does not expose background page " +
+          "access in this window. Restart Zen with zen_launch."
+      );
+    }
+    return actor.sendQuery("MarionetteCommandsParent:executeScript", {
+      script,
+      args: [],
+      opts: { timeout: timeoutMs },
+    });
+  };
+
+  /**
+   * PDF.js exposes `PDFViewerApplication` on the viewer's content window. It is
+   * reachable from chrome, but only once the document has been parsed.
+   */
+  const waitForPdfApplication = async (
+    browser: ChromeTab
+  ): Promise<any | null> => {
+    const deadline = Date.now() + PDF_WAIT_MS;
+    for (;;) {
+      try {
+        const app = browser?.contentWindow?.PDFViewerApplication;
+        if (app?.pdfDocument) return app;
+      } catch {
+        // Cross-process viewers can throw while they are being set up.
+      }
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  };
+
+  const readPdfTab = async (
+    tab: ChromeTab,
+    maxChars: number
+  ): Promise<PageReadResult> => {
+    const unavailable =
+      "Could not extract text from this PDF. It may still be loading, " +
+      "password protected, or the built-in PDF viewer is not available for this tab.";
+    let app: any = null;
+    try {
+      app = await waitForPdfApplication(tab.linkedBrowser);
+    } catch {
+      app = null;
+    }
+    if (!app) throw new OpsError("pdf_unreadable", unavailable);
+
+    let title = tabTitle(tab);
+    let text = "";
+    try {
+      title = String(app.documentTitle || app.metadata?.info?.Title || title);
+      const document = app.pdfDocument;
+      const pageCount = Math.max(0, Number(document?.numPages) || 0);
+      const pages: string[] = [];
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        const page = await document.getPage(pageNumber);
+        const content = await page.getTextContent();
+        const items = Array.isArray(content?.items) ? content.items : [];
+        const pageText = items
+          .map((item: any) => String(item?.str ?? ""))
+          .join(" ")
+          .replace(/[ \t\u00a0]+/g, " ")
+          .trim();
+        if (pageText) pages.push(pageText);
+      }
+      text = pages.join("\n\n");
+    } catch {
+      throw new OpsError("pdf_unreadable", unavailable);
+    }
+    if (!text) throw new OpsError("pdf_unreadable", unavailable);
+
+    return {
+      title,
+      url: tabUrl(tab),
+      selectedText: "",
+      text: text.slice(0, maxChars),
+      truncated: text.length > maxChars,
+      length: text.length,
+      description: null,
+      format: "text",
+      contentType: "application/pdf",
+      selector: null,
+    } satisfies PageReadResult;
+  };
+
+  const openTab = (
+    url: string,
+    inBackground: boolean,
+    userContextId?: number
+  ): ChromeTab => {
+    const options: Record<string, unknown> = {
       inBackground,
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-    });
+    };
+    if (typeof userContextId === "number" && userContextId > 0) {
+      options.userContextId = userContextId;
+    }
+    return win.gBrowser.addTab(url, options);
   };
 
   const assertSpacesEnabled = (): void => {
@@ -480,6 +788,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
       const urls = [...new Set(incoming.map(normalizeUrl))];
+      const container =
+        params.container === undefined ||
+        params.container === null ||
+        params.container === ""
+          ? null
+          : resolveContainer(params.container);
       const targetSpace = params.space
         ? requireSpace(params.space, "open tabs")
         : findSpace(undefined);
@@ -491,7 +805,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const requested = new Map<ChromeTab, string>();
       try {
         for (const url of urls) {
-          const tab = openTab(url, background);
+          const tab = openTab(url, background, container?.userContextId);
           opened.push(tab);
           requested.set(tab, url);
         }
@@ -591,13 +905,59 @@ export function createOps(win: ChromeWindow, windowId: string) {
       } satisfies SelectTabResult;
     },
 
+    "tabs.pin": (params: PinTabsParams) => {
+      const ids = Array.isArray(params?.tabIds) ? params.tabIds : [];
+      if (!ids.length) {
+        throw new OpsError("no_tabs", "Provide tabIds to pin or unpin");
+      }
+      if (typeof params?.pinned !== "boolean") {
+        throw new OpsError(
+          "invalid_params",
+          "`pinned` must be true or false"
+        );
+      }
+      const pinned = params.pinned;
+      const tabs = resolveTabs(ids);
+      const changed: string[] = [];
+      for (const tab of tabs) {
+        // Essentials are pinned by definition and managed by essentials.*.
+        if (isEssentialTab(tab)) continue;
+        if (!!tab.pinned === pinned) continue;
+        if (!tab.isConnected || tab.closing) continue;
+        if (pinned) {
+          win.gBrowser.pinTab(tab);
+        } else {
+          win.gBrowser.unpinTab(tab);
+        }
+        changed.push(idForTab(tab));
+      }
+      return { tabIds: changed, changed: changed.length } satisfies PinTabsResult;
+    },
+
     "tabs.read": async (params: TabReadParams) => {
       const tabId = String(params?.tabId ?? "");
       if (!tabId) {
         throw new OpsError("no_tab", "Provide the tabId of the tab to read");
       }
       const [tab] = resolveTabs([tabId]);
+      const listedUrl = tabUrl(tab);
+      if (!isHttpUrl(listedUrl)) {
+        throw new OpsError(
+          isPrivilegedUrl(listedUrl) ? "privileged_page" : "unsupported_page",
+          "Zen MCP only reads http(s) pages. Browser-internal and local-file " +
+            "pages are never read."
+        );
+      }
       const maxChars = clamp(params?.maxChars ?? 24_000, 500, 60_000);
+      const format = params?.format;
+      const selector = params?.selector ? String(params.selector).trim() : undefined;
+
+      // PDFs render in the pdf.js viewer, which the page read script cannot
+      // see. Their text comes straight from the viewer instead.
+      if (isPdfTab(tab)) {
+        return readPdfTab(tab, maxChars);
+      }
+      const contentType = contentTypeOf(tab);
 
       // Marionette's content context only sees tabs in gBrowser, so tabs in an
       // inactive space cannot be reached that way. The driver's content actor
@@ -628,7 +988,11 @@ export function createOps(win: ChromeWindow, windowId: string) {
         raw = await actor.sendQuery(
           "MarionetteCommandsParent:executeScript",
           {
-            script: buildReadScript(maxChars),
+            script: buildReadScript({
+              maxChars,
+              ...(format ? { format } : {}),
+              ...(selector ? { selector } : {}),
+            }),
             args: [],
             opts: { timeout: 15_000 },
           }
@@ -650,7 +1014,560 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "a privileged page, a PDF viewer, or still loading."
         );
       }
-      return toPageReadResult(page, maxChars) satisfies PageReadResult;
+      // `selectorMatched` is only meaningful when a selector was supplied.
+      if (selector && page.selectorMatched === false) {
+        throw new OpsError(
+          "selector_not_found",
+          `No element matches selector "${selector}"`
+        );
+      }
+      return toPageReadResult(page, {
+        maxChars,
+        contentType,
+      }) satisfies PageReadResult;
+    },
+
+    "tabs.findText": async (
+      params: TextSearchParams
+    ): Promise<TextSearchResult> => {
+      const tabId = String(params?.tabId ?? "");
+      if (!tabId) {
+        throw new OpsError("no_tab", "Provide the tabId to search.");
+      }
+      const query =
+        typeof params?.query === "string" ? params.query.trim() : "";
+      if (!query) {
+        throw new OpsError("invalid_query", "Provide the text to find.");
+      }
+      if (query.length > 2_000) {
+        throw new OpsError(
+          "query_too_large",
+          "Refusing to search for more than 2,000 characters at once."
+        );
+      }
+
+      const [tab] = resolveTabs([tabId]);
+      const listedUrl = tabUrl(tab);
+      const listedTitle = tabTitle(tab);
+      const failed = (
+        code: EvidenceErrorCode,
+        message: string,
+        extra: Partial<TextSearchResult> = {}
+      ): TextSearchResult => ({
+        ok: false,
+        tabId,
+        url: listedUrl,
+        title: listedTitle,
+        query,
+        matches: [],
+        totalMatches: 0,
+        truncated: false,
+        ...extra,
+        error: { code, message },
+      });
+
+      if (!isHttpUrl(listedUrl)) {
+        return failed(
+          isPrivilegedUrl(listedUrl) ? "PRIVILEGED_PAGE" : "UNSUPPORTED_PAGE",
+          "Text search only inspects http(s) pages."
+        );
+      }
+      if (isPdfTab(tab)) {
+        return failed(
+          "UNSUPPORTED_PAGE",
+          "PDF documents render in a viewer that exposes no HTML text."
+        );
+      }
+
+      let snapshot = null as ReturnType<typeof coerceEvidenceIndex>;
+      try {
+        snapshot = coerceEvidenceIndex(
+          await runEvidenceScript(
+            tab,
+            buildEvidenceIndexScript({ maxChars: EVIDENCE_MAX_TEXT }),
+            15_000
+          )
+        );
+      } catch (error) {
+        if (error instanceof OpsError) {
+          if (error.code === "actor_unavailable") {
+            return failed("ACTOR_UNAVAILABLE", error.message);
+          }
+          if (error.code === "tab_not_loaded") {
+            return failed("PAGE_STILL_LOADING", error.message);
+          }
+        }
+        return failed(
+          "PAGE_NOT_FOUND",
+          `Could not read the page in the tab "${listedTitle}".`
+        );
+      }
+      if (!snapshot) {
+        return failed(
+          "PAGE_NOT_FOUND",
+          `The tab "${listedTitle}" did not return readable page content.`
+        );
+      }
+      if (snapshot.readyState === "loading") {
+        return failed("PAGE_STILL_LOADING", "The page is still loading.");
+      }
+      if (snapshot.contentType && !/html|xml/i.test(snapshot.contentType)) {
+        return failed(
+          "UNSUPPORTED_PAGE",
+          `The page is served as ${snapshot.contentType}, which exposes no ` +
+            "HTML text to search."
+        );
+      }
+
+      const outcome = findLiteralMatches(snapshot.text, {
+        query,
+        caseSensitive: params?.caseSensitive === true,
+        maxMatches: params?.maxMatches,
+        contextChars: params?.contextChars,
+      });
+      const limitations: string[] = [];
+      if (snapshot.truncated) {
+        limitations.push(
+          `Only the first ${snapshot.text.length} characters of the page were searched.`
+        );
+      }
+      if (outcome.totalMatches > outcome.matches.length) {
+        limitations.push(
+          `Showing ${outcome.matches.length} of ${outcome.totalMatches} matches. ` +
+            "Raise maxMatches to see more."
+        );
+      }
+      if (outcome.scanStopped) {
+        limitations.push(
+          "The page contains more matches than the scan limit, so the total is a lower bound."
+        );
+      }
+
+      return {
+        ok: true,
+        tabId,
+        url: isHttpUrl(snapshot.url) ? snapshot.url : listedUrl,
+        title: snapshot.title || listedTitle,
+        query,
+        matches: outcome.matches,
+        totalMatches: outcome.totalMatches,
+        truncated:
+          snapshot.truncated ||
+          outcome.scanStopped ||
+          outcome.totalMatches > outcome.matches.length,
+        ...(limitations.length ? { limitation: limitations.join(" ") } : {}),
+      } satisfies TextSearchResult;
+    },
+
+    "tabs.evidence": async (
+      params: EvidenceShowParams
+    ): Promise<EvidenceOpResult> => {
+      const tabId = String(params?.tabId ?? "");
+      if (!tabId) {
+        throw new OpsError("no_tab", "Provide the tabId that holds the evidence.");
+      }
+      const quote =
+        typeof params?.quote === "string"
+          ? params.quote.replace(/\r\n?/g, "\n").trim()
+          : "";
+      if (!quote) {
+        throw new OpsError("invalid_quote", "Provide the quote to locate in the page.");
+      }
+      if (quote.length > 20_000) {
+        throw new OpsError(
+          "quote_too_large",
+          "Refusing to search for a quote longer than 20,000 characters."
+        );
+      }
+
+      const [tab] = resolveTabs([tabId]);
+      const listedUrl = tabUrl(tab);
+      const listedTitle = tabTitle(tab);
+      const failed = (
+        code: EvidenceErrorCode,
+        message: string,
+        extra: Partial<EvidenceOpResult> = {}
+      ): EvidenceOpResult => ({
+        ok: false,
+        tabId,
+        url: listedUrl,
+        title: listedTitle,
+        ...extra,
+        error: { code, message },
+      });
+
+      if (!isHttpUrl(listedUrl)) {
+        return failed(
+          isPrivilegedUrl(listedUrl) ? "PRIVILEGED_PAGE" : "UNSUPPORTED_PAGE",
+          "Evidence Mode only inspects http(s) pages. Browser-internal pages " +
+            "cannot be read or marked."
+        );
+      }
+      if (isPdfTab(tab)) {
+        return failed(
+          "UNSUPPORTED_PAGE",
+          "PDF documents render in a viewer that exposes no HTML text, so " +
+            "Evidence Mode cannot locate a quote in them."
+        );
+      }
+
+      // Wait for the tab to leave about:blank and finish loading. A freshly
+      // opened tab can report "complete" for its empty initial document.
+      const deadline = Date.now() + EVIDENCE_WAIT_MS;
+      let state = null as ReturnType<typeof coerceEvidenceState>;
+      let lastError: Error | null = null;
+      for (;;) {
+        try {
+          state = coerceEvidenceState(
+            await runEvidenceScript(tab, buildEvidenceStateScript(), 5_000)
+          );
+          lastError = null;
+        } catch (error) {
+          lastError = error as Error;
+          state = null;
+        }
+        if (
+          state &&
+          isHttpUrl(state.url) &&
+          state.readyState !== "" &&
+          state.readyState !== "loading"
+        ) {
+          break;
+        }
+        if (Date.now() >= deadline) break;
+        await sleep(EVIDENCE_POLL_MS);
+      }
+
+      if (!state) {
+        if (
+          lastError instanceof OpsError &&
+          lastError.code === "actor_unavailable"
+        ) {
+          return failed("ACTOR_UNAVAILABLE", lastError.message);
+        }
+        return failed(
+          "PAGE_NOT_FOUND",
+          `Could not reach the page in the tab "${listedTitle}". ` +
+            "The tab may have been closed, navigated away, or not loaded yet."
+        );
+      }
+      if (!state.readyState || state.readyState === "loading") {
+        return failed(
+          "PAGE_STILL_LOADING",
+          `The page "${state.title || listedTitle}" is still loading after ` +
+            `${Math.round(EVIDENCE_WAIT_MS / 1000)} seconds.`
+        );
+      }
+      if (!isHttpUrl(state.url)) {
+        return failed(
+          isPrivilegedUrl(state.url) ? "PRIVILEGED_PAGE" : "UNSUPPORTED_PAGE",
+          `The tab ended up on ${state.url || "an unsupported page"}. ` +
+            "Evidence Mode only inspects http(s) pages."
+        );
+      }
+      if (state.contentType && !/html|xml/i.test(state.contentType)) {
+        return failed(
+          "UNSUPPORTED_PAGE",
+          `The page is served as ${state.contentType}, which exposes no HTML ` +
+            "text to locate a quote in."
+        );
+      }
+
+      // Let late-rendering content settle before taking the text snapshot.
+      await sleep(EVIDENCE_SETTLE_MS);
+
+      const context =
+        typeof params?.context === "string" ? params.context : undefined;
+      const minConfidence =
+        typeof params?.minConfidence === "number" &&
+        Number.isFinite(params.minConfidence)
+          ? params.minConfidence
+          : undefined;
+      const highlightMs = clamp(
+        params?.highlightMs ?? EVIDENCE_HIGHLIGHT_MS,
+        1_000,
+        120_000
+      );
+      const scroll = params?.scroll !== false;
+      const maxChars = EVIDENCE_MAX_TEXT;
+
+      let snapshot = null as ReturnType<typeof coerceEvidenceIndex>;
+      try {
+        snapshot = coerceEvidenceIndex(
+          await runEvidenceScript(
+            tab,
+            buildEvidenceIndexScript({ maxChars }),
+            15_000
+          )
+        );
+      } catch (error) {
+        if (error instanceof OpsError && error.code === "actor_unavailable") {
+          return failed("ACTOR_UNAVAILABLE", error.message);
+        }
+        return failed(
+          "PAGE_NOT_FOUND",
+          `Could not read the page in the tab "${state.title || listedTitle}".`
+        );
+      }
+      if (!snapshot) {
+        return failed(
+          "PAGE_NOT_FOUND",
+          `The tab "${state.title || listedTitle}" did not return readable page content.`
+        );
+      }
+      if (snapshot.readyState === "loading") {
+        return failed("PAGE_STILL_LOADING", "The page is still loading.");
+      }
+      if (snapshot.contentType && !/html|xml/i.test(snapshot.contentType)) {
+        return failed(
+          "UNSUPPORTED_PAGE",
+          `The page is served as ${snapshot.contentType}, which exposes no ` +
+            "HTML text to locate a quote in."
+        );
+      }
+
+      const base = {
+        tabId,
+        url: isHttpUrl(snapshot.url) ? snapshot.url : state.url,
+        title: snapshot.title || state.title || listedTitle,
+      };
+      if (!snapshot.text.trim()) {
+        return {
+          ...base,
+          ok: false,
+          error: {
+            code: "QUOTE_NOT_FOUND",
+            message: "The page exposes no readable text to search.",
+          },
+        } satisfies EvidenceOpResult;
+      }
+
+      let current = snapshot;
+      const marker = createEvidenceMarker();
+      for (let attempt = 0; attempt < EVIDENCE_MAX_ATTEMPTS; attempt += 1) {
+        const outcome = findEvidenceQuote(current.text, {
+          quote,
+          ...(context ? { context } : {}),
+          ...(minConfidence !== undefined ? { minConfidence } : {}),
+        });
+
+        if (outcome.status === "not_found") {
+          return {
+            ...base,
+            ok: false,
+            error: { code: "QUOTE_NOT_FOUND", message: outcome.message },
+            ...(current.truncated
+              ? {
+                  limitation:
+                    "Only the first " +
+                    `${current.text.length} characters of the page were searched.`,
+                }
+              : {}),
+          } satisfies EvidenceOpResult;
+        }
+        if (outcome.status === "ambiguous") {
+          return {
+            ...base,
+            ok: false,
+            occurrences: outcome.occurrences,
+            error: { code: "AMBIGUOUS_MATCH", message: outcome.message },
+            limitation: outcome.occurrencesTruncated
+              ? `At least ${outcome.occurrences} passages matched and the scan ` +
+                `stopped at ${outcome.occurrences}. Use a longer, more ` +
+                "distinctive quote. No highlight was added."
+              : `${outcome.occurrences} occurrences matched; add surrounding ` +
+                "context to identify the intended passage. No highlight was added.",
+          } satisfies EvidenceOpResult;
+        }
+        if (outcome.status === "low_confidence") {
+          return {
+            ...base,
+            ok: false,
+            confidence: outcome.candidate.confidence,
+            error: { code: "LOW_MATCH_CONFIDENCE", message: outcome.message },
+            limitation:
+              `The closest passage scored ${outcome.candidate.confidence.toFixed(3)} ` +
+              `against the requested ${outcome.threshold.toFixed(2)} confidence ` +
+              "threshold. No highlight was added.",
+          } satisfies EvidenceOpResult;
+        }
+
+        const candidate = outcome.candidate;
+        const expectedText = current.text.slice(candidate.start, candidate.end);
+        let report: ReturnType<typeof coerceEvidenceHighlight>;
+        let scriptFailed = false;
+        try {
+          report = coerceEvidenceHighlight(
+            await runEvidenceScript(
+              tab,
+              buildEvidenceHighlightScript({
+                start: candidate.start,
+                end: candidate.end,
+                expectedText,
+                ttlMs: highlightMs,
+                scroll,
+                marker,
+                clearMarkers: markersFor(tabId),
+              }),
+              15_000
+            )
+          );
+        } catch (error) {
+          if (
+            error instanceof OpsError &&
+            error.code === "actor_unavailable"
+          ) {
+            return failed("ACTOR_UNAVAILABLE", error.message);
+          }
+          scriptFailed = true;
+          report = {
+            ok: false,
+            stale: false,
+            highlighted: false,
+            scrolled: false,
+            inView: false,
+            rects: 0,
+            scrollY: 0,
+            reason: String((error as Error)?.message ?? error).slice(0, 200),
+          };
+        }
+
+        if (report.stale) {
+          // The page changed between matching and marking. Re-read it and try
+          // again rather than highlighting offsets that may now point at a
+          // different passage.
+          await sleep(EVIDENCE_POLL_MS);
+          try {
+            const refreshed = coerceEvidenceIndex(
+              await runEvidenceScript(
+                tab,
+                buildEvidenceIndexScript({ maxChars }),
+                15_000
+              )
+            );
+            if (refreshed) {
+              current = refreshed;
+              base.url = isHttpUrl(refreshed.url) ? refreshed.url : base.url;
+              base.title = refreshed.title || base.title;
+            }
+          } catch {
+            // Keep the previous snapshot; the loop exhausts attempts.
+          }
+          continue;
+        }
+
+        if (!report.highlighted) {
+          if (!scriptFailed) rememberMarkers(tabId, []);
+          return {
+            ...base,
+            ok: false,
+            matchedQuote: expectedText,
+            matchMethod: candidate.method,
+            confidence: candidate.confidence,
+            occurrences: outcome.occurrences,
+            scrolled: false,
+            highlighted: false,
+            verified: false,
+            limitation:
+              "The passage has no visible pixels in the page, so no highlight " +
+              "was added. It may be hidden, clipped, or placed off-screen.",
+            error: {
+              code: "HIGHLIGHT_FAILED",
+              message:
+                "The matched passage is hidden or has no visible area, so it " +
+                "could not be shown in the page.",
+            },
+          } satisfies EvidenceOpResult;
+        }
+
+        rememberMarkers(tabId, [marker]);
+
+        const limitations: string[] = [];
+        if (candidate.method === "normalized" && candidate.confidence < 0.99) {
+          limitations.push(
+            "The quote matched after Unicode normalization, so case, spacing, " +
+              "punctuation, or accents differ slightly from the page."
+          );
+        }
+        if (candidate.method === "fuzzy") {
+          limitations.push(
+            "Fuzzy match: the page wording differs from the quote and should " +
+              "be checked. Numbers and negation words matched exactly."
+          );
+        }
+        if (outcome.occurrencesTruncated) {
+          limitations.push(
+            `At least ${outcome.occurrences} passages matched; the occurrence ` +
+              "count is a lower bound."
+          );
+        }
+        if (!report.inView) {
+          limitations.push(
+            "The passage is outside the visible viewport, so the user cannot " +
+              "see the highlight without scrolling."
+          );
+        }
+        if (current.truncated) {
+          limitations.push(
+            "Only the first " +
+              `${current.text.length} characters of the page were searched.`
+          );
+        }
+
+        return {
+          ...base,
+          ok: true,
+          verified: candidate.method !== "fuzzy" && report.inView,
+          matchedQuote: expectedText,
+          matchMethod: candidate.method,
+          confidence: candidate.confidence,
+          occurrences: outcome.occurrences,
+          scrolled: scroll ? report.scrolled : false,
+          highlighted: true,
+          ...(limitations.length ? { limitation: limitations.join(" ") } : {}),
+        } satisfies EvidenceOpResult;
+      }
+
+      return {
+        ...base,
+        ok: false,
+        limitation:
+          "The page kept changing while Zen MCP located the passage, so no " +
+          "highlight was added.",
+        error: {
+          code: "HIGHLIGHT_FAILED",
+          message:
+            "The page changed before the passage could be marked. Try again " +
+            "once the page settles.",
+        },
+      } satisfies EvidenceOpResult;
+    },
+
+    "tabs.evidenceClear": async (
+      params: EvidenceClearParams
+    ): Promise<EvidenceClearResult> => {
+      const tabId = String(params?.tabId ?? "");
+      if (!tabId) {
+        throw new OpsError("no_tab", "Provide the tabId whose marks to clear.");
+      }
+      const [tab] = resolveTabs([tabId]);
+      const markers = markersFor(tabId);
+      if (markers.length === 0) {
+        return { tabId, removed: 0 } satisfies EvidenceClearResult;
+      }
+      let raw: unknown;
+      try {
+        raw = await runEvidenceScript(
+          tab,
+          buildEvidenceClearScript({ markers }),
+          10_000
+        );
+      } catch {
+        return { tabId, removed: 0 } satisfies EvidenceClearResult;
+      }
+      const report = coerceEvidenceClear(raw);
+      rememberMarkers(tabId, []);
+      return { tabId, removed: report.removed } satisfies EvidenceClearResult;
     },
 
     "folders.list": () =>
@@ -738,9 +1655,252 @@ export function createOps(win: ChromeWindow, windowId: string) {
       } satisfies AddTabsToFolderResult;
     },
 
+    "essentials.add": async (params: EssentialsParams) => {
+      const manager = win.gZenPinnedTabManager;
+      if (!manager || typeof manager.addToEssentials !== "function") {
+        throw new OpsError(
+          "essentials_unavailable",
+          "Zen essentials are not available in this window."
+        );
+      }
+      const tabs = resolveTabs(Array.isArray(params?.tabIds) ? params.tabIds : []);
+      if (!tabs.length) {
+        throw new OpsError("no_tabs", "Provide tabIds to add to essentials");
+      }
+      const changed: string[] = [];
+      for (const tab of tabs) {
+        if (isEssentialTab(tab)) continue;
+        const added = await Promise.resolve(manager.addToEssentials(tab));
+        if (added === true) changed.push(idForTab(tab));
+      }
+      if (changed.length) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      return { tabIds: changed, changed: changed.length } satisfies EssentialsResult;
+    },
+
+    "essentials.remove": async (params: EssentialsParams) => {
+      const manager = win.gZenPinnedTabManager;
+      if (!manager || typeof manager.removeEssentials !== "function") {
+        throw new OpsError(
+          "essentials_unavailable",
+          "Zen essentials are not available in this window."
+        );
+      }
+      const tabs = resolveTabs(Array.isArray(params?.tabIds) ? params.tabIds : []);
+      if (!tabs.length) {
+        throw new OpsError("no_tabs", "Provide tabIds to remove from essentials");
+      }
+      const changed: string[] = [];
+      for (const tab of tabs) {
+        if (!isEssentialTab(tab)) continue;
+        const removed = await Promise.resolve(manager.removeEssentials(tab));
+        if (removed !== false) changed.push(idForTab(tab));
+      }
+      if (changed.length) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      return { tabIds: changed, changed: changed.length } satisfies EssentialsResult;
+    },
+
+    "containers.list": () =>
+      ({ containers: containerIdentities() }) satisfies ContainersResult,
+
+    "glance.open": async (params: GlanceParams) => {
+      const sourceTab = params?.tabId
+        ? resolveTabs([String(params.tabId)])[0]
+        : null;
+      let url: string;
+      let userContextId: number | undefined;
+      if (sourceTab) {
+        url = tabUrl(sourceTab);
+        if (!url) {
+          throw new OpsError(
+            "invalid_url",
+            `The tab "${tabTitle(sourceTab)}" has no URL to preview.`
+          );
+        }
+        const containerId = containerIdOf(sourceTab);
+        userContextId = containerId > 0 ? containerId : undefined;
+      } else {
+        url = normalizeUrl(String(params?.url ?? ""));
+        if (
+          params?.container !== undefined &&
+          params?.container !== null &&
+          params?.container !== ""
+        ) {
+          const container = resolveContainer(params.container);
+          userContextId =
+            container.userContextId > 0 ? container.userContextId : undefined;
+        }
+      }
+
+      const manager = win.gZenGlanceManager;
+      if (!manager || typeof manager.openGlance !== "function") {
+        return {
+          opened: false,
+          url,
+          mode: "none",
+          message:
+            "Zen glance is not available in this window. Update Zen or open the URL as a tab instead.",
+        } satisfies GlanceResult;
+      }
+
+      const width = clamp(Number(params?.width ?? 960), 240, 4096);
+      const height = clamp(Number(params?.height ?? 720), 240, 4096);
+      let result: unknown = null;
+      try {
+        result = await manager.openGlance({
+          url,
+          clientX: 200,
+          clientY: 120,
+          width,
+          height,
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          ...(userContextId ? { userContextId } : {}),
+        });
+      } catch (error) {
+        throw new OpsError(
+          "glance_failed",
+          `Could not open glance: ${String(
+            (error as Error)?.message ?? error
+          )}`
+        );
+      }
+      return {
+        opened: !!result,
+        url,
+        mode: result ? "glance" : "none",
+        message: result ? undefined : "Zen declined to open the glance view.",
+      } satisfies GlanceResult;
+    },
+
+    "split.open": async (params: SplitParams) => {
+      const ids = [
+        ...new Set(Array.isArray(params?.tabIds) ? params.tabIds : []),
+      ];
+      if (ids.length < 2 || ids.length > 4) {
+        throw new OpsError(
+          "invalid_split",
+          "A split view needs between 2 and 4 tabs."
+        );
+      }
+      const tabs = resolveTabs(ids);
+      const activeSpace = win.gZenWorkspaces?.activeWorkspace ?? null;
+      for (const tab of tabs) {
+        if ((tab.getAttribute("zen-workspace-id") || null) !== activeSpace) {
+          throw new OpsError(
+            "mixed_spaces",
+            "Split views can only contain tabs from the active space."
+          );
+        }
+        if (isEssentialTab(tab)) {
+          throw new OpsError(
+            "essential_tab",
+            `The tab "${tabTitle(tab)}" is an essential and cannot join a split view.`
+          );
+        }
+      }
+
+      const splitter = win.gZenViewSplitter;
+      if (!splitter || typeof splitter.splitTabs !== "function") {
+        throw new OpsError(
+          "split_unavailable",
+          "Zen split views are not available in this window."
+        );
+      }
+
+      let existingGroup: any = null;
+      for (const tab of tabs) {
+        const group = tab.group && !folderOf(tab) ? tab.group : null;
+        if (!group) continue;
+        if (existingGroup && group !== existingGroup) {
+          throw new OpsError(
+            "tab_already_split",
+            "One or more tabs already belong to a different split view."
+          );
+        }
+        existingGroup = group;
+      }
+      if (existingGroup && tabs.some((tab) => tab.group !== existingGroup)) {
+        throw new OpsError(
+          "tab_already_split",
+          "One or more tabs already belong to a different split view."
+        );
+      }
+
+      const gridType = ["grid", "hsep", "vsep"].includes(String(params?.gridType))
+        ? String(params.gridType)
+        : "grid";
+      const created = await Promise.resolve(
+        splitter.splitTabs(
+          tabs,
+          gridType,
+          params?.activate === false ? -1 : 0
+        )
+      );
+      if (!created) {
+        throw new OpsError(
+          "split_failed",
+          "Zen did not create the split view. Make sure the tabs are in the " +
+            "active space and are not already grouped."
+        );
+      }
+      return {
+        split: true,
+        tabIds: tabs.map((tab) => idForTab(tab)),
+        gridType,
+      } satisfies SplitResult;
+    },
+
+    "split.close": (params: UnsplitParams) => {
+      const splitter = win.gZenViewSplitter;
+      if (!splitter) {
+        throw new OpsError(
+          "split_unavailable",
+          "Zen split views are not available in this window."
+        );
+      }
+      const tab = params?.tabId
+        ? resolveTabs([String(params.tabId)])[0]
+        : win.gBrowser?.selectedTab ?? null;
+      if (!tab) {
+        throw new OpsError("tab_not_found", "No tab is selected to unsplit.");
+      }
+
+      const groups: any[] = Array.isArray(splitter._data)
+        ? splitter._data
+        : [];
+      const index = groups.findIndex(
+        (group) => Array.isArray(group?.tabs) && group.tabs.includes(tab)
+      );
+      let groupIds: string[] = [];
+      if (index >= 0) {
+        groupIds = groups[index].tabs
+          .filter((member: ChromeTab) => member?.isConnected)
+          .map((member: ChromeTab) => idForTab(member));
+      }
+
+      if (index >= 0 && typeof splitter.removeGroup === "function") {
+        splitter.removeGroup(index);
+        return { unsplit: true, tabIds: groupIds } satisfies UnsplitResult;
+      }
+
+      win.gBrowser.selectedTab = tab;
+      if (typeof splitter.unsplitCurrentView === "function") {
+        splitter.unsplitCurrentView();
+        return { unsplit: true, tabIds: groupIds } satisfies UnsplitResult;
+      }
+      return { unsplit: false, tabIds: groupIds } satisfies UnsplitResult;
+    },
+
     "history.search": async (params: HistorySearchParams) => {
       const limit = clamp(params?.limit ?? 25, 1, MAX_RESULTS);
       const query = String(params?.query ?? "").trim();
+      const domainFilter = String(params?.domain ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/^\.+|\.+$/g, "");
       const sinceDays = Number(params?.sinceDays ?? 0);
       const sinceMicros =
         sinceDays > 0 ? (Date.now() - sinceDays * 86_400_000) * 1000 : 0;
@@ -760,15 +1920,26 @@ export function createOps(win: ChromeWindow, windowId: string) {
                  OR p.title LIKE :pattern ESCAPE '\\')
           ORDER BY p.last_visit_date DESC
           LIMIT :limit`,
-        { query, pattern: likePattern(query), since: sinceMicros, limit }
+        { query, pattern: likePattern(query), since: sinceMicros, limit: HISTORY_SCAN_LIMIT }
       );
-      const entries = rows.map((row: any) => ({
-        title: row.getResultByName("title") ?? "",
-        url: row.getResultByName("url"),
-        lastVisited: toIso(row.getResultByName("last_visit_date")),
-        visitCount: Number(row.getResultByName("visit_count") ?? 0),
-      }));
-      return { entries } satisfies HistoryResult;
+      const entries: HistoryEntry[] = [];
+      for (const row of rows) {
+        const url = String(row.getResultByName("url") ?? "");
+        if (!url) continue;
+        const domain = hostnameOf(url);
+        if (domainFilter && !domainMatches(domain, domainFilter)) continue;
+        entries.push({
+          title: row.getResultByName("title") ?? "",
+          url,
+          lastVisited: toIso(row.getResultByName("last_visit_date")),
+          visitCount: Number(row.getResultByName("visit_count") ?? 0),
+          domain,
+        });
+        if (entries.length >= limit) break;
+      }
+      const result: HistoryResult = { entries };
+      if (params?.groupByDomain) result.groups = groupHistoryEntries(entries);
+      return result;
     },
 
     "bookmarks.search": async (params: BookmarksSearchParams) => {
@@ -805,6 +1976,125 @@ export function createOps(win: ChromeWindow, windowId: string) {
       }
       return { entries };
     },
+
+    "history.recentlyClosed": () => {
+      const store = win.SessionStore;
+      if (!store || typeof store.getClosedTabData !== "function") {
+        return { entries: [] } satisfies RecentlyClosedResult;
+      }
+      let raw: unknown;
+      try {
+        // Newer Firefox versions take a ClosedTabsOptions object. Older ones
+        // took a window directly, so keep that as a fallback.
+        raw = store.getClosedTabData({
+          sourceWindow: win,
+          closedTabsFromAllWindows: false,
+          closedTabsFromClosedWindows: false,
+        });
+      } catch {
+        try {
+          raw = store.getClosedTabData(win);
+        } catch {
+          return { entries: [] } satisfies RecentlyClosedResult;
+        }
+      }
+      if (typeof raw === "string") {
+        try {
+          raw = JSON.parse(raw);
+        } catch {
+          return { entries: [] } satisfies RecentlyClosedResult;
+        }
+      }
+      let closed: any[] = [];
+      if (Array.isArray(raw)) {
+        closed = raw;
+      } else if (Array.isArray((raw as any)?.closedTabs)) {
+        closed = (raw as any).closedTabs;
+      }
+
+      const entries: RecentlyClosedEntry[] = [];
+      const pushState = (state: any, fallbackClosedAt: unknown): void => {
+        if (!state || typeof state !== "object") return;
+        const stateEntries = Array.isArray(state.entries) ? state.entries : null;
+        let entry: any = null;
+        if (stateEntries && stateEntries.length) {
+          const index = Number.isInteger(state.index) ? Number(state.index) : -1;
+          entry = stateEntries[index] ?? stateEntries[0] ?? null;
+        } else if (typeof state.url === "string") {
+          entry = state;
+        }
+        if (!entry) return;
+        const url = String(entry.url ?? state.url ?? "");
+        if (!/^https?:/i.test(url)) return;
+        const closedAt = Number(state.closedAt ?? fallbackClosedAt);
+        entries.push({
+          title: String(entry.title || state.title || url),
+          url,
+          closedAt:
+            Number.isFinite(closedAt) && closedAt > 0
+              ? new Date(closedAt).toISOString()
+              : null,
+        });
+      };
+
+      for (const item of closed) {
+        if (Array.isArray(item?.tabs)) {
+          for (const tab of item.tabs) pushState(tab, item?.closedAt);
+        } else {
+          pushState(item?.state ?? item, item?.closedAt);
+        }
+      }
+      return {
+        entries: entries.slice(0, 50),
+      } satisfies RecentlyClosedResult;
+    },
+
+    "clipboard.write": async (params: ClipboardWriteParams) => {
+      const text = params?.text;
+      if (typeof text !== "string") {
+        throw new OpsError(
+          "invalid_text",
+          "clipboard.write expects a string in `text`."
+        );
+      }
+      if (text.length > MAX_CLIPBOARD_CHARS) {
+        throw new OpsError(
+          "text_too_large",
+          "Refusing to copy more than 1 MB of text to the clipboard."
+        );
+      }
+      let written = false;
+      try {
+        const helper = Components.classes[
+          "@mozilla.org/widget/clipboardhelper;1"
+        ].getService(Components.interfaces.nsIClipboardHelper);
+        helper.copyString(String(text));
+        written = true;
+      } catch {
+        written = false;
+      }
+      if (!written) {
+        try {
+          const clipboard = win.navigator?.clipboard;
+          if (!clipboard || typeof clipboard.writeText !== "function") {
+            throw new Error("Clipboard is unavailable");
+          }
+          await clipboard.writeText(String(text));
+          written = true;
+        } catch (error) {
+          throw new OpsError(
+            "clipboard_failed",
+            `Could not write to the clipboard: ${String(
+              (error as Error)?.message ?? error
+            )}`
+          );
+        }
+      }
+      return {
+        written: true,
+        length: String(text).length,
+      } satisfies ClipboardWriteResult;
+    },
   };
 
   return {
@@ -836,6 +2126,39 @@ function clamp(value: number, min: number, max: number): number {
  */
 function likePattern(query: string): string {
   return `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+}
+
+/** Lowercased hostname, or an empty string for malformed URLs. */
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/** Matches a host against a domain, so "mozilla.org" also matches "www.mozilla.org". */
+function domainMatches(hostname: string, domain: string): boolean {
+  if (!domain) return true;
+  if (!hostname) return false;
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
+function groupHistoryEntries(entries: HistoryEntry[]): HistoryGroup[] {
+  const groups = new Map<string, HistoryEntry[]>();
+  for (const entry of entries) {
+    const domain = entry.domain || "(other)";
+    const list = groups.get(domain);
+    if (list) list.push(entry);
+    else groups.set(domain, [entry]);
+  }
+  return [...groups.entries()]
+    .map(([domain, list]) => ({ domain, entries: list }))
+    .sort(
+      (left, right) =>
+        right.entries.length - left.entries.length ||
+        left.domain.localeCompare(right.domain)
+    );
 }
 
 function toIso(micros: unknown): string | null {

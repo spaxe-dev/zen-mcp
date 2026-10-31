@@ -1,4 +1,9 @@
 import { BRIDGE_PROTOCOL_VERSION } from "../shared/brand.js";
+import {
+  AUTH_TIMEOUT_MS,
+  clientAuthMessage,
+  serverAuthMessage,
+} from "../shared/bridge-auth.js";
 import type {
   BridgeToServer,
   ServerToBridge,
@@ -27,6 +32,15 @@ import { ZenMcpUi } from "./ui.js";
   const config = injectedConfig;
 
   win.__zenMcpBridge?.destroy();
+  // Injection skips private windows, and this second check makes sure an
+  // older bridge cannot stay alive there either.
+  try {
+    if (win.document?.documentElement?.getAttribute("privatebrowsingmode")) {
+      return;
+    }
+  } catch {
+    // If privacy cannot be determined, fall through and let the host filter.
+  }
   win.__zenMcpWindowId ??= `win-${crypto.randomUUID().slice(0, 8)}`;
   const windowId = win.__zenMcpWindowId;
 
@@ -34,9 +48,9 @@ import { ZenMcpUi } from "./ui.js";
   let destroyed = false;
   let retryMs = 400;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const ui = new ZenMcpUi(win.document);
-  const ops = createOps(win, windowId);
+  let authenticated = false;
+  let clientNonce = "";
+  let authTimer: ReturnType<typeof setTimeout> | null = null;
 
   const send = (message: BridgeToServer): boolean => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
@@ -48,11 +62,68 @@ import { ZenMcpUi } from "./ui.js";
     }
   };
 
+  const clearAuthTimer = (): void => {
+    if (authTimer) clearTimeout(authTimer);
+    authTimer = null;
+  };
+
+  const toBase64Url = (bytes: Uint8Array): string => {
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 1) {
+      binary += String.fromCharCode(bytes[index]);
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  const randomNonce = (): string => {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return toBase64Url(bytes);
+  };
+
+  let hmacKey: Promise<CryptoKey> | null = null;
+  const hmacProof = async (message: string): Promise<string> => {
+    hmacKey ??= crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(config.token),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      await hmacKey,
+      new TextEncoder().encode(message)
+    );
+    return toBase64Url(new Uint8Array(signature));
+  };
+
+  const secureEqual = (left: string, right: string): boolean => {
+    if (left.length !== right.length) return false;
+    let difference = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+    }
+    return difference === 0;
+  };
+
+  const ui = new ZenMcpUi(win.document, {
+    onStop: (progressId) => {
+      // If the socket is down the card stays disabled; the host resends
+      // progress state (including null) after the reconnect.
+      send({ type: "ui.stop", progressId, ts: Date.now() });
+    },
+    onConsent: (id, granted) =>
+      send({ type: "ui.consentResult", id, granted }),
+    onBannerAction: (action) =>
+      send({ type: "ui.bannerAction", action, ts: Date.now() }),
+  });
+  const ops = createOps(win, windowId);
+
   const sendHello = () => {
     send({
       type: "hello",
       protocol: BRIDGE_PROTOCOL_VERSION,
-      token: config.token,
       bridgeVersion: config.bridgeVersion,
       windowId,
       focused: win.document.hasFocus(),
@@ -85,7 +156,73 @@ import { ZenMcpUi } from "./ui.js";
     });
   };
 
-  const handleMessage = async (message: ServerToBridge) => {
+  const respondToChallenge = async (nonce: unknown, ws: WebSocket) => {
+    if (typeof nonce !== "string" || !nonce || nonce.length > 512) {
+      destroy();
+      return;
+    }
+    if (socket !== ws || destroyed) return;
+    let proof: string;
+    try {
+      proof = await hmacProof(clientAuthMessage(nonce));
+    } catch {
+      destroy();
+      return;
+    }
+    if (socket !== ws || destroyed) return;
+    try {
+      ws.send(
+        JSON.stringify({ type: "auth.response", nonce: clientNonce, proof })
+      );
+    } catch {
+      destroy();
+    }
+  };
+
+  const verifyServerProof = async (
+    confirm: Extract<ServerToBridge, { type: "auth.confirm" }>,
+    ws: WebSocket
+  ) => {
+    if (
+      !clientNonce ||
+      typeof confirm.nonce !== "string" ||
+      confirm.nonce !== clientNonce
+    ) {
+      destroy();
+      return;
+    }
+    let expected: string;
+    try {
+      expected = await hmacProof(serverAuthMessage(clientNonce));
+    } catch {
+      destroy();
+      return;
+    }
+    if (!secureEqual(String(confirm.proof ?? ""), expected)) {
+      destroy();
+      return;
+    }
+    if (socket !== ws || destroyed) return;
+    authenticated = true;
+    clearAuthTimer();
+    sendHello();
+  };
+
+  const handleMessage = async (message: ServerToBridge, ws: WebSocket) => {
+    if (!authenticated) {
+      // Until the server proves it knows the key, only the handshake is
+      // accepted. Anything else is a listener that took over the address.
+      if (message.type === "auth.challenge") {
+        await respondToChallenge(message.nonce, ws);
+        return;
+      }
+      if (message.type === "auth.confirm") {
+        await verifyServerProof(message, ws);
+        return;
+      }
+      destroy();
+      return;
+    }
     switch (message.type) {
       case "welcome":
         return;
@@ -98,14 +235,35 @@ import { ZenMcpUi } from "./ui.js";
       case "ui.cancel":
         ui.cancelQuestion(message.id);
         return;
+      case "ui.progress":
+        ui.showProgress(message.progress);
+        return;
+      case "ui.consent":
+        ui.showConsent(message.consent);
+        return;
+      case "ui.consentCancel":
+        ui.cancelConsent(message.id);
+        return;
+      case "ui.banner":
+        ui.showBanner(message.banner);
+        return;
       case "ui.activity":
         ui.showActivity(message.activity, {
           action: async (action) => {
-            if (action.kind !== "space") {
-              return { ok: false, error: `Unsupported action: ${action.kind}` };
-            }
             try {
-              await ops.dispatch("spaces.switch", { space: action.target });
+              if (action.kind === "space") {
+                await ops.dispatch("spaces.switch", { space: action.target });
+              } else if (action.kind === "tab") {
+                await ops.dispatch("tabs.select", {
+                  tabId: action.target,
+                  focusWindow: true,
+                });
+              } else {
+                return {
+                  ok: false,
+                  error: `Unsupported action: ${action.kind}`,
+                };
+              }
               send({
                 type: "ui.action",
                 activityId: message.activity.id,
@@ -160,6 +318,9 @@ import { ZenMcpUi } from "./ui.js";
 
   function connect(): void {
     if (destroyed) return;
+    authenticated = false;
+    clientNonce = "";
+    clearAuthTimer();
     let ws: WebSocket;
     try {
       ws = new WebSocket(config.url);
@@ -171,7 +332,12 @@ import { ZenMcpUi } from "./ui.js";
 
     ws.onopen = () => {
       retryMs = 400;
-      sendHello();
+      clientNonce = randomNonce();
+      clearAuthTimer();
+      authTimer = setTimeout(() => {
+        authTimer = null;
+        if (!authenticated) destroy();
+      }, AUTH_TIMEOUT_MS);
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -181,11 +347,15 @@ import { ZenMcpUi } from "./ui.js";
       } catch {
         return;
       }
-      void handleMessage(message);
+      void handleMessage(message, ws);
     };
 
     ws.onclose = () => {
-      if (socket === ws) socket = null;
+      if (socket === ws) {
+        socket = null;
+        authenticated = false;
+        clearAuthTimer();
+      }
       scheduleReconnect();
     };
 
@@ -210,6 +380,9 @@ import { ZenMcpUi } from "./ui.js";
   function destroy(): void {
     if (destroyed) return;
     destroyed = true;
+    authenticated = false;
+    clientNonce = "";
+    clearAuthTimer();
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
     win.removeEventListener("focus", onFocus);
