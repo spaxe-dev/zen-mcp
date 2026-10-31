@@ -1,0 +1,851 @@
+import type {
+  AddTabsToFolderParams,
+  AddTabsToFolderResult,
+  BookmarksResult,
+  BookmarksSearchParams,
+  BridgeMethod,
+  BridgeMethodMap,
+  BridgeStatus,
+  CloseTabsParams,
+  CloseTabsResult,
+  CreateFolderParams,
+  CreateFolderResult,
+  CreateSpaceParams,
+  CreateSpaceResult,
+  DeleteSpaceResult,
+  FolderInfo,
+  FoldersResult,
+  HistoryResult,
+  HistorySearchParams,
+  OpenTabsParams,
+  OpenTabsResult,
+  OpenedTab,
+  PageReadResult,
+  SelectTabParams,
+  SelectTabResult,
+  Space,
+  SpaceInfo,
+  SpacesResult,
+  SpaceTargetParams,
+  SwitchSpaceParams,
+  SwitchSpaceResult,
+  TabReadParams,
+  TabInfo,
+  TabsListParams,
+  TabsResult,
+} from "../shared/protocol.js";
+import {
+  buildReadScript,
+  coercePageSnapshot,
+  toPageReadResult,
+} from "../shared/read-script.js";
+
+type ChromeWindow = any;
+type ChromeTab = any;
+type ChromeFolder = any;
+type ChromeSpace = any;
+
+const MAX_TABS_PER_OPEN = 30;
+const MAX_RESULTS = 100;
+
+class OpsError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/**
+ * Operations executed inside a Zen browser window with full chrome access.
+ * Values are returned as plain objects so they can cross the WebSocket as JSON.
+ */
+export function createOps(win: ChromeWindow, windowId: string) {
+  const tabIds = new WeakMap<ChromeTab, string>();
+  const tabsById = new Map<string, ChromeTab>();
+
+  const idForTab = (tab: ChromeTab): string => {
+    let id = tabIds.get(tab);
+    if (!id) {
+      id = `tab-${crypto.randomUUID().slice(0, 8)}`;
+      tabIds.set(tab, id);
+      tabsById.set(id, tab);
+    }
+    return id;
+  };
+
+  const pruneTabIds = (): void => {
+    for (const [id, tab] of tabsById) {
+      if (!tab.isConnected || tab.closing) tabsById.delete(id);
+    }
+  };
+
+  const workspaces = (): any => {
+    const manager = win.gZenWorkspaces;
+    if (!manager) {
+      throw new OpsError("zen_not_ready", "Zen workspaces are not available yet");
+    }
+    return manager;
+  };
+
+  const spacesEnabled = (): boolean => {
+    try {
+      return !!win.gZenWorkspaces?.shouldHaveWorkspaces;
+    } catch {
+      return false;
+    }
+  };
+
+  const listSpaces = (): ChromeSpace[] => {
+    if (!spacesEnabled()) return [];
+    return win.gZenWorkspaces.getWorkspaces();
+  };
+
+  const findSpace = (target: string | undefined): ChromeSpace | null => {
+    if (!target) {
+      return win.gZenWorkspaces?.getActiveWorkspaceFromCache?.() ?? null;
+    }
+    const needle = target.trim().toLowerCase();
+    if (!needle) return null;
+    return (
+      listSpaces().find(
+        (space: ChromeSpace) =>
+          space.uuid === target || space.name?.toLowerCase() === needle
+      ) ?? null
+    );
+  };
+
+  const requireSpace = (target: string, action: string): ChromeSpace => {
+    const space = findSpace(target);
+    if (!space) {
+      const names = listSpaces()
+        .map((candidate: ChromeSpace) => candidate.name)
+        .filter(Boolean)
+        .slice(0, 12);
+      throw new OpsError(
+        "space_not_found",
+        `Could not ${action}: no space matches "${target}". Known spaces: ${
+          names.length ? names.join(", ") : "(none)"
+        }.`
+      );
+    }
+    return space;
+  };
+
+  const spaceName = (spaceId: string | null): string | null => {
+    if (!spaceId) return null;
+    return (
+      listSpaces().find((space: ChromeSpace) => space.uuid === spaceId)?.name ??
+      null
+    );
+  };
+
+  const collectTabs = (): ChromeTab[] => {
+    pruneTabIds();
+    const seen = new Set<ChromeTab>();
+    const tabs: ChromeTab[] = [];
+    const add = (tab: ChromeTab) => {
+      if (!tab || seen.has(tab)) return;
+      if (tab.closing) return;
+      seen.add(tab);
+      tabs.push(tab);
+    };
+
+    // The DOM contains tabs from every space, including hidden ones.
+    for (const tab of win.document.querySelectorAll("tab.tabbrowser-tab")) {
+      add(tab);
+    }
+    try {
+      for (const tab of win.gZenWorkspaces?.allStoredTabs ?? []) add(tab);
+    } catch {
+      // Workspaces may still be initializing.
+    }
+    for (const tab of win.gBrowser?.tabs ?? []) add(tab);
+    return tabs;
+  };
+
+  const realTabs = (): ChromeTab[] =>
+    collectTabs().filter((tab: ChromeTab) => !tab.hasAttribute("zen-empty-tab"));
+
+  const tabUrl = (tab: ChromeTab): string => {
+    try {
+      return tab.linkedBrowser?.currentURI?.spec ?? tab.getAttribute("zen-url") ?? "";
+    } catch {
+      return "";
+    }
+  };
+
+  const tabTitle = (tab: ChromeTab): string => {
+    const label = tab.label || tab.linkedBrowser?.contentTitle;
+    if (label) return String(label);
+    const url = tabUrl(tab);
+    return url || "(untitled tab)";
+  };
+
+  const folderOf = (tab: ChromeTab): ChromeFolder | null => {
+    const group = tab.group;
+    if (!group) return null;
+    return group.isZenFolder || group.tagName?.toLowerCase() === "zen-folder"
+      ? group
+      : null;
+  };
+
+  const tabInfo = (tab: ChromeTab, index: number): TabInfo => {
+    const spaceId: string | null = tab.getAttribute("zen-workspace-id") || null;
+    const folder = folderOf(tab);
+    return {
+      id: idForTab(tab),
+      windowId,
+      spaceId,
+      spaceName: spaceName(spaceId),
+      title: tabTitle(tab),
+      url: tabUrl(tab),
+      requestedUrl: tabUrl(tab),
+      pinned: !!tab.pinned,
+      essential:
+        tab.hasAttribute("zen-essential") ||
+        tab.getAttribute("zen-essential") === "true",
+      active: !!tab.selected,
+      audible: tab.hasAttribute("soundplaying"),
+      muted: !!tab.muted || tab.hasAttribute("muted"),
+      loading: tab.hasAttribute("busy"),
+      folderId: folder?.id ?? null,
+      folderLabel: folder?.label ?? null,
+      index,
+    };
+  };
+
+  const allSpaceInfo = (): SpaceInfo[] => {
+    const tabs = realTabs();
+    const folders = collectFolders();
+    return listSpaces().map((space: ChromeSpace, index: number) => {
+      const spaceTabs = tabs.filter(
+        (tab: ChromeTab) => tab.getAttribute("zen-workspace-id") === space.uuid
+      );
+      return {
+        id: space.uuid,
+        name: space.name,
+        icon: space.icon ?? null,
+        active: space.uuid === win.gZenWorkspaces.activeWorkspace,
+        index,
+        containerTabId: space.containerTabId ?? 0,
+        tabCount: spaceTabs.length,
+        pinnedCount: spaceTabs.filter((tab: ChromeTab) => tab.pinned).length,
+        folderCount: folders.filter(
+          (folder: ChromeFolder) =>
+            folder.getAttribute("zen-workspace-id") === space.uuid
+        ).length,
+      };
+    });
+  };
+
+  const spaceInfoFor = (space: ChromeSpace): Space => ({
+    id: space.uuid,
+    name: space.name,
+    icon: space.icon ?? null,
+    active: space.uuid === win.gZenWorkspaces?.activeWorkspace,
+    index: Math.max(
+      0,
+      listSpaces().findIndex((candidate: ChromeSpace) => candidate.uuid === space.uuid)
+    ),
+    containerTabId: space.containerTabId ?? 0,
+  });
+
+  const collectFolders = (): ChromeFolder[] =>
+    [...win.document.querySelectorAll("zen-folder")].filter(
+      (folder: ChromeFolder) => !folder.closing
+    );
+
+  const folderInfo = (folder: ChromeFolder): FolderInfo => ({
+    id: folder.id,
+    label: folder.label ?? "",
+    spaceId: folder.getAttribute("zen-workspace-id") ?? "",
+    collapsed: !!folder.collapsed,
+    parentId: folder.parentElement?.closest("zen-folder")?.id ?? null,
+    tabIds: (folder.tabs ?? [])
+      .filter(
+        (tab: ChromeTab) =>
+          !tab.hasAttribute("zen-empty-tab") && !tab.closing
+      )
+      .map((tab: ChromeTab) => idForTab(tab)),
+    liveFolder: !!folder.isLiveFolder,
+  });
+
+  const resolveTabs = (ids: string[]): ChromeTab[] => {
+    const tabs: ChromeTab[] = [];
+    for (const id of ids) {
+      const tab = tabsById.get(id);
+      if (!tab || !tab.isConnected || tab.closing) {
+        throw new OpsError(
+          "tab_not_found",
+          `No open tab matches id "${id}". Tab ids are stable only while the tab is open; call zen_tabs_list again.`
+        );
+      }
+      tabs.push(tab);
+    }
+    return tabs;
+  };
+
+  const normalizeUrl = (input: string): string => {
+    const trimmed = String(input ?? "").trim();
+    if (!trimmed) throw new OpsError("invalid_url", "Empty URL");
+    let candidate = trimmed;
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
+      candidate = `https://${candidate}`;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      throw new OpsError("invalid_url", `Not a valid URL: ${input}`);
+    }
+    if (!["http:", "https:", "about:"].includes(parsed.protocol)) {
+      throw new OpsError(
+        "invalid_url",
+        `Refusing to open ${parsed.protocol} URL. Zen Sidekick only opens http(s) and about: URLs.`
+      );
+    }
+    return parsed.href;
+  };
+
+  const openTab = (url: string, inBackground: boolean): ChromeTab => {
+    return win.gBrowser.addTab(url, {
+      inBackground,
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+  };
+
+  const assertSpacesEnabled = (): void => {
+    if (!spacesEnabled()) {
+      throw new OpsError(
+        "spaces_unavailable",
+        "Spaces are disabled in this Zen window (private window or workspaces turned off)."
+      );
+    }
+  };
+
+  const ops: {
+    [K in BridgeMethod]: (params: BridgeMethodMap[K]["params"]) => Promise<BridgeMethodMap[K]["result"]> | BridgeMethodMap[K]["result"];
+  } = {
+    status: () => {
+      const manager = win.gZenWorkspaces;
+      const tabs = realTabs();
+      const activeTab = win.gBrowser?.selectedTab;
+      const activeFolder = activeTab ? folderOf(activeTab) : null;
+      const spaces = allSpaceInfo();
+      const profile = (() => {
+        try {
+          return Services.dirsvc.get("ProfD", Components.interfaces.nsIFile).path;
+        } catch {
+          return "";
+        }
+      })();
+
+      return {
+        appName: Services.appinfo.name,
+        appVersion: Services.appinfo.version,
+        buildId: Services.appinfo.appBuildID,
+        platform: Services.appinfo.OS,
+        profile,
+        windowId,
+        focused: win.document.hasFocus(),
+        workspacesEnabled: spacesEnabled(),
+        activeSpaceId: spacesEnabled() ? manager.activeWorkspace : null,
+        activeTab: activeTab
+          ? {
+              id: idForTab(activeTab),
+              title: tabTitle(activeTab),
+              url: tabUrl(activeTab),
+              spaceId: activeTab.getAttribute("zen-workspace-id") || null,
+              folderId: activeFolder?.id ?? null,
+            }
+          : null,
+        spaces,
+        tabCount: tabs.length,
+        folderCount: collectFolders().length,
+      } satisfies BridgeStatus;
+    },
+
+    "spaces.list": () =>
+      ({
+        activeSpaceId: spacesEnabled() ? win.gZenWorkspaces.activeWorkspace : null,
+        spaces: allSpaceInfo(),
+        workspacesEnabled: spacesEnabled(),
+      }) satisfies SpacesResult,
+
+    "spaces.create": async (params: CreateSpaceParams) => {
+      assertSpacesEnabled();
+      const name = String(params?.name ?? "").trim();
+      if (!name) throw new OpsError("invalid_name", "Space name cannot be empty");
+      if (name.length > 64) {
+        throw new OpsError("invalid_name", "Space name must be 64 characters or fewer");
+      }
+      const existing = findSpace(name);
+      if (existing) {
+        throw new OpsError(
+          "space_exists",
+          `A space named "${existing.name}" already exists. Switch to it or use another name.`
+        );
+      }
+      const icon = params.icon ? String(params.icon) : undefined;
+      const containerTabId = Number.isFinite(params.containerTabId)
+        ? Number(params.containerTabId)
+        : 0;
+      const switchTo = params.switchTo === true;
+      const data = await win.gZenWorkspaces.createAndSaveWorkspace(
+        name,
+        icon,
+        !switchTo,
+        containerTabId
+      );
+      if (!data) {
+        throw new OpsError("space_create_failed", "Zen refused to create the space");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return {
+        created: true,
+        space: spaceInfoFor(data),
+        activeSpaceId: win.gZenWorkspaces.activeWorkspace,
+        switched: win.gZenWorkspaces.activeWorkspace === data.uuid,
+      } satisfies CreateSpaceResult;
+    },
+
+    "spaces.switch": async (params: SwitchSpaceParams) => {
+      assertSpacesEnabled();
+      const space = requireSpace(String(params?.space ?? ""), "switch spaces");
+      if (win.gZenWorkspaces.activeWorkspace !== space.uuid) {
+        await win.gZenWorkspaces.changeWorkspaceWithID(space.uuid);
+      }
+      return {
+        space: spaceInfoFor(space),
+        activeSpaceId: win.gZenWorkspaces.activeWorkspace,
+      } satisfies SwitchSpaceResult;
+    },
+
+    "spaces.delete": async (params: SpaceTargetParams) => {
+      assertSpacesEnabled();
+      const space = requireSpace(String(params?.space ?? ""), "delete spaces");
+      if (win.gZenWorkspaces.activeWorkspace === space.uuid) {
+        const fallback = listSpaces().find(
+          (candidate: ChromeSpace) => candidate.uuid !== space.uuid
+        );
+        if (fallback) {
+          await win.gZenWorkspaces.changeWorkspaceWithID(fallback.uuid);
+        }
+      }
+      await win.gZenWorkspaces.removeWorkspace(space.uuid);
+      return {
+        deleted: true,
+        spaceId: space.uuid,
+        spaceName: space.name,
+        activeSpaceId: win.gZenWorkspaces.activeWorkspace ?? null,
+      } satisfies DeleteSpaceResult;
+    },
+
+    "tabs.list": (params: TabsListParams | undefined) => {
+      const limit = clamp(params?.limit ?? 500, 1, 2000);
+      const query = String(params?.query ?? "").trim().toLowerCase();
+      const requestedSpace = params?.space
+        ? requireSpace(params.space, "filter tabs")
+        : null;
+      const tabs = realTabs()
+        .map((tab: ChromeTab, index: number) => tabInfo(tab, index))
+        .filter((tab: TabInfo) => {
+          if (requestedSpace && tab.spaceId !== requestedSpace.uuid) return false;
+          if (params?.pinnedOnly && !tab.pinned && !tab.folderId) return false;
+          if (query) {
+            const haystack = `${tab.title}\n${tab.url}`.toLowerCase();
+            if (!haystack.includes(query)) return false;
+          }
+          return true;
+        });
+      return {
+        windowId,
+        activeSpaceId: spacesEnabled() ? win.gZenWorkspaces.activeWorkspace : null,
+        total: tabs.length,
+        tabs: tabs.slice(0, limit),
+      } satisfies TabsResult;
+    },
+
+    "tabs.open": async (params: OpenTabsParams) => {
+      assertSpacesEnabled();
+      const incoming = Array.isArray(params?.urls) ? params.urls : [];
+      if (!incoming.length) {
+        throw new OpsError("no_urls", "Provide at least one URL to open");
+      }
+      if (incoming.length > MAX_TABS_PER_OPEN) {
+        throw new OpsError(
+          "too_many_urls",
+          `Opening ${incoming.length} tabs at once is too many (max ${MAX_TABS_PER_OPEN}). Split the work into smaller batches.`
+        );
+      }
+      const urls = [...new Set(incoming.map(normalizeUrl))];
+      const targetSpace = params.space
+        ? requireSpace(params.space, "open tabs")
+        : findSpace(undefined);
+      if (!targetSpace) {
+        throw new OpsError("no_space", "There is no space to open tabs in");
+      }
+      const background = params.background !== false;
+      const opened: ChromeTab[] = [];
+      const requested = new Map<ChromeTab, string>();
+      try {
+        for (const url of urls) {
+          const tab = openTab(url, background);
+          opened.push(tab);
+          requested.set(tab, url);
+        }
+      } catch (error) {
+        for (const tab of opened) {
+          try {
+            win.gBrowser.removeTab(tab, { closeWindowWithLastTab: false });
+          } catch {
+            // Best effort cleanup.
+          }
+        }
+        throw error;
+      }
+
+      if (targetSpace.uuid !== win.gZenWorkspaces.activeWorkspace) {
+        win.gZenWorkspaces.moveTabsToWorkspace(opened, targetSpace.uuid);
+      }
+
+      let folder: ChromeFolder | null = null;
+      if (params.folderId) {
+        folder =
+          collectFolders().find(
+            (candidate: ChromeFolder) => candidate.id === params.folderId
+          ) ?? null;
+        if (!folder) {
+          throw new OpsError(
+            "folder_not_found",
+            `No folder matches id "${params.folderId}" in this window`
+          );
+        }
+        if (folder.getAttribute("zen-workspace-id") !== targetSpace.uuid) {
+          throw new OpsError(
+            "mixed_spaces",
+            "The folder and the target space must be the same space"
+          );
+        }
+        for (const tab of opened) {
+          if (!tab.pinned) win.gBrowser.pinTab(tab);
+        }
+        folder.addTabs(opened);
+      }
+
+      const switchTo = params.switchTo === true;
+      if (switchTo) {
+        await win.gZenWorkspaces.changeWorkspaceWithID(targetSpace.uuid);
+        if (opened[0]?.isConnected) {
+          win.gBrowser.selectedTab = opened[0];
+        }
+      }
+
+      // Give Zen a beat to adopt the tabs before reading their labels/URLs.
+      await new Promise((resolve) => setTimeout(resolve, switchTo ? 260 : 160));
+
+      const tabs: OpenedTab[] = opened
+        .filter((tab) => tab?.isConnected && !tab.closing)
+        .map((tab, index) => ({
+          ...tabInfo(tab, index),
+          requestedUrl: requested.get(tab) ?? tabUrl(tab),
+        }));
+
+      return {
+        space: spaceInfoFor(targetSpace),
+        tabs,
+        background,
+      } satisfies OpenTabsResult;
+    },
+
+    "tabs.close": (params: CloseTabsParams) => {
+      const ids = Array.isArray(params?.tabIds) ? params.tabIds : [];
+      if (!ids.length) throw new OpsError("no_tabs", "Provide tabIds to close");
+      const tabs = resolveTabs(ids);
+      const closed: string[] = [];
+      for (const tab of tabs) {
+        if (!tab.isConnected || tab.closing) continue;
+        const id = tabIds.get(tab)!;
+        win.gBrowser.removeTab(tab, { closeWindowWithLastTab: false });
+        closed.push(id);
+      }
+      return { closed: closed.length, tabIds: closed } satisfies CloseTabsResult;
+    },
+
+    "tabs.select": async (params: SelectTabParams) => {
+      const [tab] = resolveTabs([String(params?.tabId ?? "")]);
+      if (!tab) throw new OpsError("tab_not_found", "No tab matched that id");
+      const spaceId = tab.getAttribute("zen-workspace-id");
+      if (spaceId && spaceId !== win.gZenWorkspaces?.activeWorkspace) {
+        await win.gZenWorkspaces.changeWorkspaceWithID(spaceId);
+      }
+      win.gBrowser.selectedTab = tab;
+      tab.scrollIntoView?.({ block: "nearest" });
+      if (params.focusWindow) {
+        win.focus();
+      }
+      return {
+        tab: tabInfo(tab, [...realTabs()].indexOf(tab)),
+        activeSpaceId: spacesEnabled() ? win.gZenWorkspaces.activeWorkspace : null,
+      } satisfies SelectTabResult;
+    },
+
+    "tabs.read": async (params: TabReadParams) => {
+      const tabId = String(params?.tabId ?? "");
+      if (!tabId) {
+        throw new OpsError("no_tab", "Provide the tabId of the tab to read");
+      }
+      const [tab] = resolveTabs([tabId]);
+      const maxChars = clamp(params?.maxChars ?? 24_000, 500, 60_000);
+
+      // Marionette's content context only sees tabs in gBrowser, so tabs in an
+      // inactive space cannot be reached that way. The driver's content actor
+      // executes the same script inside any loaded browsing context, which is
+      // what makes non-disruptive background research possible.
+      const global = tab.linkedBrowser?.browsingContext?.currentWindowGlobal;
+      if (!global) {
+        throw new OpsError(
+          "tab_not_loaded",
+          `The tab "${tabTitle(tab)}" has no loaded page to read yet. ` +
+            "Wait a moment for it to finish loading, then try again."
+        );
+      }
+      const actor =
+        typeof global.getActor === "function"
+          ? global.getActor("MarionetteCommands")
+          : null;
+      if (!actor) {
+        throw new OpsError(
+          "actor_unavailable",
+          "Zen Sidekick's Marionette session does not expose background page " +
+            "access in this window. Restart Zen with zen_launch."
+        );
+      }
+
+      let raw: unknown;
+      try {
+        raw = await actor.sendQuery(
+          "MarionetteCommandsParent:executeScript",
+          {
+            script: buildReadScript(maxChars),
+            args: [],
+            opts: { timeout: 15_000 },
+          }
+        );
+      } catch (error) {
+        throw new OpsError(
+          "read_failed",
+          `Could not read "${tabTitle(tab)}": ${String(
+            (error as Error)?.message ?? error
+          )}`
+        );
+      }
+
+      const page = coercePageSnapshot(raw);
+      if (!page) {
+        throw new OpsError(
+          "read_failed",
+          `The tab "${tabTitle(tab)}" did not return page content. It may be ` +
+            "a privileged page, a PDF viewer, or still loading."
+        );
+      }
+      return toPageReadResult(page, maxChars) satisfies PageReadResult;
+    },
+
+    "folders.list": () =>
+      ({
+        folders: collectFolders().map(folderInfo),
+      }) satisfies FoldersResult,
+
+    "folders.create": async (params: CreateFolderParams) => {
+      const label = String(params?.label ?? "").trim();
+      if (!label) throw new OpsError("invalid_name", "Folder name cannot be empty");
+      const tabs = Array.isArray(params.tabIds) ? resolveTabs(params.tabIds) : [];
+      if (tabs.some((tab) => tab.group)) {
+        throw new OpsError(
+          "tab_already_grouped",
+          "One or more tabs already belong to a folder or split view. Pick ungrouped tabs."
+        );
+      }
+
+      let workspaceId = params.space
+        ? requireSpace(params.space, "create a folder").uuid
+        : null;
+      if (!workspaceId && tabs.length) {
+        workspaceId = tabs[0].getAttribute("zen-workspace-id") || null;
+      }
+      if (!workspaceId) {
+        workspaceId = win.gZenWorkspaces.activeWorkspace;
+      }
+      if (
+        tabs.some(
+          (tab) => tab.getAttribute("zen-workspace-id") !== workspaceId
+        )
+      ) {
+        throw new OpsError(
+          "mixed_spaces",
+          "All tabs in a folder must belong to the same space"
+        );
+      }
+
+      const folder = win.gZenFolders.createFolder(tabs, {
+        workspaceId,
+        label,
+        collapsed: params.collapsed === true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 160));
+      return {
+        created: true,
+        folder: folderInfo(folder),
+      } satisfies CreateFolderResult;
+    },
+
+    "folders.addTabs": (params: AddTabsToFolderParams) => {
+      const folder =
+        collectFolders().find(
+          (candidate: ChromeFolder) => candidate.id === params?.folderId
+        ) ?? null;
+      if (!folder) {
+        throw new OpsError("folder_not_found", `No folder matches "${params?.folderId}"`);
+      }
+      const tabs = resolveTabs(Array.isArray(params.tabIds) ? params.tabIds : []);
+      if (!tabs.length) throw new OpsError("no_tabs", "Provide tabIds to add");
+      if (tabs.some((tab) => tab.group)) {
+        throw new OpsError(
+          "tab_already_grouped",
+          "One or more tabs already belong to a folder or split view"
+        );
+      }
+      const folderSpace = folder.getAttribute("zen-workspace-id");
+      if (
+        tabs.some(
+          (tab) => tab.getAttribute("zen-workspace-id") !== folderSpace
+        )
+      ) {
+        throw new OpsError(
+          "mixed_spaces",
+          "Tabs must be in the same space as the folder"
+        );
+      }
+      for (const tab of tabs) {
+        if (!tab.pinned) win.gBrowser.pinTab(tab);
+      }
+      folder.addTabs(tabs);
+      return {
+        folder: folderInfo(folder),
+        added: tabs.length,
+      } satisfies AddTabsToFolderResult;
+    },
+
+    "history.search": async (params: HistorySearchParams) => {
+      const limit = clamp(params?.limit ?? 25, 1, MAX_RESULTS);
+      const query = String(params?.query ?? "").trim();
+      const sinceDays = Number(params?.sinceDays ?? 0);
+      const sinceMicros =
+        sinceDays > 0 ? (Date.now() - sinceDays * 86_400_000) * 1000 : 0;
+      const places = getPlacesUtils();
+      const db = await places.promiseDBConnection();
+      const rows = await db.executeCached(
+        `SELECT p.url AS url,
+                p.title AS title,
+                p.last_visit_date AS last_visit_date,
+                p.visit_count AS visit_count
+           FROM moz_places p
+          WHERE p.hidden = 0
+            AND p.last_visit_date IS NOT NULL
+            AND p.last_visit_date >= :since
+            AND (:query = ''
+                 OR p.url LIKE :pattern ESCAPE '\\'
+                 OR p.title LIKE :pattern ESCAPE '\\')
+          ORDER BY p.last_visit_date DESC
+          LIMIT :limit`,
+        { query, pattern: likePattern(query), since: sinceMicros, limit }
+      );
+      const entries = rows.map((row: any) => ({
+        title: row.getResultByName("title") ?? "",
+        url: row.getResultByName("url"),
+        lastVisited: toIso(row.getResultByName("last_visit_date")),
+        visitCount: Number(row.getResultByName("visit_count") ?? 0),
+      }));
+      return { entries } satisfies HistoryResult;
+    },
+
+    "bookmarks.search": async (params: BookmarksSearchParams) => {
+      const limit = clamp(params?.limit ?? 25, 1, MAX_RESULTS);
+      const query = String(params?.query ?? "").trim();
+      const places = getPlacesUtils();
+      const db = await places.promiseDBConnection();
+      const rows = await db.executeCached(
+        `SELECT b.title AS title,
+                p.url AS url,
+                b.dateAdded AS date_added
+           FROM moz_bookmarks b
+           JOIN moz_places p ON p.id = b.fk
+          WHERE b.type = 1
+            AND p.hidden = 0
+            AND (:query = ''
+                 OR p.url LIKE :pattern ESCAPE '\\'
+                 OR b.title LIKE :pattern ESCAPE '\\')
+          ORDER BY b.dateAdded DESC
+          LIMIT :limit`,
+        { query, pattern: likePattern(query), limit }
+      );
+      const seen = new Set<string>();
+      const entries: BookmarksResult["entries"] = [];
+      for (const row of rows) {
+        const url = row.getResultByName("url");
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        entries.push({
+          title: row.getResultByName("title") || url,
+          url,
+          dateAdded: toIso(row.getResultByName("date_added")),
+        });
+      }
+      return { entries };
+    },
+  };
+
+  return {
+    dispatch(method: string, params: unknown): Promise<unknown> {
+      const handler = (ops as Record<string, ((p: unknown) => unknown) | undefined>)[
+        method
+      ];
+      if (!handler) {
+        throw new OpsError(
+          "unknown_method",
+          `Unknown bridge method "${method}". Update Zen Sidekick in the browser (re-run zen_launch).`
+        );
+      }
+      return Promise.resolve(
+        handler(params as never) as Promise<unknown>
+      );
+    },
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+/**
+ * Places rejects cached queries whose LIKE pattern is built from expressions,
+ * so the wildcards are bound directly and the query's own `%`/`_` are escaped.
+ */
+function likePattern(query: string): string {
+  return `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+}
+
+function toIso(micros: unknown): string | null {
+  const value = Number(micros);
+  if (!value) return null;
+  return new Date(value / 1000).toISOString();
+}
+
+function getPlacesUtils(): any {
+  return ChromeUtils.importESModule(
+    "resource://gre/modules/PlacesUtils.sys.mjs"
+  ).PlacesUtils;
+}

@@ -1,0 +1,57 @@
+{
+  "name": "zen-sidekick",
+  "version": "0.1.0",
+  "description": "An agent harness for Zen Browser. Native spaces, background research tabs, and in-browser questions.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spaxe-dev/zen-sidekick.git"
+  },
+  "homepage": "https://github.com/spaxe-dev/zen-sidekick#readme",
+  "bugs": {
+    "url": "https://github.com/spaxe-dev/zen-sidekick/issues"
+  },
+  "type": "module",
+  "bin": {
+    "zen-sidekick": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && node dist/cli.js",
+    "start": "node dist/cli.js serve",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/unit/*.test.ts",
+    "test:zen": "tsx --test --test-concurrency=1 test/integration/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "zen-browser",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "browser-automation",
+    "spaces",
+    "personal-assistant"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "commander": "^15.0.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
