@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
 import type { ZenMcpConfig } from "../config.js";
 import { configFilePath } from "../config.js";
-import { ZenRuntime } from "./runtime.js";
-import { findZenExecutable, isPortOpen, ZenLaunchError } from "./launcher.js";
+import { resolveBridgeScriptPath } from "../bridge/host.js";
+import {
+  findZenExecutable,
+  isPortOpen,
+  isProfileLocked,
+  isZenProcessRunning,
+  resolvedProfilePath,
+} from "./launcher.js";
 
 export type DoctorStatus = "ok" | "warn" | "fail";
 
@@ -16,7 +22,10 @@ export interface DoctorCheck {
 export interface DoctorReport {
   /** No check failed. Warnings are allowed. */
   ok: boolean;
-  /** A live bridge answered, so the agent tools can work right now. */
+  /**
+   * Always false: doctor deliberately never creates a Marionette session, so
+   * it cannot report that a live agent connection exists.
+   */
   ready: boolean;
   configPath: string;
   config: ZenMcpConfig;
@@ -24,12 +33,10 @@ export interface DoctorReport {
 }
 
 /**
- * Verifies the pieces needed for agent control: a Zen executable, the bridge
- * bundle, Marionette with chrome access, and a live browser bridge.
- *
- * This never launches Zen. When another process already owns the Marionette
- * session (for example a running MCP server), the report says so instead of
- * failing.
+ * Verifies the static pieces needed for agent control without ever connecting
+ * to a browser. A live check would have to create a chrome session, which this
+ * tool will not do to a browser it did not launch; use `zen-mcp launch` for a
+ * one-shot live verification.
  */
 export async function runDoctor(
   config: ZenMcpConfig,
@@ -43,58 +50,76 @@ export async function runDoctor(
     status: existsSync(path) ? "ok" : "warn",
     detail: existsSync(path)
       ? `Loaded ${path}`
-      : `No config file yet; built-in defaults are in use.`,
+      : "No config file yet; built-in defaults are in use.",
     hint: existsSync(path)
       ? undefined
       : "Run `zen-mcp setup` to detect Zen and write a config file.",
   });
 
-  let executable = config.zenPath ?? "";
   try {
-    executable = findZenExecutable(config);
     checks.push({
       name: "Zen executable",
       status: "ok",
-      detail: executable,
+      detail: findZenExecutable(config),
     });
   } catch (error) {
     checks.push({
       name: "Zen executable",
       status: "fail",
       detail: (error as Error).message,
-      hint:
-        "Set ZEN_MCP_ZEN_PATH or run `zen-mcp setup --zen-path <exe>`.",
+      hint: "Set ZEN_MCP_ZEN_PATH or run `zen-mcp setup --zen-path <exe>`.",
     });
   }
 
-  const runtime = new ZenRuntime({
-    config,
-    bridgeScriptPath: options.bridgeScriptPath,
-  });
-
-  const bridgeBundle = runtime.hub.bridgeScriptPath;
+  const bridgeBundle = options.bridgeScriptPath ?? resolveBridgeScriptPath();
   const bundleExists = existsSync(bridgeBundle);
   checks.push({
     name: "Bridge bundle",
     status: bundleExists ? "ok" : "fail",
-    detail: bundleExists
-      ? bridgeBundle
-      : `Missing ${bridgeBundle}.`,
+    detail: bundleExists ? bridgeBundle : `Missing ${bridgeBundle}.`,
     hint: bundleExists ? undefined : "Run `npm run build` (or reinstall Zen MCP).",
   });
 
-  let marionetteOpen = false;
+  const profile = resolvedProfilePath(config);
+  if (profile) {
+    const locked = isProfileLocked(profile);
+    checks.push({
+      name: "Agent profile",
+      status: locked ? "warn" : "ok",
+      detail: locked
+        ? `${profile} is in use by another Zen instance.`
+        : `${profile} (kept separate from your normal browsing profile).`,
+      hint: locked
+        ? "Quit that Zen instance before launching. Zen MCP will not attach to it."
+        : undefined,
+    });
+  } else {
+    const running = isZenProcessRunning();
+    checks.push({
+      name: "Profile mode",
+      status: running ? "warn" : "ok",
+      detail: running
+        ? "Normal profile: Zen is running, and Zen MCP never takes over an existing browser."
+        : "Normal profile: the agent shares your signed-in browsing profile.",
+      hint: running
+        ? "Quit Zen completely before the agent launches it. Use the dedicated profile to keep them separate."
+        : "Pages the agent reads can include sites where you are signed in.",
+    });
+  }
+
   try {
-    marionetteOpen = await isPortOpen(config.marionettePort);
+    const open = await isPortOpen(config.marionettePort);
     checks.push({
       name: "Marionette port",
-      status: marionetteOpen ? "ok" : "warn",
-      detail: marionetteOpen
-        ? `127.0.0.1:${config.marionettePort} is accepting connections.`
-        : `Nothing is listening on 127.0.0.1:${config.marionettePort}.`,
-      hint: marionetteOpen
-        ? undefined
-        : "Zen is not running with agent access. Run `zen-mcp launch` or call zen_launch from the agent.",
+      status: open ? "warn" : "ok",
+      detail: open
+        ? `127.0.0.1:${config.marionettePort} is accepting connections. ` +
+          "Zen MCP will refuse to launch while another process owns that port."
+        : `127.0.0.1:${config.marionettePort} is closed. Zen MCP opens it only ` +
+          "while launching its own browser, then closes it for good.",
+      hint: open
+        ? "Quit the process using that port, or set ZEN_MCP_MARIONETTE_PORT."
+        : undefined,
     });
   } catch (error) {
     checks.push({
@@ -104,75 +129,40 @@ export async function runDoctor(
     });
   }
 
-  if (!marionetteOpen) {
-    return {
-      ok: !checks.some((c) => c.status === "fail"),
-      ready: false,
-      configPath: path,
-      config,
-      checks,
-    };
+  checks.push({
+    name: "Ownership",
+    status: "ok",
+    detail:
+      "Zen MCP launches its own Zen window, verifies it with a per-launch " +
+      "nonce, then closes every other Marionette connection and the listener. " +
+      "It never attaches to a running Zen.",
+  });
+
+  const weak: string[] = [];
+  if (!config.requireConsent) weak.push("consent is off");
+  if (!config.readOnly) weak.push("read-only mode is off");
+  if (config.allowedDomains.length === 0) weak.push("the domain allowlist is empty");
+  if (!config.auditLog) weak.push("the audit log is off");
+  if (config.launchArgs.length > 0) weak.push("extra launch arguments are set");
+  if (process.env.ZEN_MCP_BRIDGE_SCRIPT) {
+    weak.push("ZEN_MCP_BRIDGE_SCRIPT overrides the bridge bundle");
   }
-
-  let ready = false;
-  try {
-    await runtime.start();
-    await runtime.connect({ allowLaunch: false });
-    const status = await runtime.status();
-
-    checks.push({
-      name: "Chrome access",
-      status: "ok",
-      detail: `${status.appName} ${status.appVersion} on ${status.platform}, profile ${status.profile || "(unknown)"}.`,
-    });
-
-    checks.push({
-      name: "Bridge",
-      status: runtime.hub.connectionCount > 0 ? "ok" : "fail",
-      detail:
-        runtime.hub.connectionCount > 0
-          ? `${runtime.hub.connectionCount} Zen window(s) attached on port ${runtime.hub.port}.`
-          : "The agent bridge could not attach to a browser window.",
-      hint:
-        runtime.hub.connectionCount > 0
-          ? undefined
-          : "Quit Zen completely, then run `zen-mcp launch`. Zen must be started by Zen MCP so remote chrome access is enabled.",
-    });
-
-    checks.push({
-      name: "Spaces",
-      status: status.workspacesEnabled ? "ok" : "warn",
-      detail: status.workspacesEnabled
-        ? `${status.spaces.length} space(s), ${status.tabCount} tab(s), ${status.folderCount} folder(s).`
-        : "Spaces are disabled in this window.",
-      hint: status.workspacesEnabled
-        ? undefined
-        : "Spaces are unavailable in private windows or when workspaces are turned off in Zen settings.",
-    });
-
-    ready = runtime.hub.connectionCount > 0;
-  } catch (error) {
-    const message = String((error as Error)?.message ?? error);
-    const sessionBusy = /maximum number of active sessions/i.test(message);
-    checks.push({
-      name: "Agent session",
-      status: sessionBusy ? "warn" : "fail",
-      detail: sessionBusy
-        ? "Another process already owns the Marionette session (a running Zen MCP server)."
-        : message,
-      hint: sessionBusy
-        ? "This is normal when the MCP server is running. Doctor cannot attach a second session at the same time."
-        : error instanceof ZenLaunchError
-          ? undefined
-          : "See the message above. `zen-mcp launch` starts a fresh Zen with agent access.",
-    });
-  } finally {
-    await runtime.shutdown().catch(() => undefined);
-  }
+  checks.push({
+    name: "Policy",
+    status: weak.length > 0 ? "warn" : "ok",
+    detail:
+      weak.length > 0
+        ? `More permissive than the safest settings: ${weak.join(", ")}.`
+        : "Consent, read-only mode, the domain allowlist and the audit log are all on.",
+    hint:
+      weak.length > 0
+        ? "Run `zen-mcp config set readOnly true`, set allowedDomains, and keep auditLog on."
+        : undefined,
+  });
 
   return {
-    ok: !checks.some((c) => c.status === "fail"),
-    ready,
+    ok: !checks.some((check) => check.status === "fail"),
+    ready: false,
     configPath: path,
     config,
     checks,
