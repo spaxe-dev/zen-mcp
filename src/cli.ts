@@ -3,6 +3,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   configFilePath,
+  dataDirPath,
   loadConfig,
   saveConfig,
   type ZenMcpConfig,
@@ -11,17 +12,33 @@ import { createZenMcpServer } from "./mcp/server.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
 import { createLogger } from "./utils/logger.js";
 import { runDoctor, type DoctorReport } from "./zen/doctor.js";
-import { findZenExecutable } from "./zen/launcher.js";
+import {
+  findZenExecutable,
+  isPortOpen,
+  isProfileLocked,
+  isZenProcessRunning,
+  resolvedProfilePath,
+} from "./zen/launcher.js";
 import { ZenRuntime } from "./zen/runtime.js";
 
 const logger = createLogger("cli");
 const CONFIG_KEYS = [
   "zenPath",
   "profilePath",
+  "dataDir",
+  "useDefaultProfile",
+  "requireConsent",
+  "consentTimeoutSeconds",
   "autoLaunch",
+  "autoAttachWindows",
   "launchTimeoutMs",
   "askTimeoutSeconds",
   "marionettePort",
+  "readOnly",
+  "allowedDomains",
+  "auditLog",
+  "watchMinIntervalSeconds",
+  "launchArgs",
 ] as const;
 
 type ConfigKey = (typeof CONFIG_KEYS)[number];
@@ -43,17 +60,19 @@ program
 
 program
   .command("launch")
-  .description("Start Zen with agent access and verify the bridge attaches.")
+  .description(
+    "Launch a Zen window owned by Zen MCP, verify the lockdown, and quit it."
+  )
   .action(() => launch());
 
 program
   .command("status")
-  .description("Print the current Zen window, spaces, and tabs as JSON.")
+  .description("Print the resolved config and port state without creating a session.")
   .action(() => status());
 
 program
   .command("doctor")
-  .description("Check the Zen install, config, Marionette, and bridge.")
+  .description("Check the Zen install, config, profile, and Marionette port.")
   .action(() => doctor());
 
 program
@@ -61,6 +80,14 @@ program
   .description("Detect Zen, write a config file, and print an MCP client snippet.")
   .option("--zen-path <path>", "Path to the Zen executable.")
   .option("--profile <path>", "Run Zen with a dedicated profile directory.")
+  .option(
+    "--use-default-profile",
+    "Use your normal Zen profile. Quit Zen before the agent launches it."
+  )
+  .option(
+    "--dedicated-profile",
+    "Use the dedicated agent profile (the default)."
+  )
   .option("--no-auto-launch", "Never launch Zen automatically from a tool call.")
   .option(
     "--ask-timeout <seconds>",
@@ -126,24 +153,41 @@ async function launch(): Promise<void> {
   const runtime = new ZenRuntime({ config });
   try {
     await runtime.start();
+    console.log(
+      "Starting a Zen window owned by Zen MCP. If an approval card appears, " +
+        "click Allow to let the agent connect."
+    );
     const connection = await runtime.connect({ allowLaunch: true });
     const status = await runtime.hub.status();
+    const info = runtime.sessionInfo();
     console.log(
       `${status.appName} ${status.appVersion} is running with agent access.`
     );
     console.log(
-      connection.launched
-        ? "Zen was launched by Zen MCP."
-        : "Zen was already running and accepted a Marionette session."
+      `Browser pid ${info.browserPid ?? "(unknown)"}, profile ${
+        info.profile ?? "normal profile"
+      }.`
     );
     console.log(
-      `Bridge attached to ${runtime.hub.connectionCount} window(s) for this check. ` +
-        "It disconnects when this command exits; the MCP server attaches again on demand."
+      `Marionette is locked to this session${
+        info.lockedDown ? "" : " (lockdown was not confirmed)"
+      }.`
+    );
+    console.log(
+      `Bridge attached to ${runtime.hub.connectionCount} window(s).`
     );
     console.log(
       `${status.spaces.length} space(s), ${status.tabCount} tab(s), ` +
         `${status.folderCount} folder(s).`
     );
+    console.log(
+      "This command is a one-shot check: Zen MCP quits the browser it started " +
+        "when it exits. The MCP server keeps its browser open for the session " +
+        "and quits it on shutdown."
+    );
+    if (!connection.launched) {
+      console.log("Zen was already owned by this process.");
+    }
   } catch (error) {
     console.error(`Launch failed: ${(error as Error).message}`);
     process.exitCode = 1;
@@ -154,31 +198,55 @@ async function launch(): Promise<void> {
 
 async function status(): Promise<void> {
   const config = loadConfig();
-  const runtime = new ZenRuntime({ config });
+  let executable: string | null = null;
+  let executableError: string | null = null;
   try {
-    await runtime.start();
-    await runtime.connect({ allowLaunch: false });
-    const status = await runtime.hub.status();
-    console.log(
-      JSON.stringify(
-        {
-          ...status,
-          bridge: {
-            port: runtime.hub.port,
-            connections: runtime.hub.connectionCount,
-            windows: runtime.hub.connectedWindows(),
-          },
-        },
-        null,
-        2
-      )
-    );
+    executable = findZenExecutable(config);
   } catch (error) {
-    console.error(`Status failed: ${(error as Error).message}`);
-    process.exitCode = 1;
-  } finally {
-    await runtime.shutdown().catch(() => undefined);
+    executableError = (error as Error).message;
   }
+  const profile = resolvedProfilePath(config);
+  const portOpen = await isPortOpen(config.marionettePort).catch(() => false);
+  console.log(
+    JSON.stringify(
+      {
+        server: {
+          version: SERVER_VERSION,
+          config: configFilePath(),
+          dataDir: dataDirPath(),
+        },
+        zen: {
+          executable,
+          executableError,
+          profileMode: config.profilePath
+            ? "custom"
+            : config.useDefaultProfile
+              ? "default"
+              : "dedicated",
+          profilePath: profile,
+          profileLocked: profile ? isProfileLocked(profile) : null,
+          processRunning: isZenProcessRunning(),
+        },
+        marionette: {
+          port: config.marionettePort,
+          acceptingConnections: portOpen,
+          note:
+            "An open port means another process owns Marionette. Zen MCP " +
+            "only controls a browser it launched, and closes the port after " +
+            "startup.",
+        },
+        consent: {
+          required: config.requireConsent,
+          timeoutSeconds: config.consentTimeoutSeconds,
+        },
+        session:
+          "No session is created by this command. Run the MCP server to let " +
+          "the agent launch and own a browser.",
+      },
+      null,
+      2
+    )
+  );
 }
 
 async function doctor(): Promise<void> {
@@ -190,6 +258,8 @@ async function doctor(): Promise<void> {
 async function setup(options: {
   zenPath?: string;
   profile?: string;
+  useDefaultProfile?: boolean;
+  dedicatedProfile?: boolean;
   autoLaunch?: boolean;
   askTimeout?: number;
   marionettePort?: number;
@@ -197,7 +267,15 @@ async function setup(options: {
 }): Promise<void> {
   const updates: Partial<ZenMcpConfig> = {};
   if (options.zenPath) updates.zenPath = options.zenPath;
-  if (options.profile) updates.profilePath = options.profile;
+  if (options.profile) {
+    updates.profilePath = options.profile;
+    updates.useDefaultProfile = false;
+  }
+  if (options.useDefaultProfile) {
+    updates.useDefaultProfile = true;
+    updates.profilePath = undefined;
+  }
+  if (options.dedicatedProfile) updates.useDefaultProfile = false;
   if (options.autoLaunch === false) updates.autoLaunch = false;
   if (options.askTimeout !== undefined) {
     updates.askTimeoutSeconds = options.askTimeout;
@@ -262,7 +340,8 @@ function configSet(key: string, rawValue: string): void {
   }
   const name = key as ConfigKey;
   const value = rawValue.trim();
-  let parsed: string | number | boolean | undefined;
+  let parsed: string | string[] | number | boolean | undefined;
+  const updates: Partial<ZenMcpConfig> = {};
 
   const numberValue = (): number | null => {
     try {
@@ -273,31 +352,96 @@ function configSet(key: string, rawValue: string): void {
       return null;
     }
   };
+  const boundedNumber = (min: number, max: number): number | null => {
+    const number = numberValue();
+    if (number === null) return null;
+    if (number < min || number > max) {
+      console.error(`${name} must be between ${min} and ${max}.`);
+      process.exitCode = 1;
+      return null;
+    }
+    return number;
+  };
+  const booleanValue = (): boolean | null => {
+    if (!/^(true|false|1|0|yes|no)$/i.test(value)) {
+      console.error(`${name} expects true or false.`);
+      process.exitCode = 1;
+      return null;
+    }
+    return /^(true|1|yes)$/i.test(value);
+  };
 
   switch (name) {
     case "zenPath":
     case "profilePath":
+    case "dataDir":
       parsed = value || undefined;
-      break;
-    case "autoLaunch":
-      if (!/^(true|false|1|0|yes|no)$/i.test(value)) {
-        console.error("autoLaunch expects true or false.");
-        process.exitCode = 1;
-        return;
+      if (name === "profilePath" && parsed) {
+        updates.useDefaultProfile = false;
       }
-      parsed = /^(true|1|yes)$/i.test(value);
       break;
-    case "launchTimeoutMs":
-    case "askTimeoutSeconds":
-    case "marionettePort": {
-      const number = numberValue();
+    case "useDefaultProfile": {
+      const boolean = booleanValue();
+      if (boolean === null) return;
+      parsed = boolean;
+      if (boolean) updates.profilePath = undefined;
+      break;
+    }
+    case "autoLaunch":
+    case "autoAttachWindows":
+    case "requireConsent":
+    case "readOnly":
+    case "auditLog": {
+      const boolean = booleanValue();
+      if (boolean === null) return;
+      parsed = boolean;
+      break;
+    }
+    case "launchTimeoutMs": {
+      const number = boundedNumber(1_000, 300_000);
       if (number === null) return;
       parsed = number;
       break;
     }
+    case "askTimeoutSeconds": {
+      const number = boundedNumber(1, 3_600);
+      if (number === null) return;
+      parsed = number;
+      break;
+    }
+    case "consentTimeoutSeconds": {
+      const number = boundedNumber(1, 600);
+      if (number === null) return;
+      parsed = number;
+      break;
+    }
+    case "marionettePort": {
+      const number = boundedNumber(1, 65_535);
+      if (number === null) return;
+      parsed = number;
+      break;
+    }
+    case "watchMinIntervalSeconds": {
+      const number = boundedNumber(1, 3_600);
+      if (number === null) return;
+      parsed = number;
+      break;
+    }
+    case "allowedDomains":
+      parsed = value
+        ? value
+            .split(",")
+            .map((domain) => domain.trim().toLowerCase())
+            .filter(Boolean)
+        : [];
+      break;
+    case "launchArgs":
+      parsed = value ? value.split(/\s+/).filter(Boolean) : [];
+      break;
   }
 
-  const path = saveConfig({ [name]: parsed } as Partial<ZenMcpConfig>);
+  (updates as Record<string, unknown>)[name] = parsed;
+  const path = saveConfig(updates);
   console.log(`Saved ${name} = ${JSON.stringify(parsed)} in ${path}`);
 }
 
@@ -310,11 +454,11 @@ function printReport(report: DoctorReport): void {
   }
   console.log("");
   console.log(
-    report.ready
-      ? "Ready: the agent can drive this Zen window right now."
-      : report.ok
-        ? "Installed: Zen is not attached yet. Launch it with `zen-mcp launch` or the zen_launch tool."
-        : "Not ready: fix the failed checks above."
+    report.ok
+      ? "Ready to launch: the MCP server will start its own Zen window and ask " +
+          "for approval in the browser the first time a tool needs it. Run " +
+          "`zen-mcp launch` for a one-shot live check."
+      : "Not ready: fix the failed checks above."
   );
 }
 
