@@ -4,12 +4,12 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { loadConfig, type SidekickConfig } from "../src/config.js";
+import { loadConfig, type ZenMcpConfig } from "../src/config.js";
 import { launchZen } from "../src/zen/launcher.js";
 import { MarionetteClient } from "../src/zen/marionette.js";
 
 const root = process.cwd();
-const config: SidekickConfig = {
+const config: ZenMcpConfig = {
   ...loadConfig(),
   profilePath: "D:\\tmp\\zen-marionette-test\\profile",
   autoLaunch: false,
@@ -19,7 +19,7 @@ const config: SidekickConfig = {
 
 const MARKER = "mcp-probe-marker-7";
 const page = `<!doctype html><html><head><title>MCP Probe Page</title>
-<meta name="description" content="Page used by the Zen Sidekick MCP probe.">
+<meta name="description" content="Page used by the Zen MCP probe.">
 </head><body><main><h1>MCP heading</h1>
 <p>Agent harness end to end. ${MARKER}</p></main></body></html>`;
 
@@ -102,7 +102,7 @@ try {
     env: process.env as Record<string, string>,
     stderr: "inherit",
   });
-  client = new Client({ name: "zen-sidekick-probe", version: "0.0.0" });
+  client = new Client({ name: "zen-mcp-probe", version: "0.0.0" });
   await client.connect(transport);
   console.log("mcp connected");
 
@@ -145,7 +145,7 @@ try {
   const read = await call("zen_read_page", { tabId: tab.id });
   assert.equal(read.title, "MCP Probe Page");
   assert.match(read.text, /mcp-probe-marker-7/);
-  assert.equal(read.description, "Page used by the Zen Sidekick MCP probe.");
+  assert.equal(read.description, "Page used by the Zen MCP probe.");
   console.log("read:", read.title, `(${read.length} chars)`);
 
   const afterRead = await call("zen_status");

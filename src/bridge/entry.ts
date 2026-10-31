@@ -5,12 +5,12 @@ import type {
   UiQuestion,
 } from "../shared/protocol.js";
 import { createOps } from "./ops.js";
-import { SidekickUi } from "./ui.js";
+import { ZenMcpUi } from "./ui.js";
 
 /**
  * Browser-chrome bridge. The MCP server loads this bundle into every Zen
  * window and hands it a WebSocket URL and token through
- * `window.__zenSidekickConfig`.
+ * `window.__zenMcpConfig`.
  *
  * Everything here runs with the browser's system principal. Keep the surface
  * small: only the operations exposed by `ops.ts` and the UI are reachable from
@@ -19,23 +19,23 @@ import { SidekickUi } from "./ui.js";
 
 (() => {
   const win = window as unknown as Window & typeof globalThis;
-  const injectedConfig = win.__zenSidekickConfig;
-  delete win.__zenSidekickConfig;
+  const injectedConfig = win.__zenMcpConfig;
+  delete win.__zenMcpConfig;
   if (!injectedConfig) {
     return;
   }
   const config = injectedConfig;
 
-  win.__zenSidekickBridge?.destroy();
-  win.__zenSidekickWindowId ??= `win-${crypto.randomUUID().slice(0, 8)}`;
-  const windowId = win.__zenSidekickWindowId;
+  win.__zenMcpBridge?.destroy();
+  win.__zenMcpWindowId ??= `win-${crypto.randomUUID().slice(0, 8)}`;
+  const windowId = win.__zenMcpWindowId;
 
   let socket: WebSocket | null = null;
   let destroyed = false;
   let retryMs = 400;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const ui = new SidekickUi(win.document);
+  const ui = new ZenMcpUi(win.document);
   const ops = createOps(win, windowId);
 
   const send = (message: BridgeToServer): boolean => {
@@ -224,12 +224,12 @@ import { SidekickUi } from "./ui.js";
       }
     }
     ui.destroy();
-    if (win.__zenSidekickBridge?.windowId === windowId) {
-      delete win.__zenSidekickBridge;
+    if (win.__zenMcpBridge?.windowId === windowId) {
+      delete win.__zenMcpBridge;
     }
   }
 
-  win.__zenSidekickBridge = {
+  win.__zenMcpBridge = {
     version: config.bridgeVersion,
     token: config.token,
     windowId,

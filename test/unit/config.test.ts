@@ -6,27 +6,27 @@ import { after, before, describe, it } from "node:test";
 import { configFilePath, loadConfig, saveConfig } from "../../src/config.js";
 
 describe("config", () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "zen-sidekick-config-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "zen-mcp-config-"));
   const configPath = join(tempDir, "config.json");
   const saved = {
-    config: process.env.ZEN_SIDEKICK_CONFIG,
-    zenPath: process.env.ZEN_SIDEKICK_ZEN_PATH,
-    profile: process.env.ZEN_SIDEKICK_PROFILE,
-    port: process.env.ZEN_SIDEKICK_MARIONETTE_PORT,
+    config: process.env.ZEN_MCP_CONFIG,
+    zenPath: process.env.ZEN_MCP_ZEN_PATH,
+    profile: process.env.ZEN_MCP_PROFILE,
+    port: process.env.ZEN_MCP_MARIONETTE_PORT,
   };
 
   before(() => {
-    process.env.ZEN_SIDEKICK_CONFIG = configPath;
-    delete process.env.ZEN_SIDEKICK_ZEN_PATH;
-    delete process.env.ZEN_SIDEKICK_PROFILE;
-    delete process.env.ZEN_SIDEKICK_MARIONETTE_PORT;
+    process.env.ZEN_MCP_CONFIG = configPath;
+    delete process.env.ZEN_MCP_ZEN_PATH;
+    delete process.env.ZEN_MCP_PROFILE;
+    delete process.env.ZEN_MCP_MARIONETTE_PORT;
   });
 
   after(() => {
-    restore("ZEN_SIDEKICK_CONFIG", saved.config);
-    restore("ZEN_SIDEKICK_ZEN_PATH", saved.zenPath);
-    restore("ZEN_SIDEKICK_PROFILE", saved.profile);
-    restore("ZEN_SIDEKICK_MARIONETTE_PORT", saved.port);
+    restore("ZEN_MCP_CONFIG", saved.config);
+    restore("ZEN_MCP_ZEN_PATH", saved.zenPath);
+    restore("ZEN_MCP_PROFILE", saved.profile);
+    restore("ZEN_MCP_MARIONETTE_PORT", saved.port);
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -47,16 +47,16 @@ describe("config", () => {
   });
 
   it("lets environment variables override the file", () => {
-    process.env.ZEN_SIDEKICK_ZEN_PATH = "/custom/zen";
-    process.env.ZEN_SIDEKICK_MARIONETTE_PORT = "3333";
+    process.env.ZEN_MCP_ZEN_PATH = "/custom/zen";
+    process.env.ZEN_MCP_MARIONETTE_PORT = "3333";
     try {
       const config = loadConfig();
       assert.equal(config.zenPath, "/custom/zen");
       assert.equal(config.marionettePort, 3333);
       assert.equal(config.autoLaunch, false);
     } finally {
-      delete process.env.ZEN_SIDEKICK_ZEN_PATH;
-      delete process.env.ZEN_SIDEKICK_MARIONETTE_PORT;
+      delete process.env.ZEN_MCP_ZEN_PATH;
+      delete process.env.ZEN_MCP_MARIONETTE_PORT;
     }
   });
 

@@ -31,7 +31,7 @@ import type {
 import { createLogger, type Logger } from "../utils/logger.js";
 import type { MarionetteClient } from "../zen/marionette.js";
 
-const RESOURCE_ALIAS = "zen-sidekick-bridge";
+const RESOURCE_ALIAS = "zen-mcp-bridge";
 const CONNECTION_PING_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 25_000;
 const RESEND_QUESTION_MAX_AGE_MS = 30 * 60_000;
@@ -180,7 +180,7 @@ export class BridgeHub {
     if (!existsSync(this.#bridgeScriptPath)) {
       throw new Error(
         `Bridge bundle not found at ${this.#bridgeScriptPath}. Run "npm run build" ` +
-          "(or reinstall Zen Sidekick) before starting the server."
+          "(or reinstall Zen MCP) before starting the server."
       );
     }
 
@@ -451,7 +451,7 @@ export class BridgeHub {
       const connection = this.#connections.get(windowId);
       if (!connection) {
         throw new BridgeUnavailableError(
-          `No Zen Sidekick bridge is connected for window ${windowId}`
+          `No Zen MCP bridge is connected for window ${windowId}`
         );
       }
       return connection;
@@ -459,8 +459,8 @@ export class BridgeHub {
     const connection = this.#primaryConnection();
     if (!connection) {
       throw new BridgeUnavailableError(
-        "No Zen window is connected to Zen Sidekick. Launch Zen through the " +
-          "sidekick (zen_launch) so the agent bridge can attach."
+        "No Zen window is connected to Zen MCP. Launch Zen through " +
+          "Zen MCP (zen_launch) so the agent bridge can attach."
       );
     }
     return connection;
@@ -956,7 +956,7 @@ export class BridgeHub {
     for (const pending of this.#pendingRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(
-        new BridgeUnavailableError("Zen Sidekick is shutting down")
+        new BridgeUnavailableError("Zen MCP is shutting down")
       );
     }
     this.#pendingRequests.clear();
@@ -967,7 +967,7 @@ export class BridgeHub {
       entry.resolve?.({
         status: "unavailable",
         questionId: entry.question.id,
-        message: "Zen Sidekick stopped before the question was answered.",
+        message: "Zen MCP stopped before the question was answered.",
       });
       entry.resolve = null;
     }
@@ -1056,7 +1056,7 @@ let resourceReady = false;
 for (const target of windows) {
   try {
     if (!target || target.closed) continue;
-    const existing = target.__zenSidekickBridge;
+    const existing = target.__zenMcpBridge;
     if (existing) {
       if (
         existing.version === __cfg.config.bridgeVersion &&
@@ -1085,7 +1085,7 @@ for (const target of windows) {
       protocol.setSubstitution(__cfg.resourceAlias, Services.io.newFileURI(file));
       resourceReady = true;
     }
-    target.__zenSidekickConfig = {
+    target.__zenMcpConfig = {
       url: __cfg.config.url,
       token: __cfg.config.token,
       bridgeVersion: __cfg.config.bridgeVersion,
@@ -1107,8 +1107,8 @@ return results;
 
 function resolveBridgeScriptPath(): string {
   const candidates: string[] = [];
-  if (process.env.ZEN_SIDEKICK_BRIDGE_SCRIPT) {
-    candidates.push(process.env.ZEN_SIDEKICK_BRIDGE_SCRIPT);
+  if (process.env.ZEN_MCP_BRIDGE_SCRIPT) {
+    candidates.push(process.env.ZEN_MCP_BRIDGE_SCRIPT);
   }
   try {
     candidates.push(fileURLToPath(new URL("./bridge.js", import.meta.url)));

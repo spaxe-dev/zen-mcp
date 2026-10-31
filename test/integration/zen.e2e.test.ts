@@ -15,16 +15,16 @@ import {
   type PageServer,
 } from "./helpers.js";
 
-const MARKER = "sidekick-marker-42";
-const PAGE = `<!doctype html><html><head><title>Sidekick Test Page</title>
-<meta name="description" content="A page used by the Zen Sidekick end-to-end test.">
+const MARKER = "zen-mcp-marker-42";
+const PAGE = `<!doctype html><html><head><title>Zen MCP Test Page</title>
+<meta name="description" content="A page used by the Zen MCP end-to-end test.">
 </head><body><main><h1>Test heading</h1>
 <p>The quick brown fox jumps over the lazy dog. ${MARKER}</p>
 </main></body></html>`;
 
 describe(
   "Zen runtime against a real browser",
-  { skip: e2eEnabled() ? false : "set ZEN_SIDEKICK_E2E=1 to run" },
+  { skip: e2eEnabled() ? false : "set ZEN_MCP_E2E=1 to run" },
   () => {
     let runtime: ZenRuntime;
     let zen: LaunchedZen | null = null;
@@ -43,7 +43,7 @@ describe(
       while (Date.now() < deadline) {
         last = await runtime.marionette.executeChrome(`
           const win = Services.wm.getMostRecentWindow("navigator:browser");
-          const host = win.document.getElementById("zen-sidekick-host");
+          const host = win.document.getElementById("zen-mcp-host");
           if (!host) return { ok: false, why: "no host" };
           const card = host.shadowRoot.querySelector(${JSON.stringify(selector)});
           if (!card) return { ok: false, why: "no card" };
@@ -90,7 +90,7 @@ describe(
       assert.ok(status.workspacesEnabled, "spaces enabled");
 
       const created = await runtime.hub.createSpace({
-        name: "Sidekick Test Space",
+        name: "Zen MCP Test Space",
         icon: "🧪",
         switchTo: false,
       });
@@ -118,11 +118,11 @@ describe(
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const beforeRead = await runtime.status();
       const read = await runtime.readPage({ tabId });
-      assert.equal(read.title, "Sidekick Test Page");
+      assert.equal(read.title, "Zen MCP Test Page");
       assert.match(read.text, new RegExp(MARKER));
       assert.equal(
         read.description,
-        "A page used by the Zen Sidekick end-to-end test."
+        "A page used by the Zen MCP end-to-end test."
       );
 
       const afterRead = await runtime.status();
@@ -204,7 +204,7 @@ describe(
       await new Promise((resolve) => setTimeout(resolve, 800));
 
       const read = await runtime.readPage();
-      assert.equal(read.title, "Sidekick Test Page");
+      assert.equal(read.title, "Zen MCP Test Page");
       assert.match(read.text, new RegExp(MARKER));
 
       const folder = await runtime.hub.createFolder({
@@ -232,12 +232,12 @@ describe(
         const info = await PlacesUtils.bookmarks.insert({
           parentGuid: PlacesUtils.bookmarks.toolbarGuid,
           url: ${JSON.stringify(page.url)},
-          title: "Sidekick Test Bookmark",
+          title: "Zen MCP Test Bookmark",
         });
         return { guid: info.guid };
       `);
       const bookmarks = await runtime.hub.searchBookmarks({
-        query: "Sidekick Test Bookmark",
+        query: "Zen MCP Test Bookmark",
       });
       assert.ok(bookmarks.entries.some((entry) => entry.url === page.url));
 

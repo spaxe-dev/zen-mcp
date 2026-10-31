@@ -5,7 +5,7 @@ import {
   type InjectionSummary,
   type NotifyOptions,
 } from "../bridge/host.js";
-import type { SidekickConfig } from "../config.js";
+import type { ZenMcpConfig } from "../config.js";
 import type {
   AnswersResult,
   AskResult,
@@ -26,13 +26,13 @@ export interface ConnectResult {
 }
 
 export interface ZenRuntimeOptions {
-  config: SidekickConfig;
+  config: ZenMcpConfig;
   bridgeScriptPath?: string;
   logger?: Logger;
 }
 
 export class ZenRuntime {
-  readonly config: SidekickConfig;
+  readonly config: ZenMcpConfig;
   readonly marionette: MarionetteClient;
   readonly hub: BridgeHub;
   readonly #logger: Logger;
@@ -60,11 +60,11 @@ export class ZenRuntime {
 
   /**
    * Makes sure Zen is running with agent access, a Marionette session exists
-   * and at least one browser window has the sidekick bridge attached.
+   * and at least one browser window has the Zen MCP bridge attached.
    */
   connect(options: { allowLaunch?: boolean } = {}): Promise<ConnectResult> {
     if (this.#closed) {
-      return Promise.reject(new Error("Zen Sidekick has shut down"));
+      return Promise.reject(new Error("Zen MCP has shut down"));
     }
     if (!this.#ensurePromise) {
       const allowLaunch = options.allowLaunch ?? this.config.autoLaunch;
@@ -104,14 +104,14 @@ export class ZenRuntime {
             `Marionette is listening on port ${this.config.marionettePort}, ` +
               `but the session could not be created: ${
                 (lastError as Error)?.message ?? lastError
-              }. Zen must be started by Zen Sidekick so this session has ` +
+              }. Zen must be started by Zen MCP so this session has ` +
               "chrome access."
           );
         }
         if (!allowLaunch) {
           throw new ZenLaunchError(
-            `Zen is not running. Start it with Zen Sidekick (zen_launch, or ` +
-              `"zen-sidekick launch") so Marionette is enabled for this session.`
+            `Zen is not running. Start it with Zen MCP (zen_launch, or ` +
+              `"zen-mcp launch") so Marionette is enabled for this session.`
           );
         }
         await launchZen({ config: this.config });
@@ -149,8 +149,8 @@ export class ZenRuntime {
         : "";
       throw new BridgeUnavailableError(
         "Zen is running, but the agent bridge could not attach to a browser " +
-          `window.${detail} If Zen was already open before Zen Sidekick launched ` +
-          "it, quit Zen and run zen_launch again. Otherwise run `zen-sidekick doctor`."
+          `window.${detail} If Zen was already open before Zen MCP launched ` +
+          "it, quit Zen and run zen_launch again. Otherwise run `zen-mcp doctor`."
       );
     }
 

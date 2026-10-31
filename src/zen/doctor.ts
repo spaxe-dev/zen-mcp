@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { SidekickConfig } from "../config.js";
+import type { ZenMcpConfig } from "../config.js";
 import { configFilePath } from "../config.js";
 import { ZenRuntime } from "./runtime.js";
 import { findZenExecutable, isPortOpen, ZenLaunchError } from "./launcher.js";
@@ -19,7 +19,7 @@ export interface DoctorReport {
   /** A live bridge answered, so the agent tools can work right now. */
   ready: boolean;
   configPath: string;
-  config: SidekickConfig;
+  config: ZenMcpConfig;
   checks: DoctorCheck[];
 }
 
@@ -32,7 +32,7 @@ export interface DoctorReport {
  * failing.
  */
 export async function runDoctor(
-  config: SidekickConfig,
+  config: ZenMcpConfig,
   options: { bridgeScriptPath?: string } = {}
 ): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
@@ -46,7 +46,7 @@ export async function runDoctor(
       : `No config file yet; built-in defaults are in use.`,
     hint: existsSync(path)
       ? undefined
-      : "Run `zen-sidekick setup` to detect Zen and write a config file.",
+      : "Run `zen-mcp setup` to detect Zen and write a config file.",
   });
 
   let executable = config.zenPath ?? "";
@@ -63,7 +63,7 @@ export async function runDoctor(
       status: "fail",
       detail: (error as Error).message,
       hint:
-        "Set ZEN_SIDEKICK_ZEN_PATH or run `zen-sidekick setup --zen-path <exe>`.",
+        "Set ZEN_MCP_ZEN_PATH or run `zen-mcp setup --zen-path <exe>`.",
     });
   }
 
@@ -80,7 +80,7 @@ export async function runDoctor(
     detail: bundleExists
       ? bridgeBundle
       : `Missing ${bridgeBundle}.`,
-    hint: bundleExists ? undefined : "Run `npm run build` (or reinstall Zen Sidekick).",
+    hint: bundleExists ? undefined : "Run `npm run build` (or reinstall Zen MCP).",
   });
 
   let marionetteOpen = false;
@@ -94,7 +94,7 @@ export async function runDoctor(
         : `Nothing is listening on 127.0.0.1:${config.marionettePort}.`,
       hint: marionetteOpen
         ? undefined
-        : "Zen is not running with agent access. Run `zen-sidekick launch` or call zen_launch from the agent.",
+        : "Zen is not running with agent access. Run `zen-mcp launch` or call zen_launch from the agent.",
     });
   } catch (error) {
     checks.push({
@@ -136,7 +136,7 @@ export async function runDoctor(
       hint:
         runtime.hub.connectionCount > 0
           ? undefined
-          : "Quit Zen completely, then run `zen-sidekick launch`. Zen must be started by Zen Sidekick so remote chrome access is enabled.",
+          : "Quit Zen completely, then run `zen-mcp launch`. Zen must be started by Zen MCP so remote chrome access is enabled.",
     });
 
     checks.push({
@@ -158,13 +158,13 @@ export async function runDoctor(
       name: "Agent session",
       status: sessionBusy ? "warn" : "fail",
       detail: sessionBusy
-        ? "Another process already owns the Marionette session (a running Zen Sidekick server)."
+        ? "Another process already owns the Marionette session (a running Zen MCP server)."
         : message,
       hint: sessionBusy
         ? "This is normal when the MCP server is running. Doctor cannot attach a second session at the same time."
         : error instanceof ZenLaunchError
           ? undefined
-          : "See the message above. `zen-sidekick launch` starts a fresh Zen with agent access.",
+          : "See the message above. `zen-mcp launch` starts a fresh Zen with agent access.",
     });
   } finally {
     await runtime.shutdown().catch(() => undefined);

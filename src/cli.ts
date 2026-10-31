@@ -5,9 +5,9 @@ import {
   configFilePath,
   loadConfig,
   saveConfig,
-  type SidekickConfig,
+  type ZenMcpConfig,
 } from "./config.js";
-import { createSidekickServer } from "./mcp/server.js";
+import { createZenMcpServer } from "./mcp/server.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
 import { createLogger } from "./utils/logger.js";
 import { runDoctor, type DoctorReport } from "./zen/doctor.js";
@@ -29,7 +29,7 @@ type ConfigKey = (typeof CONFIG_KEYS)[number];
 const program = new Command();
 
 program
-  .name("zen-sidekick")
+  .name("zen-mcp")
   .description(
     `${BRAND}: an agent harness for Zen Browser. Spaces, background research ` +
       "tabs, page reads, and in-browser questions over MCP."
@@ -102,7 +102,7 @@ await program.parseAsync(process.argv);
 async function serve(): Promise<void> {
   const config = loadConfig();
   const runtime = new ZenRuntime({ config });
-  const server = createSidekickServer(runtime, config);
+  const server = createZenMcpServer(runtime, config);
   const transport = new StdioServerTransport();
 
   let stopping = false;
@@ -133,7 +133,7 @@ async function launch(): Promise<void> {
     );
     console.log(
       connection.launched
-        ? "Zen was launched by Zen Sidekick."
+        ? "Zen was launched by Zen MCP."
         : "Zen was already running and accepted a Marionette session."
     );
     console.log(
@@ -195,7 +195,7 @@ async function setup(options: {
   marionettePort?: number;
   skipDoctor?: boolean;
 }): Promise<void> {
-  const updates: Partial<SidekickConfig> = {};
+  const updates: Partial<ZenMcpConfig> = {};
   if (options.zenPath) updates.zenPath = options.zenPath;
   if (options.profile) updates.profilePath = options.profile;
   if (options.autoLaunch === false) updates.autoLaunch = false;
@@ -233,8 +233,8 @@ async function setup(options: {
     JSON.stringify(
       {
         mcpServers: {
-          "zen-sidekick": {
-            command: "zen-sidekick",
+          "zen-mcp": {
+            command: "zen-mcp",
             args: ["serve"],
           },
         },
@@ -244,7 +244,7 @@ async function setup(options: {
     )
   );
   console.log(
-    "\nIf Zen Sidekick is not on your PATH, point command at the absolute path " +
+    "\nIf Zen MCP is not on your PATH, point command at the absolute path " +
       "of dist/cli.js and keep args as [\"serve\"]."
   );
 }
@@ -297,7 +297,7 @@ function configSet(key: string, rawValue: string): void {
     }
   }
 
-  const path = saveConfig({ [name]: parsed } as Partial<SidekickConfig>);
+  const path = saveConfig({ [name]: parsed } as Partial<ZenMcpConfig>);
   console.log(`Saved ${name} = ${JSON.stringify(parsed)} in ${path}`);
 }
 
@@ -313,7 +313,7 @@ function printReport(report: DoctorReport): void {
     report.ready
       ? "Ready: the agent can drive this Zen window right now."
       : report.ok
-        ? "Installed: Zen is not attached yet. Launch it with `zen-sidekick launch` or the zen_launch tool."
+        ? "Installed: Zen is not attached yet. Launch it with `zen-mcp launch` or the zen_launch tool."
         : "Not ready: fix the failed checks above."
   );
 }

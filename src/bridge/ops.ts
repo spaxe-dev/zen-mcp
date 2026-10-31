@@ -302,7 +302,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
     if (!["http:", "https:", "about:"].includes(parsed.protocol)) {
       throw new OpsError(
         "invalid_url",
-        `Refusing to open ${parsed.protocol} URL. Zen Sidekick only opens http(s) and about: URLs.`
+        `Refusing to open ${parsed.protocol} URL. Zen MCP only opens http(s) and about: URLs.`
       );
     }
     return parsed.href;
@@ -618,7 +618,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       if (!actor) {
         throw new OpsError(
           "actor_unavailable",
-          "Zen Sidekick's Marionette session does not expose background page " +
+          "Zen MCP's Marionette session does not expose background page " +
             "access in this window. Restart Zen with zen_launch."
         );
       }
@@ -815,7 +815,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       if (!handler) {
         throw new OpsError(
           "unknown_method",
-          `Unknown bridge method "${method}". Update Zen Sidekick in the browser (re-run zen_launch).`
+          `Unknown bridge method "${method}". Update Zen MCP in the browser (re-run zen_launch).`
         );
       }
       return Promise.resolve(

@@ -14,8 +14,8 @@ export interface Logger {
   error(message: string, ...args: unknown[]): void;
 }
 
-export function createLogger(prefix = "zen-sidekick"): Logger {
-  const rawLevel = (process.env.ZEN_SIDEKICK_LOG ?? "info").toLowerCase();
+export function createLogger(prefix = "zen-mcp"): Logger {
+  const rawLevel = (process.env.ZEN_MCP_LOG ?? "info").toLowerCase();
   const level: LogLevel =
     rawLevel in LEVELS ? (rawLevel as LogLevel) : "info";
   const min = LEVELS[level];

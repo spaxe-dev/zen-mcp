@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { loadConfig, type SidekickConfig } from "../src/config.js";
+import { loadConfig, type ZenMcpConfig } from "../src/config.js";
 import type { AskResult } from "../src/shared/protocol.js";
 import { launchZen } from "../src/zen/launcher.js";
 import { ZenRuntime } from "../src/zen/runtime.js";
 
 const root = process.cwd();
 const profile = "D:\\tmp\\zen-marionette-test\\profile";
-const config: SidekickConfig = {
+const config: ZenMcpConfig = {
   ...loadConfig(),
   profilePath: profile,
   autoLaunch: false,
@@ -17,9 +17,9 @@ const config: SidekickConfig = {
   marionettePort: 2828,
 };
 
-const MARKER = "sidekick-marker-42";
-const page = `<!doctype html><html><head><title>Sidekick Test Page</title>
-<meta name="description" content="A page used by the Zen Sidekick smoke test.">
+const MARKER = "zen-mcp-marker-42";
+const page = `<!doctype html><html><head><title>Zen MCP Test Page</title>
+<meta name="description" content="A page used by the Zen MCP smoke test.">
 </head><body><main><h1>Smoke heading</h1>
 <p>The quick brown fox jumps over the lazy dog. ${MARKER}</p>
 </main></body></html>`;
@@ -31,7 +31,7 @@ const server = createServer((req, res) => {
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("no http port");
-const pageUrl = `http://127.0.0.1:${address.port}/sidekick-smoke`;
+const pageUrl = `http://127.0.0.1:${address.port}/zen-mcp-smoke`;
 console.log("test page:", pageUrl);
 
 const runtime = new ZenRuntime({
@@ -52,7 +52,7 @@ const pollUi = async (
   while (Date.now() < deadline) {
     last = await runtime.marionette.executeChrome(`
       const win = Services.wm.getMostRecentWindow("navigator:browser");
-      const host = win.document.getElementById("zen-sidekick-host");
+      const host = win.document.getElementById("zen-mcp-host");
       if (!host) return { ok: false, why: "no host" };
       const card = host.shadowRoot.querySelector(${JSON.stringify(selector)});
       if (!card) return { ok: false, why: "no card" };
@@ -83,7 +83,7 @@ try {
   console.log("status ok:", status.appVersion, "·", status.tabCount, "tabs");
 
   const created = await runtime.hub.createSpace({
-    name: "Sidekick Smoke",
+    name: "Zen MCP Smoke",
     icon: "🧪",
     switchTo: false,
   });
@@ -92,7 +92,7 @@ try {
   assert.equal(created.switched, false);
 
   const opened = await runtime.hub.openTabs({
-    space: "Sidekick Smoke",
+    space: "Zen MCP Smoke",
     urls: [pageUrl],
     background: true,
   });
@@ -102,7 +102,7 @@ try {
   assert.equal(tab.spaceId, created.space.id);
   assert.equal(tab.active, false, "tab opened in background");
 
-  const listed = await runtime.hub.listTabs({ space: "Sidekick Smoke" });
+  const listed = await runtime.hub.listTabs({ space: "Zen MCP Smoke" });
   assert.equal(listed.tabs.length, 1);
   assert.equal(listed.tabs[0].id, tab.id);
 
@@ -110,8 +110,8 @@ try {
   const beforeBackground = await runtime.status();
   const backgroundRead = await runtime.readPage({ tabId: tab.id });
   console.log("background read:", backgroundRead.title, backgroundRead.url);
-  assert.equal(backgroundRead.title, "Sidekick Test Page");
-  assert.match(backgroundRead.text, /sidekick-marker-42/);
+  assert.equal(backgroundRead.title, "Zen MCP Test Page");
+  assert.match(backgroundRead.text, /zen-mcp-marker-42/);
   const afterBackground = await runtime.status();
   assert.equal(
     afterBackground.activeSpaceId,
@@ -158,7 +158,7 @@ try {
     title: "1 PR waiting for a reply",
     detail: "The smoke space has your test page open.",
     tone: "success",
-    action: { label: "Open Sidekick Smoke", space: created.space.id },
+    action: { label: "Open Zen MCP Smoke", space: created.space.id },
     autoHideMs: 90_000,
   });
   assert.equal(notified.delivered, true);
@@ -190,15 +190,15 @@ try {
 
   const read = await runtime.readPage();
   console.log("READ", JSON.stringify(read, null, 2));
-  assert.equal(read.title, "Sidekick Test Page");
+  assert.equal(read.title, "Zen MCP Test Page");
   assert.match(read.text, /quick brown fox/);
-  assert.match(read.text, /sidekick-marker-42/);
-  assert.equal(read.description, "A page used by the Zen Sidekick smoke test.");
+  assert.match(read.text, /zen-mcp-marker-42/);
+  assert.equal(read.description, "A page used by the Zen MCP smoke test.");
 
   const folder = await runtime.hub.createFolder({
     label: "Smoke Folder",
     tabIds: [tab.id],
-    space: "Sidekick Smoke",
+    space: "Zen MCP Smoke",
   });
   console.log("folder:", JSON.stringify(folder.folder));
   assert.equal(folder.created, true);
@@ -209,7 +209,7 @@ try {
   const folders = await runtime.hub.listFolders();
   assert.ok(folders.folders.some((f) => f.id === folder.folder.id));
 
-  const history = await runtime.hub.searchHistory({ query: "sidekick-smoke" });
+  const history = await runtime.hub.searchHistory({ query: "zen-mcp-smoke" });
   console.log("history:", JSON.stringify(history.entries));
   assert.ok(history.entries.some((entry) => entry.url === pageUrl), "history recorded the test page");
 
@@ -218,11 +218,11 @@ try {
     const info = await PlacesUtils.bookmarks.insert({
       parentGuid: PlacesUtils.bookmarks.toolbarGuid,
       url: ${JSON.stringify(pageUrl)},
-      title: "Sidekick Bookmark",
+      title: "Zen MCP Bookmark",
     });
     return { guid: info.guid };
   `);
-  const bookmarks = await runtime.hub.searchBookmarks({ query: "Sidekick Bookmark" });
+  const bookmarks = await runtime.hub.searchBookmarks({ query: "Zen MCP Bookmark" });
   console.log("bookmarks:", JSON.stringify(bookmarks.entries));
   assert.ok(bookmarks.entries.some((entry) => entry.url === pageUrl));
   await runtime.marionette.executeChrome(`
@@ -240,7 +240,7 @@ try {
     await runtime.marionette.executeChrome(`
       const win = Services.wm.getMostRecentWindow("navigator:browser");
       const ws = win.gZenWorkspaces;
-      const space = ws.getWorkspaces().find((w) => w.name === "Sidekick Smoke");
+      const space = ws.getWorkspaces().find((w) => w.name === "Zen MCP Smoke");
       if (space) {
         const fallback = ws.getWorkspaces().find((w) => w.uuid !== space.uuid);
         if (fallback && ws.activeWorkspace === space.uuid) {

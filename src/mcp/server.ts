@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { BridgeRequestError } from "../bridge/host.js";
-import type { SidekickConfig } from "../config.js";
+import type { ZenMcpConfig } from "../config.js";
 import { BRAND, SERVER_NAME, SERVER_VERSION } from "../shared/brand.js";
 import type {
   ActivityTone,
@@ -29,12 +29,12 @@ Rules of thumb:
 - Prefer spaces and background tabs over hijacking the user's active tab.
 - Tab ids are stable only while the tab is open; re-list instead of guessing or reusing old ids.
 - Delete a space only when the user asks, or when it was a temporary job space you created and they are done with it.
-- When Zen is not reachable, call zen_launch once. If that fails, report the error and suggest the user run \`zen-sidekick doctor\`.
+- When Zen is not reachable, call zen_launch once. If that fails, report the error and suggest the user run \`zen-mcp doctor\`.
 - Keep the user informed with zen_notify for long background jobs instead of waiting silently.`;
 
-export function createSidekickServer(
+export function createZenMcpServer(
   runtime: ZenRuntime,
-  config: SidekickConfig
+  config: ZenMcpConfig
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -78,7 +78,7 @@ export function createSidekickServer(
     {
       title: "Launch Zen with agent access",
       description:
-        "Start Zen through Zen Sidekick so the agent bridge can attach, or reconnect if it is already running. Use when another tool reports that Zen is not reachable.",
+        "Start Zen through Zen MCP so the agent bridge can attach, or reconnect if it is already running. Use when another tool reports that Zen is not reachable.",
       inputSchema: {},
       annotations: { readOnlyHint: false, openWorldHint: false },
     },

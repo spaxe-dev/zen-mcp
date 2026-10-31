@@ -1,19 +1,19 @@
 {
-  "name": "zen-sidekick",
+  "name": "zen-mcp",
   "version": "0.1.0",
   "description": "An agent harness for Zen Browser. Native spaces, background research tabs, and in-browser questions.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/spaxe-dev/zen-sidekick.git"
+    "url": "git+https://github.com/spaxe-dev/zen-mcp.git"
   },
-  "homepage": "https://github.com/spaxe-dev/zen-sidekick#readme",
+  "homepage": "https://github.com/spaxe-dev/zen-mcp#readme",
   "bugs": {
-    "url": "https://github.com/spaxe-dev/zen-sidekick/issues"
+    "url": "https://github.com/spaxe-dev/zen-mcp/issues"
   },
   "type": "module",
   "bin": {
-    "zen-sidekick": "dist/cli.js"
+    "zen-mcp": "dist/cli.js"
   },
   "engines": {
     "node": ">=20"

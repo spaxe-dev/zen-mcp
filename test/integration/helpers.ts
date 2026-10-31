@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, type SidekickConfig } from "../../src/config.js";
+import { loadConfig, type ZenMcpConfig } from "../../src/config.js";
 import { launchZen } from "../../src/zen/launcher.js";
 import { MarionetteClient } from "../../src/zen/marionette.js";
 
@@ -11,10 +11,10 @@ import { MarionetteClient } from "../../src/zen/marionette.js";
  * Real-Zen tests are opt-in: they launch a browser, need a disposable profile,
  * and only make sense on a machine with Zen installed.
  *
- *   ZEN_SIDEKICK_E2E=1 npm run test:zen
+ *   ZEN_MCP_E2E=1 npm run test:zen
  */
 export function e2eEnabled(): boolean {
-  return process.env.ZEN_SIDEKICK_E2E === "1";
+  return process.env.ZEN_MCP_E2E === "1";
 }
 
 let generatedProfile: string | null = null;
@@ -24,27 +24,27 @@ let generatedProfile: string | null = null;
  * single leaked browser lock it and turn every later run into a 60s timeout.
  */
 export function testProfilePath(): string {
-  if (process.env.ZEN_SIDEKICK_TEST_PROFILE) {
-    return process.env.ZEN_SIDEKICK_TEST_PROFILE;
+  if (process.env.ZEN_MCP_TEST_PROFILE) {
+    return process.env.ZEN_MCP_TEST_PROFILE;
   }
   if (!generatedProfile) {
     const root =
       process.platform === "win32"
         ? "D:\\tmp\\zen-marionette-test"
-        : join(tmpdir(), "zen-sidekick-test");
+        : join(tmpdir(), "zen-mcp-test");
     mkdirSync(root, { recursive: true });
     generatedProfile = mkdtempSync(join(root, `profile-${process.pid}-`));
   }
   return generatedProfile;
 }
 
-export function testConfig(): SidekickConfig {
+export function testConfig(): ZenMcpConfig {
   return {
     ...loadConfig(),
     profilePath: testProfilePath(),
     autoLaunch: false,
     launchTimeoutMs: 60_000,
-    marionettePort: Number(process.env.ZEN_SIDEKICK_TEST_MARIONETTE_PORT ?? 2828),
+    marionettePort: Number(process.env.ZEN_MCP_TEST_MARIONETTE_PORT ?? 2828),
   };
 }
 
@@ -77,7 +77,7 @@ export interface LaunchedZen {
  * process id (the launcher pid can belong to a short-lived stub).
  */
 export async function launchHeadlessZen(
-  config: SidekickConfig
+  config: ZenMcpConfig
 ): Promise<LaunchedZen> {
   const launch = await launchZen({
     config,
@@ -122,7 +122,7 @@ export function killZen(zen: LaunchedZen | null): void {
 
 /** Removes a generated profile. A profile chosen via env is left alone. */
 export function removeTestProfile(profilePath: string): void {
-  if (process.env.ZEN_SIDEKICK_TEST_PROFILE) return;
+  if (process.env.ZEN_MCP_TEST_PROFILE) return;
   try {
     rmSync(profilePath, {
       recursive: true,

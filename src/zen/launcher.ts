@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SidekickConfig } from "../config.js";
+import type { ZenMcpConfig } from "../config.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("launcher");
@@ -18,7 +18,7 @@ export interface LaunchResult {
   port: number;
 }
 
-export function findZenExecutable(config: Pick<SidekickConfig, "zenPath">): string {
+export function findZenExecutable(config: Pick<ZenMcpConfig, "zenPath">): string {
   if (config.zenPath) {
     if (!existsSync(config.zenPath)) {
       throw new ZenLaunchError(
@@ -39,8 +39,8 @@ export function findZenExecutable(config: Pick<SidekickConfig, "zenPath">): stri
   }
 
   throw new ZenLaunchError(
-    "Could not find Zen Browser. Install Zen, or set ZEN_SIDEKICK_ZEN_PATH / " +
-      "zenPath in the Zen Sidekick config to the zen executable."
+    "Could not find Zen Browser. Install Zen, or set ZEN_MCP_ZEN_PATH / " +
+      "zenPath in the Zen MCP config to the zen executable."
   );
 }
 
@@ -130,7 +130,7 @@ export function isZenProcessRunning(): boolean {
 }
 
 export interface LaunchOptions {
-  config: Pick<SidekickConfig, "zenPath" | "profilePath" | "launchTimeoutMs" | "marionettePort">;
+  config: Pick<ZenMcpConfig, "zenPath" | "profilePath" | "launchTimeoutMs" | "marionettePort">;
   /** Extra command-line arguments, mainly for tests. */
   args?: string[];
   /** Wait for Marionette's TCP port after spawning. */
@@ -159,7 +159,7 @@ export async function launchZen(options: LaunchOptions): Promise<LaunchResult> {
     env: {
       ...process.env,
       MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
-      ZEN_SIDEKICK_LAUNCHED: "1",
+      ZEN_MCP_LAUNCHED: "1",
     },
   });
   child.unref();
@@ -185,9 +185,9 @@ export async function launchZen(options: LaunchOptions): Promise<LaunchResult> {
   throw new ZenLaunchError(
     running
       ? `Zen is running, but Marionette never opened on port ${port}. ` +
-        "Zen was probably already open before Zen Sidekick launched it, so the new " +
+        "Zen was probably already open before Zen MCP launched it, so the new " +
         "process handed the URL to the existing one. Quit Zen completely, then run " +
-        "`zen-sidekick launch` again (or call the zen_launch tool)."
+        "`zen-mcp launch` again (or call the zen_launch tool)."
       : `Zen did not open Marionette on port ${port} within ${Math.round(
           options.config.launchTimeoutMs / 1000
         )}s. Check that ${executable} is a working Zen installation. The launch ` +

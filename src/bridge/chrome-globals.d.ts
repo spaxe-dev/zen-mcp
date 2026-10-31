@@ -15,14 +15,14 @@ interface Window {
   gZenStartup?: any;
   gZenUIManager?: any;
   PlacesUtils?: any;
-  __zenSidekickConfig?: {
+  __zenMcpConfig?: {
     url: string;
     token: string;
     bridgeVersion: string;
     serverVersion: string;
   };
-  __zenSidekickWindowId?: string;
-  __zenSidekickBridge?: {
+  __zenMcpWindowId?: string;
+  __zenMcpBridge?: {
     version: string;
     token: string;
     windowId: string;

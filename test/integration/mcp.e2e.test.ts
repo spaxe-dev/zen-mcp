@@ -39,13 +39,13 @@ const EXPECTED_TOOLS = [
 
 const MARKER = "mcp-marker-7";
 const PAGE = `<!doctype html><html><head><title>MCP Test Page</title>
-<meta name="description" content="Page used by the Zen Sidekick MCP test.">
+<meta name="description" content="Page used by the Zen MCP test.">
 </head><body><main><h1>MCP heading</h1>
 <p>Agent harness end to end. ${MARKER}</p></main></body></html>`;
 
 describe(
-  "Zen Sidekick MCP server",
-  { skip: e2eEnabled() ? false : "set ZEN_SIDEKICK_E2E=1 to run" },
+  "Zen MCP server",
+  { skip: e2eEnabled() ? false : "set ZEN_MCP_E2E=1 to run" },
   () => {
     let client: Client | null = null;
     let zen: LaunchedZen | null = null;
@@ -78,7 +78,7 @@ describe(
         env: process.env as Record<string, string>,
         stderr: "inherit",
       });
-      client = new Client({ name: "zen-sidekick-test", version: "0.0.0" });
+      client = new Client({ name: "zen-mcp-test", version: "0.0.0" });
       await client.connect(transport);
     });
 
@@ -133,7 +133,7 @@ describe(
       const read = await call("zen_read_page", { tabId });
       assert.equal(read.title, "MCP Test Page");
       assert.match(read.text, new RegExp(MARKER));
-      assert.equal(read.description, "Page used by the Zen Sidekick MCP test.");
+      assert.equal(read.description, "Page used by the Zen MCP test.");
 
       const after = await call("zen_status");
       assert.equal(after.activeSpaceId, before.activeSpaceId);

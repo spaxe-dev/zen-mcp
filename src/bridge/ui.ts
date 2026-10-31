@@ -338,7 +338,7 @@ const STYLE = `
 }
 `;
 
-export class SidekickUi {
+export class ZenMcpUi {
   readonly #doc: Document;
   readonly #host: HTMLElement;
   readonly #root: ShadowRoot;
@@ -351,7 +351,7 @@ export class SidekickUi {
   constructor(doc: Document) {
     this.#doc = doc;
     this.#host = doc.createElement("div");
-    this.#host.id = "zen-sidekick-host";
+    this.#host.id = "zen-mcp-host";
     this.#host.style.cssText =
       "position:fixed;right:0;bottom:0;width:0;height:0;z-index:2147483647;pointer-events:none;";
     this.#root = this.#host.attachShadow({ mode: "open" });
@@ -417,7 +417,7 @@ export class SidekickUi {
     brand.className = "brand";
     const dot = doc.createElement("span");
     dot.className = "dot";
-    brand.append(dot, doc.createTextNode("ZEN SIDEKICK"));
+    brand.append(dot, doc.createTextNode("ZEN MCP"));
     const chip = doc.createElement("span");
     chip.className = "chip";
     chip.textContent = question.multiSelect ? "Choose any" : "Question";
@@ -695,7 +695,7 @@ export class SidekickUi {
     brand.className = "brand";
     const dot = doc.createElement("span");
     dot.className = "dot";
-    brand.append(dot, doc.createTextNode("ZEN SIDEKICK"));
+    brand.append(dot, doc.createTextNode("ZEN MCP"));
     const close = doc.createElement("button");
     close.type = "button";
     close.className = "close";

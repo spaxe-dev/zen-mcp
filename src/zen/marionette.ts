@@ -65,11 +65,11 @@ interface MarionetteSession {
 }
 
 /**
- * The shape returned by `WebDriver:ExecuteAsyncScript` after the sidekick
+ * The shape returned by `WebDriver:ExecuteAsyncScript` after the Zen MCP
  * wrapper has run.
  */
 interface WrappedScriptResult {
-  __sidekickOk?: boolean;
+  __zenMcpOk?: boolean;
   value?: unknown;
   error?: string;
 }
@@ -98,9 +98,9 @@ export class MarionetteClient {
   #contentQueue: Promise<unknown> = Promise.resolve();
 
   constructor(options: MarionetteClientOptions = {}) {
-    this.host = options.host ?? process.env.ZEN_SIDEKICK_MARIONETTE_HOST ?? DEFAULT_HOST;
+    this.host = options.host ?? process.env.ZEN_MCP_MARIONETTE_HOST ?? DEFAULT_HOST;
     this.port =
-      options.port ?? Number(process.env.ZEN_SIDEKICK_MARIONETTE_PORT ?? DEFAULT_PORT);
+      options.port ?? Number(process.env.ZEN_MCP_MARIONETTE_PORT ?? DEFAULT_PORT);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 8_000;
     this.#commandTimeoutMs = options.commandTimeoutMs ?? 30_000;
     this.#scriptTimeoutMs = options.scriptTimeoutMs ?? 120_000;
@@ -172,7 +172,7 @@ export class MarionetteClient {
         reject(
           new MarionetteConnectionError(
             `Timed out connecting to Marionette at ${this.host}:${this.port}. ` +
-              "Zen must be launched by Zen Sidekick (or with -marionette and " +
+              "Zen must be launched by Zen MCP (or with -marionette and " +
               "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1)."
           )
         );
@@ -352,7 +352,7 @@ export class MarionetteClient {
         }
         return;
       }
-      // Incoming commands (kind 0) are not used by the sidekick.
+      // Incoming commands (kind 0) are not used by Zen MCP.
       this.#logger.debug(`Ignoring Marionette packet array: ${JSON.stringify(packet).slice(0, 200)}`);
       return;
     }
@@ -462,8 +462,8 @@ export class MarionetteClient {
       timeoutMs
     );
     const wrapped = (response?.value ?? response) as WrappedScriptResult | null;
-    if (wrapped && typeof wrapped === "object" && "__sidekickOk" in wrapped) {
-      if (wrapped.__sidekickOk) return wrapped.value;
+    if (wrapped && typeof wrapped === "object" && "__zenMcpOk" in wrapped) {
+      if (wrapped.__zenMcpOk) return wrapped.value;
       throw new MarionetteError(
         typeof wrapped.error === "string"
           ? wrapped.error
@@ -568,13 +568,13 @@ export class MarionetteClient {
  */
 function wrapScript(body: string): string {
   return [
-    "const __sidekickDone = arguments[arguments.length - 1];",
+    "const __zenMcpDone = arguments[arguments.length - 1];",
     "(async () => {",
     body,
     "})().then(",
-    "  (value) => __sidekickDone({ __sidekickOk: true, value }),",
-    "  (error) => __sidekickDone({",
-    "    __sidekickOk: false,",
+    "  (value) => __zenMcpDone({ __zenMcpOk: true, value }),",
+    "  (error) => __zenMcpDone({",
+    "    __zenMcpOk: false,",
     "    error: String((error && (error.stack || error.message)) || error),",
     "  })",
     ");",
