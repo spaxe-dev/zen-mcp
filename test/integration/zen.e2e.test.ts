@@ -2,24 +2,33 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { join } from "node:path";
 import type { AskResult } from "../../src/shared/protocol.js";
+import {
+  terminateZenProcess,
+  waitForProcessExit,
+} from "../../src/zen/launcher.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
 import {
   e2eEnabled,
-  killZen,
-  launchHeadlessZen,
   removeTestProfile,
   startPageServer,
   testConfig,
   testProfilePath,
-  type LaunchedZen,
   type PageServer,
 } from "./helpers.js";
 
 const MARKER = "zen-mcp-marker-42";
+const EVIDENCE_QUOTE = "The lighthouse keeper checked the lamp at dawn.";
+const REPEATED_QUOTE = "The shared lighthouse sentence appears in two places.";
+const SCROLL_FILLER = "Spacer text for evidence scrolling. ".repeat(60);
 const PAGE = `<!doctype html><html><head><title>Zen MCP Test Page</title>
 <meta name="description" content="A page used by the Zen MCP end-to-end test.">
 </head><body><main><h1>Test heading</h1>
 <p>The quick brown fox jumps over the lazy dog. ${MARKER}</p>
+<section id="alpha"><h2>Alpha context</h2><p>${REPEATED_QUOTE}</p></section>
+<div style="height: 2400px">${SCROLL_FILLER}</div>
+<section id="omega"><h2>Omega context</h2><p>${REPEATED_QUOTE}</p></section>
+<p id="evidence-target">${EVIDENCE_QUOTE}</p>
+<p id="page-owned-mark" data-zen-mcp-evidence="mark">Page-owned lookalike marker.</p>
 </main></body></html>`;
 
 describe(
@@ -27,7 +36,7 @@ describe(
   { skip: e2eEnabled() ? false : "set ZEN_MCP_E2E=1 to run" },
   () => {
     let runtime: ZenRuntime;
-    let zen: LaunchedZen | null = null;
+    let browserPid: number | null = null;
     let page: PageServer;
     let spaceId = "";
     let spaceName = "";
@@ -55,6 +64,52 @@ describe(
       return last;
     };
 
+    /**
+     * Counts overlay hosts in a page. Marks live in a closed shadow root, so
+     * page script can only see the host, never the painted boxes.
+     */
+    const inspectContent = async (
+      url: string
+    ): Promise<{ hosts: number; closed: boolean; scrollY: number } | null> => {
+      const handles = await runtime.marionette.getWindowHandles();
+      for (const handle of handles) {
+        try {
+          const info = await runtime.marionette.executeInContent<any>(
+            handle,
+            `
+            if (String(location.href) !== ${JSON.stringify(url)}) return null;
+            var hosts = [];
+            var root = document.documentElement;
+            if (root) {
+              for (var i = 0; i < root.children.length; i += 1) {
+                var element = root.children[i];
+                var names =
+                  element.getAttributeNames ? element.getAttributeNames() : [];
+                for (var j = 0; j < names.length; j += 1) {
+                  if (names[j].indexOf("data-zen-") === 0) {
+                    hosts.push(element);
+                    break;
+                  }
+                }
+              }
+            }
+            var first = hosts[0];
+            return {
+              hosts: hosts.length,
+              closed: !!first && first.shadowRoot === null,
+              scrollY: Number(window.scrollY) || 0
+            };
+          `
+          );
+          if (info) return info;
+        } catch {
+          // The handle can disappear while iterating, or belong to a page
+          // that is not ready.
+        }
+      }
+      return null;
+    };
+
     before(async () => {
       page = await startPageServer(PAGE);
       runtime = new ZenRuntime({
@@ -62,9 +117,13 @@ describe(
         bridgeScriptPath: join(process.cwd(), "dist", "bridge.js"),
       });
       await runtime.start();
-      zen = await launchHeadlessZen(runtime.config);
-      await runtime.connect({ allowLaunch: false });
+      await runtime.connect({ allowLaunch: true });
       assert.ok(runtime.hub.connectionCount > 0, "bridge attached");
+
+      const session = runtime.sessionInfo();
+      browserPid = session.browserPid;
+      assert.equal(session.ownsBrowser, true, "runtime owns the browser");
+      assert.equal(session.lockedDown, true, "Marionette is locked down");
     });
 
     after(async () => {
@@ -79,8 +138,10 @@ describe(
         }
       }
       await runtime?.shutdown().catch(() => undefined);
+      if (!(await waitForProcessExit(browserPid, 20_000))) {
+        terminateZenProcess(browserPid ?? undefined);
+      }
       await page?.close();
-      killZen(zen);
       removeTestProfile(testProfilePath());
     });
 
@@ -246,6 +307,198 @@ describe(
         await PlacesUtils.bookmarks.remove(${JSON.stringify(bookmark.guid)});
         return true;
       `);
+    });
+
+    it("shows evidence, disambiguates repeats and clears the marks", async () => {
+      const other = await runtime.hub.openTabs({
+        urls: [`${page.url}?other=1`],
+        background: false,
+        switchTo: true,
+      });
+      const otherTabId = other.tabs[0]?.id ?? "";
+      assert.ok(otherTabId);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      const shown = await runtime.showEvidence({
+        url: page.url,
+        quote: EVIDENCE_QUOTE,
+        claim: "The keeper checked the lamp at dawn",
+        sourceTitle: "Zen MCP Test Page",
+        highlightMs: 60_000,
+      });
+      assert.equal(shown.ok, true, JSON.stringify(shown.error));
+      assert.equal(shown.tabId, tabId);
+      assert.equal(shown.tabReused, true);
+      assert.equal(shown.focused, false);
+      assert.equal(shown.title, "Zen MCP Test Page");
+      assert.equal(shown.matchMethod, "exact");
+      assert.equal(shown.confidence, 1);
+      assert.equal(shown.highlighted, true);
+      assert.equal(shown.scrolled, true);
+      assert.equal(shown.sourceUrl, page.url);
+
+      // Verification runs in the background by default, so the user's current
+      // tab stays where it is.
+      const status = await runtime.status();
+      assert.equal(status.activeTab?.id, otherTabId, "focus did not move");
+
+      const card = await pollUi(
+        ".card.activity",
+        `const title = card.querySelector(".a-title")?.textContent || "";
+         const detail = card.querySelector(".a-detail")?.textContent || "";
+         if (!title.includes("keeper checked the lamp")) {
+           return { ok: false, why: "title: " + title };
+         }
+         if (!detail.includes("Source: Zen MCP Test Page")) {
+           return { ok: false, why: "source: " + detail };
+         }
+         if (!detail.includes("exact match") || !detail.includes("highlighted")) {
+           return { ok: false, why: "status: " + detail };
+         }
+         const button = card.querySelector("button.action");
+         if (!button) return { ok: false, why: "no action button" };
+         const label = button.textContent || "";
+         button.click();
+         return { ok: true, title, detail, label };`
+      );
+      assert.equal(card.ok, true, `evidence card: ${card.why}`);
+      assert.match(card.label, /Show source/);
+
+      const showDeadline = Date.now() + 5_000;
+      let shownActive: string | null = null;
+      while (Date.now() < showDeadline) {
+        shownActive = (await runtime.status()).activeTab?.id ?? null;
+        if (shownActive === tabId) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      assert.equal(shownActive, tabId, "Show source selects the source tab");
+
+      await runtime.hub.selectTab({ tabId: otherTabId, focusWindow: true });
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      assert.equal(
+        (await runtime.status()).activeTab?.id,
+        otherTabId,
+        "background tab is active again"
+      );
+
+      const focused = await runtime.showEvidence({
+        url: page.url,
+        quote: EVIDENCE_QUOTE,
+        claim: "Focused keeper check",
+        focus: true,
+        highlightMs: 60_000,
+      });
+      assert.equal(focused.ok, true, JSON.stringify(focused.error));
+      assert.equal(focused.focused, true);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      assert.equal(
+        (await runtime.status()).activeTab?.id,
+        tabId,
+        "focus brings the source forward"
+      );
+
+      // Content handles follow the selected tab, so inspect the page after it
+      // is in front.
+      const view = await inspectContent(page.url);
+      assert.ok(view, "content window reachable");
+      assert.ok(view.hosts > 0, "an overlay host exists");
+      assert.equal(view.closed, true, "marks live in a closed shadow root");
+      assert.ok(view.scrollY > 0, "page scrolled to the passage");
+      assert.equal(focused.verified, true, "an exact, visible match is verified");
+
+      const found = await runtime.findText({
+        tabId,
+        query: "LIGHTHOUSE keeper",
+      });
+      assert.equal(found.ok, true, JSON.stringify(found.error));
+      assert.equal(found.totalMatches, 1);
+      assert.equal(found.matches[0]?.text, "lighthouse keeper");
+
+      const exactFound = await runtime.findText({
+        tabId,
+        query: "LIGHTHOUSE keeper",
+        caseSensitive: true,
+      });
+      assert.equal(exactFound.totalMatches, 0);
+
+      const scanned = await runtime.searchTabs({
+        query: REPEATED_QUOTE,
+        space: spaceId,
+      });
+      assert.equal(scanned.tabsSearched, 2);
+      assert.equal(scanned.tabsMatched, 2);
+      assert.equal(scanned.totalMatches, 4);
+      assert.equal(scanned.truncated, false);
+
+      const batch = await runtime.showEvidenceBatch({
+        citations: [
+          { url: page.url, quote: EVIDENCE_QUOTE, claim: "Batch exact" },
+          {
+            url: page.url,
+            quote: REPEATED_QUOTE,
+            context: "Omega context",
+            claim: "Batch context",
+          },
+          {
+            url: `${page.url}?other=1`,
+            quote: EVIDENCE_QUOTE,
+            claim: "Batch other tab",
+          },
+          {
+            url: page.url,
+            quote: "A sentence that is definitely not in the test page.",
+            claim: "Batch missing",
+          },
+        ],
+        highlightMs: 60_000,
+      });
+      assert.equal(batch.total, 4);
+      assert.equal(batch.matched, 3);
+      assert.equal(batch.failed, 1);
+      assert.equal(batch.ok, false);
+      assert.equal(batch.openedTabs, 0);
+      assert.equal(batch.reusedTabs, 2);
+      assert.equal(batch.results[0]?.ok, true);
+      assert.equal(batch.results[1]?.matchMethod, "context");
+      assert.equal(batch.results[2]?.tabId, otherTabId);
+      assert.equal(batch.results[3]?.error?.code, "QUOTE_NOT_FOUND");
+
+      const ambiguous = await runtime.showEvidence({
+        url: page.url,
+        quote: REPEATED_QUOTE,
+        highlightMs: 60_000,
+      });
+      assert.equal(ambiguous.ok, false);
+      assert.equal(ambiguous.error?.code, "AMBIGUOUS_MATCH");
+
+      const chosen = await runtime.showEvidence({
+        url: page.url,
+        quote: REPEATED_QUOTE,
+        context: "Omega context",
+        highlightMs: 60_000,
+      });
+      assert.equal(chosen.ok, true, JSON.stringify(chosen.error));
+      assert.equal(chosen.matchMethod, "context");
+      assert.equal(chosen.occurrences, 2);
+
+      const missing = await runtime.showEvidence({
+        url: page.url,
+        quote: "A sentence that is definitely not in the test page.",
+        highlightMs: 60_000,
+      });
+      assert.equal(missing.ok, false);
+      assert.equal(missing.error?.code, "QUOTE_NOT_FOUND");
+
+      const cleared = await runtime.clearEvidence({ tabId });
+      assert.equal(cleared.cleared, true);
+      assert.ok(cleared.removed >= 1);
+      const after = await inspectContent(page.url);
+      assert.equal(after?.hosts, 0, "overlays removed");
+      const owned = await runtime.readPage({
+        tabId,
+        selector: '[data-zen-mcp-evidence="mark"]',
+      });
+      assert.match(owned.text, /Page-owned lookalike marker/);
     });
 
     it("deletes a space and the tabs it holds", async () => {

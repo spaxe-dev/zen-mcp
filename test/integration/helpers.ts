@@ -4,8 +4,6 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type ZenMcpConfig } from "../../src/config.js";
-import { launchZen } from "../../src/zen/launcher.js";
-import { MarionetteClient } from "../../src/zen/marionette.js";
 
 /**
  * Real-Zen tests are opt-in: they launch a browser, need a disposable profile,
@@ -17,11 +15,17 @@ export function e2eEnabled(): boolean {
   return process.env.ZEN_MCP_E2E === "1";
 }
 
+/**
+ * Only the headless flag. Isolation from a running user Zen must come from
+ * the launcher's own `-no-remote`, so the tests exercise the production path.
+ */
+const TEST_LAUNCH_ARGS = ["--headless"];
+
 let generatedProfile: string | null = null;
 
 /**
- * A fresh profile per test-file process. Reusing one profile across runs let a
- * single leaked browser lock it and turn every later run into a 60s timeout.
+ * A fresh profile per test-file process. The runtime is the only thing that
+ * launches Zen now, so this profile is free until the server takes ownership.
  */
 export function testProfilePath(): string {
   if (process.env.ZEN_MCP_TEST_PROFILE) {
@@ -38,13 +42,21 @@ export function testProfilePath(): string {
   return generatedProfile;
 }
 
+/**
+ * Config for an in-process runtime. Headless and consent-free, because a
+ * headless window cannot click the approval card.
+ */
 export function testConfig(): ZenMcpConfig {
   return {
     ...loadConfig(),
     profilePath: testProfilePath(),
+    useDefaultProfile: false,
+    requireConsent: false,
+    consentTimeoutSeconds: 5,
     autoLaunch: false,
     launchTimeoutMs: 60_000,
     marionettePort: Number(process.env.ZEN_MCP_TEST_MARIONETTE_PORT ?? 2828),
+    launchArgs: TEST_LAUNCH_ARGS,
   };
 }
 
@@ -53,10 +65,12 @@ export interface PageServer {
   close(): Promise<void>;
 }
 
-export async function startPageServer(html: string): Promise<PageServer> {
+export async function startPageServer(
+  html: string | (() => string)
+): Promise<PageServer> {
   const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(html);
+    res.end(typeof html === "function" ? html() : html);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -67,56 +81,53 @@ export async function startPageServer(html: string): Promise<PageServer> {
   };
 }
 
-export interface LaunchedZen {
-  launcherPid: number;
-  browserPid: number;
-}
-
 /**
- * Launches a headless Zen with agent access and resolves the real browser
- * process id (the launcher pid can belong to a short-lived stub).
+ * Environment for the spawned MCP server. Config and data live in a throwaway
+ * directory so a developer config cannot change test policy, and so session,
+ * template and audit files never land in the real data directory.
+ *
+ * The server launches and owns Zen, so the profile and headless flags travel
+ * through the environment rather than a separately spawned browser.
  */
-export async function launchHeadlessZen(
-  config: ZenMcpConfig
-): Promise<LaunchedZen> {
-  const launch = await launchZen({
-    config,
-    args: ["--headless", "--new-instance", "-no-remote"],
-  });
-  const deadline = Date.now() + 5_000;
-  const scout = new MarionetteClient({ port: config.marionettePort });
-  for (;;) {
-    try {
-      await scout.connect();
-      break;
-    } catch (error) {
-      if (Date.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+export function testServerEnv(): Record<string, string> {
+  if (process.env.ZEN_MCP_TEST_SERVER_ENV === "1") {
+    return process.env as Record<string, string>;
   }
-  const browserPid = Number(
-    await scout.executeChrome("return Services.appinfo.processID;")
-  );
-  await scout.disconnect();
-  return { launcherPid: launch.pid, browserPid };
+  const base = process.platform === "win32" ? "D:\\tmp" : tmpdir();
+  mkdirSync(base, { recursive: true });
+  const dir =
+    process.env.ZEN_MCP_TEST_DATA_DIR ??
+    mkdtempSync(join(base, "zen-mcp-e2e-"));
+  mkdirSync(dir, { recursive: true });
+  return {
+    ...(process.env as Record<string, string>),
+    ZEN_MCP_CONFIG: join(dir, "config.json"),
+    ZEN_MCP_DATA_DIR: dir,
+    ZEN_MCP_PROFILE: testProfilePath(),
+    ZEN_MCP_USE_DEFAULT_PROFILE: "0",
+    ZEN_MCP_REQUIRE_CONSENT: "0",
+    ZEN_MCP_CONSENT_TIMEOUT_SECONDS: "5",
+    ZEN_MCP_LAUNCH_ARGS: TEST_LAUNCH_ARGS.join(" "),
+    ZEN_MCP_READ_ONLY: "0",
+    ZEN_MCP_ALLOWED_DOMAINS: "",
+    ZEN_MCP_AUDIT_LOG: "1",
+    ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS: "5",
+  };
 }
 
-export function killZen(zen: LaunchedZen | null): void {
-  if (!zen) return;
-  const pids = new Set([zen.browserPid, zen.launcherPid].filter(Boolean));
-  for (const pid of pids) {
-    try {
-      if (process.platform === "win32") {
-        execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-          stdio: "ignore",
-          timeout: 10_000,
-        });
-      } else {
-        process.kill(pid, "SIGKILL");
-      }
-    } catch {
-      // Already gone.
+export function killZen(pid: number | null | undefined): void {
+  if (!pid) return;
+  try {
+    if (process.platform === "win32") {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        timeout: 10_000,
+      });
+    } else {
+      process.kill(pid, "SIGKILL");
     }
+  } catch {
+    // Already gone.
   }
 }
 
