@@ -1,20 +1,90 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ReadFormat } from "../../src/shared/protocol.js";
 import {
   buildReadScript,
   coercePageSnapshot,
   toPageReadResult,
 } from "../../src/shared/read-script.js";
 
+const FORMATS: ReadFormat[] = [
+  "text",
+  "markdown",
+  "links",
+  "tables",
+  "metadata",
+  "outline",
+];
+
 describe("page read script", () => {
   it("embeds the character limit", () => {
-    assert.match(buildReadScript(1234), /const maxChars = 1234;/);
+    assert.match(
+      buildReadScript({ maxChars: 1234 }),
+      /const maxChars = 1234;/
+    );
+    assert.match(
+      buildReadScript({ maxChars: 1234, format: "markdown" }),
+      /const maxChars = 1234;/
+    );
+  });
+
+  it("embeds the selector as JSON", () => {
+    const selector = 'article[data-test="a"]';
+    const script = buildReadScript({ maxChars: 500, selector });
+    assert.ok(script.includes(`const selector = ${JSON.stringify(selector)};`));
+
+    const plain = buildReadScript({ maxChars: 500 });
+    assert.match(plain, /const selector = null;/);
+  });
+
+  it("embeds every format name", () => {
+    for (const format of FORMATS) {
+      const script = buildReadScript({ maxChars: 100, format });
+      assert.ok(script.includes(`const format = "${format}";`), format);
+    }
+  });
+
+  it("falls back to the text format for unknown values", () => {
+    const script = buildReadScript({
+      maxChars: 100,
+      format: "bogus" as ReadFormat,
+    });
+    assert.ok(script.includes('const format = "text";'));
+  });
+
+  it("produces a syntactically valid plain JavaScript script", () => {
+    for (const format of FORMATS) {
+      const script = buildReadScript({
+        maxChars: 4_000,
+        format,
+        selector: format === "text" ? undefined : "main",
+      });
+      assert.doesNotThrow(() => new Function(script), format);
+    }
+  });
+
+  it("contains the format builders and scope query", () => {
+    const script = buildReadScript({ maxChars: 500 });
+    assert.match(script, /function buildMarkdown/);
+    assert.match(script, /function buildLinks/);
+    assert.match(script, /function buildTables/);
+    assert.match(script, /function buildMetadata/);
+    assert.match(script, /function buildOutline/);
+    assert.match(script, /function tableData/);
+    assert.match(script, /article, main, \[role='main'\]/);
+    assert.match(script, /querySelectorAll\("table"\)/);
+    assert.match(script, /querySelectorAll\("h1, h2, h3, h4, h5, h6"\)/);
+    assert.match(script, /String\.fromCharCode\(96, 96, 96\)/);
+    assert.match(script, /function metaRecord/);
+    assert.match(script, /document\.contentType/);
+    assert.match(script, /selectorMatched/);
   });
 
   it("rejects values that are not page snapshots", () => {
     assert.equal(coercePageSnapshot(null), null);
     assert.equal(coercePageSnapshot("page"), null);
     assert.equal(coercePageSnapshot({ title: "no url" }), null);
+    assert.equal(coercePageSnapshot({ url: 42 }), null);
   });
 
   it("fills missing fields with safe defaults", () => {
@@ -31,6 +101,10 @@ describe("page read script", () => {
       fullLength: 10,
       readyState: "",
       description: null,
+      format: "text",
+      selector: null,
+      selectorMatched: false,
+      contentType: "",
     });
   });
 
@@ -41,6 +115,162 @@ describe("page read script", () => {
       fullLength: "not a number",
     });
     assert.equal(page?.fullLength, 5);
+  });
+
+  it("normalizes unknown formats and keeps format fields", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "hello",
+      format: "bogus",
+      selector: "main",
+      selectorMatched: true,
+      contentType: "text/html",
+    });
+    assert.ok(page);
+    assert.equal(page.format, "text");
+    assert.equal(page.selector, "main");
+    assert.equal(page.selectorMatched, true);
+    assert.equal(page.contentType, "text/html");
+  });
+
+  it("keeps an explicit selectorMatched and defaults it when absent", () => {
+    const explicit = coercePageSnapshot({
+      url: "https://example.com/",
+      selector: "#missing",
+      selectorMatched: false,
+    });
+    assert.equal(explicit?.selectorMatched, false);
+
+    const absent = coercePageSnapshot({
+      url: "https://example.com/",
+      selector: "#missing",
+    });
+    assert.equal(absent?.selectorMatched, false);
+
+    const stringValue = coercePageSnapshot({
+      url: "https://example.com/",
+      selectorMatched: "true",
+    });
+    assert.equal(stringValue?.selectorMatched, true);
+  });
+
+  it("coerces links and clamps the list", () => {
+    const many = Array.from({ length: 301 }, (_, index) => ({
+      text: `link ${index}`,
+      url: `https://example.com/${index}`,
+    }));
+
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "links",
+      links: [
+        ...many,
+        { text: "", url: "https://example.com/fallback" },
+        { text: "broken" },
+        "not a link",
+      ],
+    });
+    assert.ok(page);
+    assert.equal(page.format, "links");
+    assert.equal(page.links?.length, 300);
+    assert.deepEqual(page.links?.[0], {
+      text: "link 0",
+      url: "https://example.com/0",
+    });
+  });
+
+  it("falls back to the URL when link text is empty", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      links: [{ text: "", url: "https://example.com/x" }],
+    });
+    assert.deepEqual(page?.links, [
+      { text: "https://example.com/x", url: "https://example.com/x" },
+    ]);
+  });
+
+  it("coerces tables and clamps cells, columns and rows", () => {
+    const rows = Array.from({ length: 120 }, () =>
+      Array.from({ length: 20 }, () => "cell")
+    );
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "tables",
+      tables: [
+        {
+          caption: "Pricing",
+          headers: Array.from({ length: 20 }, (_, index) => `h${index}`),
+          rows,
+        },
+        "not a table",
+      ],
+    });
+    assert.ok(page);
+    assert.equal(page.tables?.length, 1);
+    const table = page.tables?.[0];
+    assert.equal(table?.caption, "Pricing");
+    assert.equal(table?.headers.length, 12);
+    assert.equal(table?.rows.length, 100);
+    assert.equal(table?.rows[0].length, 12);
+  });
+
+  it("coerces metadata records", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "metadata",
+      metadata: {
+        title: "Example",
+        description: "Desc",
+        author: undefined,
+        og: {
+          "og:Title": "OG Title",
+          "og:image": "https://example.com/a.png",
+          empty: "",
+        },
+        twitter: { "twitter:card": "summary" },
+      },
+    });
+    assert.ok(page);
+    assert.equal(page.metadata?.title, "Example");
+    assert.equal(page.metadata?.description, "Desc");
+    assert.equal(page.metadata?.canonical, null);
+    assert.equal(page.metadata?.author, null);
+    assert.deepEqual(page.metadata?.og, {
+      "og:title": "OG Title",
+      "og:image": "https://example.com/a.png",
+    });
+    assert.deepEqual(page.metadata?.twitter, { "twitter:card": "summary" });
+  });
+
+  it("coerces and clamps outline headings", () => {
+    const headings = Array.from({ length: 205 }, (_, index) => ({
+      level: (index % 9) + 1,
+      text: `Heading ${index}`,
+    }));
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "outline",
+      outline: [...headings, { level: "x", text: "bad" }, { level: 2 }],
+    });
+    assert.ok(page);
+    assert.equal(page.outline?.length, 200);
+    assert.equal(page.outline?.[0].level, 1);
+    assert.equal(page.outline?.[7].level, 6);
+    assert.equal(page.outline?.[8].level, 6);
+  });
+
+  it("keeps markdown content", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "markdown",
+      text: "fallback",
+      fullLength: 42,
+      markdown: "# Title\n\nBody",
+    });
+    assert.ok(page);
+    assert.equal(page.format, "markdown");
+    assert.equal(page.markdown, "# Title\n\nBody");
+    assert.equal(page.description, null);
   });
 
   it("reports truncation against the requested limit", () => {
@@ -55,13 +285,90 @@ describe("page read script", () => {
     });
     assert.ok(page);
 
-    const short = toPageReadResult(page, 50);
+    const short = toPageReadResult(page, { maxChars: 50 });
     assert.equal(short.truncated, true);
     assert.equal(short.length, 100);
     assert.equal(short.title, "Example");
     assert.equal(short.description, "A description");
 
-    const wide = toPageReadResult(page, 5_000);
+    const wide = toPageReadResult(page, { maxChars: 5_000 });
     assert.equal(wide.truncated, false);
+  });
+
+  it("copies format fields into the read result", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      title: "Example",
+      text: "fallback",
+      format: "links",
+      selector: "main",
+      selectorMatched: true,
+      contentType: "text/html",
+      links: [{ text: "Example", url: "https://example.com/x" }],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.format, "links");
+    assert.equal(result.selector, "main");
+    assert.equal(result.contentType, "text/html");
+    assert.deepEqual(result.links, [
+      { text: "Example", url: "https://example.com/x" },
+    ]);
+    assert.equal(result.markdown, undefined);
+    assert.equal(result.tables, undefined);
+    assert.equal(result.metadata, undefined);
+    assert.equal(result.outline, undefined);
+  });
+
+  it("lets an explicit content type win over the snapshot", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "x",
+      contentType: "text/html",
+    });
+    assert.ok(page);
+
+    assert.equal(
+      toPageReadResult(page, { contentType: "application/pdf" }).contentType,
+      "application/pdf"
+    );
+    assert.equal(
+      toPageReadResult(page, { contentType: null }).contentType,
+      null
+    );
+    assert.equal(toPageReadResult(page).contentType, "text/html");
+  });
+
+  it("uses markdown length as the primary length for markdown reads", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "markdown",
+      text: "fallback text",
+      fullLength: 500,
+      markdown: "# Title",
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { maxChars: 100 });
+    assert.equal(result.length, 500);
+    assert.equal(result.truncated, true);
+    assert.equal(result.markdown, "# Title");
+    assert.equal(result.text, "fallback text");
+  });
+
+  it("passes metadata and outline through", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "outline",
+      text: "body",
+      metadata: { title: "Example" },
+      outline: [{ level: 2, text: "Section" }],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { maxChars: 10 });
+    assert.equal(result.metadata?.title, "Example");
+    assert.deepEqual(result.outline, [{ level: 2, text: "Section" }]);
   });
 });
