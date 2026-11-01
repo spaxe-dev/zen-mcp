@@ -138,6 +138,12 @@ A failure sets `ok` to `false`, adds `error: { code, message }`, and never highl
 | `ACTOR_UNAVAILABLE` | Marionette no longer exposes the content actor. |
 | `UNSUPPORTED_PAGE` | PDF, non-HTML, or non-`http(s)` content. |
 
+### Show source
+
+The activity card carries a **Show source** action when the call did not already focus the source. Clicking it selects the evidence tab, switching to its space when needed, and verifies that Zen actually activated it before doing anything else. The bridge then replays the same fixed evidence request the agent used (quote, context, and confidence floor), scrolls to the passage, and paints a fresh overlay for 25 seconds. Even after the original mark expired, asking to see the proof shows the passage again.
+
+The bridge keeps only the most recent successful request per tab, bounded to 20 tabs. It stores the quote, context, and confidence floor from the agent's tool call, never page text, URLs, selectors, or scripts, and the action itself carries only a tab id. If the page changed and the quote can no longer be matched, the action fails with the underlying code such as `QUOTE_NOT_FOUND` or `HIGHLIGHT_FAILED`, the card shows the message, and no other passage is highlighted. If the tab was never marked successfully, the action only selects it.
+
 ### Matching behavior
 
 Matching runs in fixed code inside the bridge, in this order:
@@ -169,6 +175,7 @@ The matcher never picks one of several equally plausible passages. It reports `A
 ### Security
 
 - Agents send only `url`, `quote`, `context`, and numeric options. Every DOM operation is a fixed script built on the server; no agent-supplied JavaScript is ever evaluated.
+- The **Show source** action carries only a tab id. The bridge replays the last successful request it stored for that tab through the same fixed pipeline and never accepts a URL, quote, selector, or script from the card or the page.
 - URLs are normalized to `http(s)` and checked against the domain allowlist before a tab opens. The tab URL is rechecked when evidence is returned. A redirect that happens after the initial check can still move the tab; the next read or evidence call rechecks it.
 - Read-only mode blocks `zen_show_evidence`, `zen_show_evidence_batch`, and `zen_clear_evidence` because they open or select a tab and add overlays.
 - Overlay nodes are marked `aria-hidden`, ignore pointer events, and live in a closed shadow root. The page's text nodes and styles are never modified.

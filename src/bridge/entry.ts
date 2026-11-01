@@ -10,6 +10,11 @@ import type {
   UiQuestion,
 } from "../shared/protocol.js";
 import { createOps } from "./ops.js";
+import {
+  EvidenceRecordStore,
+  cacheEvidenceRequest,
+  revealEvidence,
+} from "./evidence-reveal.js";
 import { PendingStopStore, deliverStop } from "./pending-stop.js";
 import { ZenMcpUi } from "./ui.js";
 
@@ -130,6 +135,9 @@ import { ZenMcpUi } from "./ui.js";
       send({ type: "ui.bannerAction", action, ts: Date.now() }),
   });
   const ops = createOps(win, windowId);
+  // Last successful evidence request per tab, so "Show source" can re-run the
+  // fixed highlight pipeline after the original overlay expired.
+  const evidenceRecords = new EvidenceRecordStore();
 
   const sendHello = () => {
     send({
@@ -290,10 +298,14 @@ import { ZenMcpUi } from "./ui.js";
               if (action.kind === "space") {
                 await ops.dispatch("spaces.switch", { space: action.target });
               } else if (action.kind === "tab") {
-                await ops.dispatch("tabs.select", {
-                  tabId: action.target,
-                  focusWindow: true,
-                });
+                // The action carries only a tab id. Selection is verified and
+                // then a cached evidence request, if any, is replayed through
+                // the fixed pipeline. Failures surface on the card.
+                await revealEvidence(
+                  (method, params) => ops.dispatch(method, params),
+                  evidenceRecords,
+                  action.target
+                );
               } else {
                 return {
                   ok: false,
@@ -327,6 +339,15 @@ import { ZenMcpUi } from "./ui.js";
       case "req": {
         try {
           const result = await ops.dispatch(message.method, message.params);
+          if (message.method === "tabs.evidence") {
+            const params = message.params as { tabId?: unknown } | undefined;
+            cacheEvidenceRequest(
+              evidenceRecords,
+              params?.tabId,
+              message.params,
+              result
+            );
+          }
           send({
             type: "res",
             id: message.id,
