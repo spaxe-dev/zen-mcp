@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readlinkSync,
+  statSync,
+} from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -139,6 +146,20 @@ export function isPortOpen(port: number, timeoutMs = 700): Promise<boolean> {
   });
 }
 
+/**
+ * Process names used by Zen packages across macOS and Linux. `pgrep -x` matches
+ * the kernel's comm field exactly, so every name is checked on its own instead
+ * of using a broad `-f` pattern that could match unrelated tools such as this
+ * project's own `zen-mcp` process.
+ */
+const ZEN_PROCESS_NAMES = [
+  "zen",
+  "zen-bin",
+  "zen-browser",
+  "zen_browser",
+  "zenbrowser",
+];
+
 export function isZenProcessRunning(): boolean {
   try {
     if (process.platform === "win32") {
@@ -149,18 +170,18 @@ export function isZenProcessRunning(): boolean {
       });
       return /zen\.exe/i.test(output);
     }
-    if (process.platform === "darwin") {
-      const output = execFileSync("pgrep", ["-x", "zen"], {
-        encoding: "utf8",
-        timeout: 4000,
-      });
-      return output.trim().length > 0;
+    for (const name of ZEN_PROCESS_NAMES) {
+      try {
+        const output = execFileSync("pgrep", ["-x", name], {
+          encoding: "utf8",
+          timeout: 4000,
+        });
+        if (output.trim().length > 0) return true;
+      } catch {
+        // pgrep exits non-zero when nothing matches, so try the next name.
+      }
     }
-    const output = execFileSync("pgrep", ["-x", "zen"], {
-      encoding: "utf8",
-      timeout: 4000,
-    });
-    return output.trim().length > 0;
+    return false;
   } catch {
     return false;
   }
@@ -300,9 +321,13 @@ export async function waitForProcessExit(
 }
 
 /**
- * Firefox holds an exclusive share lock on `parent.lock` while a profile is in
- * use. Spawning a second browser at that profile only ends in a hand-off and a
- * long Marionette timeout, so fail immediately instead.
+ * Firefox and Zen mark a profile as in use differently per platform. Windows
+ * holds an exclusive share lock on `parent.lock`, which can be probed by trying
+ * to open the file. macOS and Linux create a `.parentlock` symlink (with the
+ * older `lock` name still read for compatibility) whose target ends in the
+ * owner's PID, so the lock is live only while that process is alive.
+ * Spawning a second browser at a locked profile only ends in a hand-off and a
+ * long Marionette timeout, so fail early instead.
  */
 function assertProfileAvailable(profilePath: string): void {
   if (!isProfileLocked(profilePath)) return;
@@ -314,15 +339,44 @@ function assertProfileAvailable(profilePath: string): void {
 }
 
 export function isProfileLocked(profilePath: string): boolean {
-  if (process.platform !== "win32") return false;
-  const lock = join(profilePath, "parent.lock");
-  if (!existsSync(lock)) return false;
-  try {
-    closeSync(openSync(lock, "r+"));
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EBUSY";
+  if (process.platform === "win32") {
+    const lock = join(profilePath, "parent.lock");
+    if (!existsSync(lock)) return false;
+    try {
+      closeSync(openSync(lock, "r+"));
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EBUSY";
+    }
   }
+
+  // Firefox uses `.parentlock` on Unix, with the older `lock` name still read
+  // for compatibility. Some builds leave a `parent.lock` link as well, so
+  // check all three. A stale link whose process is gone counts as unlocked:
+  // Firefox overwrites it on the next launch.
+  for (const name of [".parentlock", "lock", "parent.lock"]) {
+    let target: string;
+    try {
+      target = readlinkSync(join(profilePath, name));
+    } catch {
+      continue;
+    }
+    const pid = parsePosixLockPid(target);
+    if (pid !== null && isProcessAlive(pid)) return true;
+  }
+  return false;
+}
+
+/**
+ * Reads the PID out of a POSIX profile lock target. The target looks like
+ * `127.0.0.1:+12345` or `host.name:+12345`, and the PID is whatever integer
+ * appears at the end. Returns null when no usable PID is present.
+ */
+export function parsePosixLockPid(target: string): number | null {
+  const match = /(\d+)$/.exec(target.trim());
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
 export function terminateZenProcess(pid: number | undefined): void {

@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import net from "node:net";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import {
   buildLaunchArgs,
+  isProfileLocked,
   launchZen,
+  parsePosixLockPid,
   resolvedProfilePath,
 } from "../../src/zen/launcher.js";
 
 const dataDir = join("D:", "zen-mcp-data");
+const posixOnly = process.platform === "win32" ? "POSIX only" : false;
 
 describe("launcher profile selection", () => {
   it("uses a dedicated agent profile by default", () => {
@@ -100,5 +106,52 @@ describe("launcher ownership guard", () => {
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
     }
+  });
+});
+
+describe("POSIX profile lock targets", () => {
+  it("reads the trailing PID from a lock target", () => {
+    assert.equal(parsePosixLockPid("127.0.0.1:+12345"), 12345);
+    assert.equal(parsePosixLockPid("host.local:+987"), 987);
+    assert.equal(parsePosixLockPid("192.168.1.20:4321"), 4321);
+  });
+
+  it("rejects targets without a usable PID", () => {
+    assert.equal(parsePosixLockPid(""), null);
+    assert.equal(parsePosixLockPid("no-pid-here"), null);
+    assert.equal(parsePosixLockPid("host:+0"), null);
+  });
+});
+
+describe("POSIX profile locks", { skip: posixOnly }, () => {
+  const withProfile = (run: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "zen-mcp-lock-"));
+    try {
+      run(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("reports a lock held by a live process", () => {
+    withProfile((dir) => {
+      symlinkSync(`127.0.0.1:+${process.pid}`, join(dir, ".parentlock"));
+      assert.equal(isProfileLocked(dir), true);
+    });
+  });
+
+  it("ignores a stale lock whose process has exited", () => {
+    const child = spawnSync(process.execPath, ["-e", ""]);
+    assert.ok(child.pid);
+    withProfile((dir) => {
+      symlinkSync(`127.0.0.1:+${child.pid}`, join(dir, "lock"));
+      assert.equal(isProfileLocked(dir), false);
+    });
+  });
+
+  it("reports an unlocked profile when no lock exists", () => {
+    withProfile((dir) => {
+      assert.equal(isProfileLocked(dir), false);
+    });
   });
 });
