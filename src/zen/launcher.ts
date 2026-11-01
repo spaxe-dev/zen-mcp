@@ -152,7 +152,7 @@ export function isPortOpen(port: number, timeoutMs = 700): Promise<boolean> {
  * of using a broad `-f` pattern that could match unrelated tools such as this
  * project's own `zen-mcp` process.
  */
-const ZEN_PROCESS_NAMES = [
+export const ZEN_PROCESS_NAMES = [
   "zen",
   "zen-bin",
   "zen-browser",

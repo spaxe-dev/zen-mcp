@@ -72,13 +72,13 @@ More screenshots: [progress and Stop](https://raw.githubusercontent.com/spaxe-de
 - **An MCP client** that can launch a stdio server.
 - **A desktop session.** The live integration suite needs one; everyday tool calls need a running Zen window.
 
-| Platform | Status |
-| --- | --- |
-| Windows | Live-tested with Zen 1.24b |
-| macOS | Code paths implemented and covered by CI; live launch not yet verified |
-| Linux | Code paths implemented for distro, Flatpak, and Snap builds; live launch not yet verified |
+| Platform | Status | Zen version | Evidence date |
+| --- | --- | --- | --- |
+| Windows | Verified live: launch, consent, evidence, shutdown | 1.24b | 2026-11-02 |
+| macOS | Unverified live; code paths and CI only | n/a | 2026-11-02 |
+| Linux | Unverified live; distro, Flatpak, and Snap paths pass CI only | n/a | 2026-11-02 |
 
-"Covered by CI" means typecheck, build, and unit tests pass; it does not mean a real Zen launch has been observed. Treat macOS and Linux as untested until a live launch, the consent card, and a clean shutdown have passed on that platform.
+"CI only" means typecheck, build, and unit tests pass; it does not mean a real Zen launch has been observed. Treat macOS and Linux as untested until a live launch, the consent card, and a clean shutdown have passed on that platform.
 
 ### Install
 
@@ -203,7 +203,7 @@ Zen MCP is usable but pre-1.0. The tool surface and configuration keys have chan
 - **Windows** is the only platform with a live-tested launch, consent card, evidence overlay, and shutdown against Zen 1.24b.
 - **macOS and Linux** compile and pass unit tests on CI, but no live Zen launch has been verified. Report what you see if you test them.
 - **The live suite is manual.** It needs Zen and a desktop session and is not part of CI or the release workflow.
-- **Unit tests are broad but not exhaustive.** On Windows, `npm test` currently runs 163 tests: 158 pass and 5 POSIX-specific tests are skipped. The live suite has 34 declarations across three files.
+- **Unit tests are broad but not exhaustive.** On Windows, `npm test` runs the full unit suite and skips five POSIX-specific tests. The live suite has 34 declarations across three files.
 - **One agent browser per machine.** Current Zen builds use Marionette port 2828, and this server cannot share it.
 
 ## Known limitations

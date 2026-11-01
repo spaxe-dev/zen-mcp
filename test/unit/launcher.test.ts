@@ -11,6 +11,7 @@ import {
   launchZen,
   parsePosixLockPid,
   resolvedProfilePath,
+  ZEN_PROCESS_NAMES,
 } from "../../src/zen/launcher.js";
 
 const dataDir = join("D:", "zen-mcp-data");
@@ -106,6 +107,18 @@ describe("launcher ownership guard", () => {
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
     }
+  });
+});
+
+describe("Zen process names", () => {
+  it("covers the common Linux and macOS executable names", () => {
+    assert.deepEqual(ZEN_PROCESS_NAMES, [
+      "zen",
+      "zen-bin",
+      "zen-browser",
+      "zen_browser",
+      "zenbrowser",
+    ]);
   });
 });
 
