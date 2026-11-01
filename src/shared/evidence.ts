@@ -98,6 +98,12 @@ const MAX_CONTEXT_OCCURRENCES = 300;
 const MAX_FUZZY_QUOTE = 300;
 const MAX_FUZZY_WINDOWS = 160;
 const MIN_FUZZY_SIMILARITY = 0.45;
+/**
+ * A candidate below this similarity is treated as absent, not as a weak
+ * paraphrase. `low_confidence` is reserved for candidates that are genuinely
+ * close but below the caller's `min_confidence` threshold.
+ */
+const MIN_FUZZY_PLAUSIBILITY = 0.7;
 
 /** Confidence for normalized matches by the deepest fold they required. */
 const NORMALIZED_CONFIDENCE = [0.99, 0.97, 0.93] as const;
@@ -649,7 +655,11 @@ function fuzzyOutcome(
     return {
       status: "not_found",
       message:
-        "No passage matching the quote was found on the page. No passage was highlighted.",
+        "No passage matching the quote was found on the page. No candidate " +
+        `reached the ${Math.round(
+          MIN_FUZZY_PLAUSIBILITY * 100
+        )}% plausibility floor for a paraphrase (required confidence ` +
+        `${Math.round(threshold * 100)}%). No passage was highlighted.`,
     };
   }
 
@@ -657,23 +667,27 @@ function fuzzyOutcome(
   const best = distinct[0];
 
   if (best.confidence < threshold) {
-    if (best.confidence >= Math.min(MIN_FUZZY_SIMILARITY, threshold)) {
+    const bestPercent = Math.round(best.confidence * 100);
+    const thresholdPercent = Math.round(threshold * 100);
+    if (best.confidence >= MIN_FUZZY_PLAUSIBILITY) {
       return {
         status: "low_confidence",
         candidate: best,
         threshold,
         message:
-          `The closest passage matched at ${Math.round(
-            best.confidence * 100
-          )}%, below the required ${Math.round(
-            threshold * 100
-          )}%. No passage was highlighted.`,
+          `The closest passage matched at ${bestPercent}%, below the ` +
+          `required ${thresholdPercent}% confidence. No passage was highlighted.`,
       };
     }
     return {
       status: "not_found",
       message:
-        "No passage matching the quote was found on the page. No passage was highlighted.",
+        `The closest passage matched at ${bestPercent}%, below the ` +
+        `${Math.round(
+          MIN_FUZZY_PLAUSIBILITY * 100
+        )}% plausibility floor for a paraphrase and the required ` +
+        `${thresholdPercent}% confidence, so the quote was treated as not ` +
+        "found on the page. No passage was highlighted.",
     };
   }
 

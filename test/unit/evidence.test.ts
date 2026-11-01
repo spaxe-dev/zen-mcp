@@ -244,6 +244,33 @@ describe("evidence quote matching", () => {
     if (outcome.status !== "low_confidence") return;
     assert.equal(outcome.threshold, 0.95);
     assert.ok(outcome.candidate.confidence < 0.95);
+    assert.match(outcome.message, /matched at \d+%/);
+    assert.match(outcome.message, /required 95%/);
+  });
+
+  it("reports a plausible but absent sentence as not found", () => {
+    const page =
+      "The lighthouse keeper cleaned the lamp every evening before sunset " +
+      "and recorded the weather in a log.";
+    const outcome = findEvidenceQuote(page, {
+      quote: "The lighthouse keeper polished the brass lens after every storm.",
+    });
+    assert.equal(outcome.status, "not_found");
+    if (outcome.status !== "not_found") return;
+    assert.match(outcome.message, /matched at \d+%/);
+    assert.match(outcome.message, /70% plausibility floor/);
+    assert.match(outcome.message, /85% confidence/);
+  });
+
+  it("reports weak partial token overlap as not found", () => {
+    const page = "The quick brown fox jumps over the lazy dog.";
+    const outcome = findEvidenceQuote(page, {
+      quote: "The quick brown cat sleeps under the warm sun.",
+    });
+    assert.equal(outcome.status, "not_found");
+    if (outcome.status !== "not_found") return;
+    assert.match(outcome.message, /matched at \d+%/);
+    assert.match(outcome.message, /70% plausibility floor/);
   });
 
   it("returns not_found for missing and unrelated quotes", () => {
