@@ -25,7 +25,7 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 | `zen_tab_select` | Bring a tab into view, switching space; reports active and focused state from observation |
 | `zen_glance` | Preview a URL or tab in Zen's Glance overlay, without a new tab |
 | `zen_split_view` | Show 2 to 4 tabs from the active space side by side |
-| `zen_split_close` | Close a split view; the tabs stay open |
+| `zen_split_close` | Close a split view; the original tabs stay open. Only clearly synthetic leftovers (New Tab or blank tabs) are closed, and a duplicate source tab is reported as a limitation instead of being closed |
 | `zen_pin_tabs` | Pin or unpin tabs in a space |
 | `zen_essentials` | Add tabs to essentials or remove them. Both actions preserve the tab's original space and pinned state; a limitation is returned when Zen refuses the restoration |
 | `zen_containers_list` | List Firefox containers for isolation |

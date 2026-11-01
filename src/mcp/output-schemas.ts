@@ -406,6 +406,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
   zen_split_close: {
     unsplit: z.boolean(),
     tabIds: z.array(z.string()),
+    closedResidue: z.number().optional(),
+    limitation: z.string().optional(),
   },
   zen_pin_tabs: {
     tabIds: z.array(z.string()),

@@ -86,6 +86,7 @@ import {
   type EssentialsCapture,
   type EssentialsRestoreHost,
 } from "./essentials-state.js";
+import { planSplitCleanup } from "./split-cleanup.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -104,8 +105,11 @@ const EVIDENCE_SETTLE_MS = 200;
 const EVIDENCE_MAX_TEXT = 600_000;
 const EVIDENCE_HIGHLIGHT_MS = 20_000;
 const EVIDENCE_MAX_ATTEMPTS = 3;
-/** Time Zen gets to settle after an essentials change. */
+/** Time Zen gets to settle after an essentials change or a split close. */
 const LAYOUT_SETTLE_MS = 120;
+/** How long a closed split view may take to clear before it counts as failed. */
+const SPLIT_CLOSE_TIMEOUT_MS = 1_000;
+const SPLIT_CLOSE_POLL_MS = 100;
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -201,6 +205,23 @@ export function createOps(win: ChromeWindow, windowId: string) {
     for (const [id, tab] of tabsById) {
       if (!tab.isConnected || tab.closing) tabsById.delete(id);
     }
+  };
+
+  /** Polls until none of the group members report a split view. */
+  const waitForSplitGone = async (
+    members: ChromeTab[],
+    timeoutMs: number = SPLIT_CLOSE_TIMEOUT_MS
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    const gone = (): boolean =>
+      members.every(
+        (member) => !member || !member.isConnected || !member.splitView
+      );
+    while (!gone()) {
+      if (Date.now() >= deadline) return false;
+      await sleep(SPLIT_CLOSE_POLL_MS);
+    }
+    return true;
   };
 
   const workspaces = (): any => {
@@ -2046,7 +2067,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       } satisfies SplitResult;
     },
 
-    "split.close": (params: UnsplitParams) => {
+    "split.close": async (params: UnsplitParams) => {
       const splitter = win.gZenViewSplitter;
       if (!splitter) {
         throw new OpsError(
@@ -2061,30 +2082,183 @@ export function createOps(win: ChromeWindow, windowId: string) {
         throw new OpsError("tab_not_found", "No tab is selected to unsplit.");
       }
 
+      // Snapshot the whole window before closing anything so residue can only
+      // be identified from tabs that did not exist at call time.
+      const beforeSnapshot = collectTabs().map((candidate) => ({
+        id: idForTab(candidate),
+        url: tabUrl(candidate),
+        title: tabTitle(candidate),
+      }));
+      const beforeIds = beforeSnapshot.map((entry) => entry.id);
+      const beforeById = new Map(
+        beforeSnapshot.map((entry) => [entry.id, entry])
+      );
+
       const groups: any[] = Array.isArray(splitter._data)
         ? splitter._data
         : [];
       const index = groups.findIndex(
         (group) => Array.isArray(group?.tabs) && group.tabs.includes(tab)
       );
-      let groupIds: string[] = [];
+      let groupTabs: ChromeTab[] = [];
       if (index >= 0) {
-        groupIds = groups[index].tabs
-          .filter((member: ChromeTab) => member?.isConnected)
-          .map((member: ChromeTab) => idForTab(member));
+        groupTabs = groups[index].tabs.filter(
+          (member: ChromeTab) => member?.isConnected && !member.closing
+        );
+      } else if (tab.splitView) {
+        // The private group data is missing or stale. The target tab is the
+        // only member we can confirm without guessing.
+        groupTabs = [tab];
+      }
+      const groupIds = groupTabs.map((member) => idForTab(member));
+      const groupUrls = [
+        ...new Set(groupTabs.map((member) => tabUrl(member)).filter(Boolean)),
+      ];
+      if (groupIds.length === 0) {
+        return {
+          unsplit: false,
+          tabIds: [],
+          limitation: `No split view contains the tab "${tabTitle(tab)}".`,
+        } satisfies UnsplitResult;
       }
 
-      if (index >= 0 && typeof splitter.removeGroup === "function") {
-        splitter.removeGroup(index);
-        return { unsplit: true, tabIds: groupIds } satisfies UnsplitResult;
+      const selectedTab = win.gBrowser?.selectedTab ?? null;
+      const targetIsCurrent = selectedTab === tab || !!tab.selected;
+      const canUseCurrentView =
+        typeof splitter.unsplitCurrentView === "function";
+
+      let cleared = false;
+      let usedSupportedPath = false;
+      let usedRemoveGroup = false;
+
+      // Prefer the supported current-view API when the target is already the
+      // visible tab, so no other split can be affected by selecting it.
+      if (canUseCurrentView && targetIsCurrent) {
+        try {
+          win.gBrowser.selectedTab = tab;
+          splitter.unsplitCurrentView();
+          usedSupportedPath = true;
+        } catch {
+          usedSupportedPath = false;
+        }
+        // Verify even when the call threw: it may have detached some tabs.
+        cleared = await waitForSplitGone(groupTabs);
       }
 
-      win.gBrowser.selectedTab = tab;
-      if (typeof splitter.unsplitCurrentView === "function") {
-        splitter.unsplitCurrentView();
-        return { unsplit: true, tabIds: groupIds } satisfies UnsplitResult;
+      if (!cleared && typeof splitter.removeGroup === "function") {
+        // `_data` may have shifted after a partial unsplit, so resolve the
+        // group again instead of trusting the original index.
+        const currentGroups: any[] = Array.isArray(splitter._data)
+          ? splitter._data
+          : [];
+        const currentIndex = currentGroups.findIndex(
+          (group) => Array.isArray(group?.tabs) && group.tabs.includes(tab)
+        );
+        if (currentIndex >= 0) {
+          try {
+            splitter.removeGroup(currentIndex);
+            usedRemoveGroup = true;
+          } catch {
+            usedRemoveGroup = false;
+          }
+          if (usedRemoveGroup) cleared = await waitForSplitGone(groupTabs);
+        }
       }
-      return { unsplit: false, tabIds: groupIds } satisfies UnsplitResult;
+
+      // Last chance: select the target and let Zen unsplit its current view.
+      // This is also the path taken when `_data` is missing or stale.
+      if (!cleared && !usedSupportedPath && canUseCurrentView) {
+        try {
+          win.gBrowser.selectedTab = tab;
+          splitter.unsplitCurrentView();
+          usedSupportedPath = true;
+        } catch {
+          usedSupportedPath = false;
+        }
+        cleared = await waitForSplitGone(groupTabs);
+      }
+
+      if (!cleared) {
+        throw new OpsError(
+          "split_close_failed",
+          `Zen did not close the split view for "${tabTitle(tab)}". The tabs ` +
+            "are unchanged; close the split from Zen's UI and try again."
+        );
+      }
+
+      // Let Zen settle after detaching tabs before classifying the residue.
+      await sleep(LAYOUT_SETTLE_MS);
+      const candidates = collectTabs().map((candidate) => ({
+        id: idForTab(candidate),
+        url: tabUrl(candidate),
+        title: tabTitle(candidate),
+        empty: candidate.hasAttribute("zen-empty-tab"),
+        windowId,
+      }));
+      const plan = planSplitCleanup(
+        { beforeTabIds: beforeIds, groupUrls, windowId },
+        candidates
+      );
+
+      const limitations: string[] = [];
+      if (plan.limitation) limitations.push(plan.limitation);
+      const removeTab =
+        win.gBrowser && typeof win.gBrowser.removeTab === "function"
+          ? (target: ChromeTab) => win.gBrowser.removeTab(target)
+          : undefined;
+      let closedResidue = 0;
+      for (const residueId of plan.closeTabIds) {
+        const residue = tabsById.get(residueId);
+        if (!residue || !residue.isConnected || residue.closing) continue;
+        if (typeof removeTab !== "function") {
+          limitations.push(
+            `Zen cannot close the leftover tab "${tabTitle(residue)}" (${residueId}) automatically.`
+          );
+          continue;
+        }
+        try {
+          await Promise.resolve(removeTab(residue));
+          closedResidue++;
+        } catch {
+          limitations.push(
+            `Could not close the leftover tab "${tabTitle(residue)}" (${residueId}).`
+          );
+        }
+      }
+      if (plan.closeTabIds.length) {
+        await sleep(LAYOUT_SETTLE_MS);
+        const stillOpen = plan.closeTabIds.filter((residueId) => {
+          const residue = tabsById.get(residueId);
+          return !!residue && residue.isConnected && !residue.closing;
+        });
+        if (stillOpen.length) {
+          limitations.push(
+            `Zen did not close ${stillOpen.length} leftover tab(s): ${stillOpen.join(", ")}.`
+          );
+        }
+      }
+      const missingGroupMembers = groupIds.filter((groupId) => {
+        const member = tabsById.get(groupId);
+        return !member || !member.isConnected || member.closing;
+      });
+      if (missingGroupMembers.length) {
+        const listed = missingGroupMembers
+          .map((groupId) => {
+            const entry = beforeById.get(groupId);
+            return entry ? `"${entry.title}" (${groupId})` : groupId;
+          })
+          .join(", ");
+        limitations.push(
+          `Zen closed ${missingGroupMembers.length} tab(s) from the split: ${listed}. Reopen them if needed.`
+        );
+      }
+
+      return {
+        unsplit: true,
+        tabIds: groupIds,
+        closedResidue,
+        ...(limitations.length ? { limitation: limitations.join(" ") } : {}),
+      } satisfies UnsplitResult;
     },
 
     "history.search": async (params: HistorySearchParams) => {

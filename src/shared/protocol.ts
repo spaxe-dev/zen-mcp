@@ -896,6 +896,10 @@ export interface UnsplitParams {
 export interface UnsplitResult {
   unsplit: boolean;
   tabIds: string[];
+  /** Newly appeared synthetic tabs that the bridge closed. */
+  closedResidue?: number;
+  /** Present when residue could not be closed safely or cleanup was unconfirmed. */
+  limitation?: string;
 }
 
 export interface CreateFolderParams {
