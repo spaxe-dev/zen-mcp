@@ -10,9 +10,7 @@ on:
 
 permissions:
   contents: write
-
-env:
-  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  id-token: write
 
 jobs:
   release:
@@ -24,7 +22,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
@@ -65,9 +63,9 @@ jobs:
             --title "$TAG" \
             --generate-notes
 
-      # The unscoped name is never published. NODE_AUTH_TOKEN comes from the
-      # NPM_TOKEN secret; when it is missing the publish step is skipped and
-      # the workflow still produces the GitHub Release and artifacts.
+      # Trusted publishing authenticates with this workflow's OIDC identity and
+      # generates provenance, so no npm token is stored. This workflow must be
+      # registered as a trusted publisher for @spaxe-dev/zen-mcp on npmjs.com.
       - name: Publish to npm
-        if: startsWith(github.ref, 'refs/tags/') && env.NODE_AUTH_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/')
         run: npm publish --access public
