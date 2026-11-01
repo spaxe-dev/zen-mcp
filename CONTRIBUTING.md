@@ -28,7 +28,8 @@ npm test
 ```
 
 Unit tests live in `test/unit/` and run without a browser. Keep them fast and
-deterministic.
+deterministic. At the time of writing `npm test` runs 186 tests: 181 pass on
+Windows and 5 POSIX-specific tests are skipped there.
 
 ## Live suite
 
@@ -40,10 +41,25 @@ The integration suite in `test/integration/` starts a real Zen that Zen MCP
 launches itself. It covers three files: `mcp.e2e.test.ts` (the MCP server over
 stdio), `zen.e2e.test.ts` (spaces, tabs, reads, evidence, sessions, and
 templates), and `security.e2e.test.ts` (ownership, lockdown, consent, pause,
-and policy). It needs Zen Browser and a desktop session, so it is not part of
-CI or the release workflow, and it must run serially. `npm run test:zen` already
-sets `--test-concurrency=1`; do not run the suite in parallel with another
-instance, because Marionette uses a single port.
+and policy), with 34 test declarations in six groups. The evidence tests check
+exact, ambiguous, context-assisted, missing, and cleared matches; background and
+focused verification; batch verification with opened and reused tabs; literal
+search in one tab and across tabs; the real overlay and scroll position in the
+page; and the card text in browser chrome. The security tests click the real
+approval card, assert the Marionette listener is closed before approval, reject
+a second client, verify Pause blocks requests and Resume restores them, check
+that denial quits the browser, and check that shutdown quits it.
+
+The suite needs Zen Browser and a desktop session, so it is not part of CI or
+the release workflow, and it must run serially. `npm run test:zen` already sets
+`--test-concurrency=1`; do not run the suite in parallel with another instance,
+because Marionette uses a single port. Profiles are created under
+`D:\tmp\zen-marionette-test` on Windows and `$TMPDIR/zen-mcp-test` elsewhere,
+then removed. Override with `ZEN_MCP_TEST_PROFILE` to reuse a specific profile
+for debugging.
+
+Manual probes with verbose output live in `scripts/probe-smoke.ts` (bridge, UI,
+history, bookmarks) and `scripts/probe-mcp.ts` (stdio MCP round trip).
 
 ## Coding expectations
 
@@ -54,8 +70,10 @@ instance, because Marionette uses a single port.
   needs a security review. Explain the trust boundary in the pull request.
 - Keep tool input validated with the existing schemas, and keep policy checks
   outside the model.
-- Update `README.md`, `CHANGELOG.md`, and `docs/security.md` when behavior,
-  user-visible features, or security properties change.
+- Update `README.md`, `CHANGELOG.md`, and the relevant file under `docs/` when
+  behavior, user-visible features, or security properties change. The tool
+  reference, reading and evidence behavior, configuration, architecture, and
+  troubleshooting each have their own document.
 
 ## Pull requests
 
