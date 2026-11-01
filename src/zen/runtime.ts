@@ -998,10 +998,15 @@ export class ZenRuntime {
       };
     }
 
+    let focused = false;
+    let focusLimitation: string | undefined;
     if (focus) {
-      await this.hub
-        .selectTab({ tabId: target.tab.id, focusWindow: true }, target.windowId)
-        .catch(() => undefined);
+      const brought = await this.#bringTabForward(
+        target.tab.id,
+        target.windowId
+      );
+      focused = brought.focused;
+      focusLimitation = brought.limitation;
     }
     this.#rememberEvidence(target.tab.id, target.windowId);
 
@@ -1034,10 +1039,13 @@ export class ZenRuntime {
       url: op.url || target.tab.url,
       title: op.title || target.tab.title || options.sourceTitle?.trim() || "",
       tabReused: target.reused,
-      focused: focus,
+      focused,
       sourceUrl,
       claim,
     };
+    if (focusLimitation) {
+      result.limitation = joinLimitation(result.limitation, focusLimitation);
+    }
 
     const delivered = await this.hub
       .notify({
@@ -1088,7 +1096,7 @@ export class ZenRuntime {
       failed: total,
       openedTabs: 0,
       reusedTabs: 0,
-      focused: focus,
+      focused: false,
       results: [],
       error,
     });
@@ -1249,13 +1257,15 @@ export class ZenRuntime {
     const firstTargetIndex = targets.findIndex((target) => target !== null);
     const firstTarget =
       firstTargetIndex >= 0 ? targets[firstTargetIndex] : null;
+    let firstFocused = false;
+    let firstFocusLimitation: string | undefined;
     if (focus && firstTarget) {
-      await this.hub
-        .selectTab(
-          { tabId: firstTarget.tab.id, focusWindow: true },
-          firstTarget.windowId
-        )
-        .catch(() => undefined);
+      const brought = await this.#bringTabForward(
+        firstTarget.tab.id,
+        firstTarget.windowId
+      );
+      firstFocused = brought.focused;
+      firstFocusLimitation = brought.limitation;
     }
 
     const openedTabIds = new Set<string>();
@@ -1326,7 +1336,7 @@ export class ZenRuntime {
             };
           }
 
-          results[index] = {
+          const citationResult: EvidenceShowResult = {
             ...op,
             tabId: op.tabId ?? target.tab.id,
             url: op.url || target.tab.url,
@@ -1336,11 +1346,20 @@ export class ZenRuntime {
               citation.sourceTitle?.trim() ||
               "",
             tabReused: target.reused,
-            focused:
-              focus && firstTarget?.tab.id === target.tab.id,
+            focused: firstFocused && firstTarget?.tab.id === target.tab.id,
             sourceUrl: citation.url,
             claim,
           };
+          if (
+            firstFocusLimitation &&
+            firstTarget?.tab.id === target.tab.id
+          ) {
+            citationResult.limitation = joinLimitation(
+              citationResult.limitation,
+              firstFocusLimitation
+            );
+          }
+          results[index] = citationResult;
         } finally {
           completed += 1;
           options.onProgress?.(completed, total);
@@ -1358,7 +1377,7 @@ export class ZenRuntime {
     const verified = results.filter((result) => result.verified === true).length;
     const unverified = matched - verified;
     const failed = total - matched;
-    let limitation: string | undefined;
+    let limitation: string | undefined = firstFocusLimitation;
 
     const failures = results
       .filter((result) => !result.ok)
@@ -1402,7 +1421,10 @@ export class ZenRuntime {
       .then((response) => response.delivered)
       .catch(() => false);
     if (!delivered) {
-      limitation = "The in-browser summary card could not be shown.";
+      limitation = joinLimitation(
+        limitation,
+        "The in-browser summary card could not be shown."
+      );
     }
 
     return {
@@ -1413,7 +1435,7 @@ export class ZenRuntime {
       failed,
       openedTabs: openedTabIds.size,
       reusedTabs: reusedTabIds.size,
-      focused: focus,
+      focused: firstFocused,
       results,
       ...(limitation ? { limitation } : {}),
     };
@@ -1468,6 +1490,46 @@ export class ZenRuntime {
       removed,
       ...(failure ? { error: failure } : {}),
     };
+  }
+
+  /**
+   * Selects a tab and reports only what was observed: `focused` is true when
+   * the bridge reports the tab as active. A failed selection becomes a
+   * limitation instead of a thrown error so the evidence check itself can
+   * still finish in the background.
+   */
+  async #bringTabForward(
+    tabId: string,
+    windowId: string
+  ): Promise<{ focused: boolean; limitation?: string }> {
+    try {
+      const selected = await this.hub.selectTab(
+        { tabId, focusWindow: true },
+        windowId
+      );
+      if (selected.tab.active !== true) {
+        return {
+          focused: false,
+          limitation:
+            "Zen did not activate the source tab, so it may still be in the " +
+            "background.",
+        };
+      }
+      if (selected.windowFocused === false) {
+        return {
+          focused: true,
+          limitation:
+            "The source tab is active, but the Zen window could not be raised.",
+        };
+      }
+      return { focused: true };
+    } catch (error) {
+      return {
+        focused: false,
+        limitation:
+          `Could not bring the source tab forward: ${errorText(error)}`,
+      };
+    }
   }
 
   #urlPermitted(url: string): boolean {

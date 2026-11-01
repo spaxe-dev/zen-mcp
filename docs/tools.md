@@ -22,13 +22,15 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 | `zen_tabs_list` | Tabs across every space, filterable by space, query, or pinning |
 | `zen_tabs_open` | Open up to 30 URLs in a space, in the background by default |
 | `zen_tabs_close` | Close tabs by id |
-| `zen_tab_select` | Bring a tab into view (takes over the screen) |
+| `zen_tab_select` | Bring a tab into view, switching space; reports active and focused state from observation |
 | `zen_glance` | Preview a URL or tab in Zen's Glance overlay, without a new tab |
 | `zen_split_view` | Show 2 to 4 tabs from the active space side by side |
 | `zen_split_close` | Close a split view; the tabs stay open |
 | `zen_pin_tabs` | Pin or unpin tabs in a space |
 | `zen_essentials` | Add tabs to essentials or remove them |
 | `zen_containers_list` | List Firefox containers for isolation |
+
+`zen_tab_select` waits for a cross-space switch to settle, then retries the selection until Zen reports the tab as active. The returned tab has `active: true` only after that check, `windowFocused` reports whether the window actually took focus when `focusWindow: true` was requested, and a tab that never becomes active fails with `select_failed` instead of a false success.
 
 ## Folders
 

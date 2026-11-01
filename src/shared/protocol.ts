@@ -967,6 +967,11 @@ export interface CloseTabsResult {
 export interface SelectTabResult {
   tab: TabInfo;
   activeSpaceId: string | null;
+  /**
+   * Observed window focus after `focusWindow: true`. Omitted when focus was
+   * not requested or could not be observed.
+   */
+  windowFocused?: boolean;
 }
 
 export interface AddTabsToFolderResult {

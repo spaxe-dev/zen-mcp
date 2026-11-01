@@ -77,6 +77,7 @@ import {
 } from "../shared/evidence-script.js";
 import { findEvidenceQuote } from "../shared/evidence.js";
 import { findLiteralMatches } from "../shared/search.js";
+import { activateTab, type TabActivationOutcome } from "./tab-activation.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -900,19 +901,42 @@ export function createOps(win: ChromeWindow, windowId: string) {
     "tabs.select": async (params: SelectTabParams) => {
       const [tab] = resolveTabs([String(params?.tabId ?? "")]);
       if (!tab) throw new OpsError("tab_not_found", "No tab matched that id");
-      const spaceId = tab.getAttribute("zen-workspace-id");
-      if (spaceId && spaceId !== win.gZenWorkspaces?.activeWorkspace) {
-        await win.gZenWorkspaces.changeWorkspaceWithID(spaceId);
+      const tabId = idForTab(tab);
+      const focusWindow = params?.focusWindow === true;
+      let outcome: TabActivationOutcome;
+      try {
+        outcome = await activateTab(win, tab, { focusWindow });
+      } catch (error) {
+        throw new OpsError(
+          "select_failed",
+          `Could not select the tab "${tabTitle(tab)}" (${tabId}): ` +
+            `${String((error as Error)?.message ?? error)}`
+        );
       }
-      win.gBrowser.selectedTab = tab;
-      tab.scrollIntoView?.({ block: "nearest" });
-      if (params.focusWindow) {
-        win.focus();
+      if (!outcome.active) {
+        const current = win.gBrowser?.selectedTab;
+        const currentTitle =
+          current && current !== tab
+            ? `"${tabTitle(current)}" (${idForTab(current)})`
+            : "another tab";
+        const detail = outcome.lastError ? ` Last error: ${outcome.lastError}` : "";
+        throw new OpsError(
+          "select_failed",
+          `The tab "${tabTitle(tab)}" (${tabId}) did not become the active ` +
+            `tab after ${outcome.attempts} attempt(s); ${currentTitle} is ` +
+            `still active.${detail}`
+        );
       }
-      return {
+      const result: SelectTabResult = {
         tab: tabInfo(tab, [...realTabs()].indexOf(tab)),
-        activeSpaceId: spacesEnabled() ? win.gZenWorkspaces.activeWorkspace : null,
-      } satisfies SelectTabResult;
+        activeSpaceId: spacesEnabled()
+          ? win.gZenWorkspaces.activeWorkspace
+          : null,
+      };
+      if (focusWindow && outcome.windowFocused !== undefined) {
+        result.windowFocused = outcome.windowFocused;
+      }
+      return result;
     },
 
     "tabs.pin": (params: PinTabsParams) => {

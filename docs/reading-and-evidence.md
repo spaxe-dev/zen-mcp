@@ -62,7 +62,7 @@ Like page reads, both tools search the rendered DOM text, so infinite-scroll con
 
 ## Evidence Mode
 
-An answer is only as useful as the user's ability to check it. `zen_show_evidence` turns a citation into something visible without interrupting the user: it reuses or opens the source tab in the background, finds the cited passage, scrolls to it, marks it, and shows a card in browser chrome with the claim, source, excerpt, and match status. The card has a **Show source** action; pass `focus: true` when the user asked to see the source immediately.
+An answer is only as useful as the user's ability to check it. `zen_show_evidence` turns a citation into something visible without interrupting the user: it reuses or opens the source tab in the background, finds the cited passage, scrolls to it, marks it, and shows a card in browser chrome with the claim, source, excerpt, and match status. The card has a **Show source** action; pass `focus: true` when the user asked to see the source immediately. Both report `focused` from observed state, not from the requested option: it is true only when the bridge reports the source tab as active.
 
 ```text
 zen_show_evidence {
@@ -76,7 +76,7 @@ zen_show_evidence {
 
 The flow:
 
-1. Reuse an open tab whose URL matches the source, or open the URL in the background. A supplied `tab_id` is used only when that tab still shows the same URL. `focus: true` switches to the tab and brings its window forward.
+1. Reuse an open tab whose URL matches the source, or open the URL in the background. A supplied `tab_id` is used only when that tab still shows the same URL. `focus: true` switches to the tab, waits for a cross-space switch to settle, and brings its window forward. If the tab never becomes active, the result says so in `limitation` instead of reporting focus.
 2. Wait up to 12 seconds for the document to leave `about:blank` and finish loading.
 3. Read the page's rendered text through the Marionette content actor.
 4. Locate the quote, then verify the page text has not changed before marking.
@@ -96,7 +96,7 @@ The flow:
 | `tab_id` | no | Reuse this tab only if it still shows `url`. |
 | `min_confidence` | no | Fuzzy-match threshold from 0.5 to 1. Defaults to 0.85. |
 | `highlight_ms` | no | How long the mark stays visible, 1,000 to 120,000 ms. Defaults to 20,000. |
-| `focus` | no | Bring the source tab and window to the front. Defaults to `false`. |
+| `focus` | no | Ask to bring the source tab and window to the front; `focused` reports what was observed. Defaults to `false`. |
 
 `zen_clear_evidence` takes an optional `tab_id`. With no id it removes marks from tabs tracked during the server session. Tracking is bounded to the 20 most recently marked tabs, so older tabs are not cleared automatically.
 
@@ -164,6 +164,7 @@ The matcher never picks one of several equally plausible passages. It reports `A
 - The mark is an overlay, not a DOM edit. Layout changes while it is visible can move the underlying text away from the boxes. It disappears after `highlight_ms`, and `zen_clear_evidence` removes it sooner.
 - Only the current DOM is searched. Infinite-scroll content and content behind interaction are invisible until loaded.
 - Pause does not remove an existing evidence overlay. The overlay fades on its own schedule.
+- Tab selection is verified, not assumed. When Zen will not activate the source tab, or the window cannot be raised, the result keeps the evidence status but reports `focused: false` and adds a `limitation` explaining what did not happen. `zen_tab_select` turns the same failure into a `select_failed` error.
 
 ### Security
 
@@ -176,7 +177,7 @@ The matcher never picks one of several equally plausible passages. It reports `A
 
 ### Verifying several citations
 
-`zen_show_evidence_batch` checks up to 20 citations in one call, two sources at a time (three maximum). Citations that share a source URL reuse one tab, and missing sources are opened once in the background. Every citation gets its own result with the same fields as `zen_show_evidence`, and one summary card reports how many were verified and lists up to three failures. `focus: true` brings the first source forward once instead of switching for every citation.
+`zen_show_evidence_batch` checks up to 20 citations in one call, two sources at a time (three maximum). Citations that share a source URL reuse one tab, and missing sources are opened once in the background. Every citation gets its own result with the same fields as `zen_show_evidence`, and one summary card reports how many were verified and lists up to three failures. `focus: true` brings the first source forward once instead of switching for every citation, and both the batch and per-citation `focused` values report what was observed.
 
 Each source may have at most 5 quotes per batch. If any citation URL is not `http(s)`, the whole batch is rejected before a tab opens, so a bad URL cannot pull the batch halfway through. The call reports `total`, `matched`, `verified`, `failed`, `openedTabs`, and `reusedTabs`.
 

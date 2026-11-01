@@ -390,6 +390,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
   zen_tab_select: {
     tab: tabSchema,
     activeSpaceId: z.string().nullable(),
+    windowFocused: z.boolean().optional(),
   },
   zen_glance: {
     opened: z.boolean(),
