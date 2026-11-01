@@ -433,7 +433,7 @@ export class ZenRuntime {
       await this.#closeOwnedBrowser("access was declined in the browser");
       throw new ZenAccessError(
         "Browser access was declined in Zen. The browser Zen MCP started was " +
-          "closed. Call zen_launch to ask again."
+          "closed. Restart the MCP server to ask again."
       );
     }
     throw new ZenAccessError(
@@ -1267,7 +1267,7 @@ export class ZenRuntime {
       else openedTabIds.add(target.tab.id);
     }
 
-    const highlightMs = clampInt(options.highlightMs, 1_000, 120_000, 25_000);
+    const highlightMs = clampInt(options.highlightMs, 1_000, 120_000, 20_000);
     const results: EvidenceShowResult[] = new Array(total);
     let next = 0;
     let completed = 0;
