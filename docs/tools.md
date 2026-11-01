@@ -111,6 +111,8 @@ zen_events   { after: <cursor>, waitSeconds: 25 }
 
 A Stop press becomes a `kind: "stop"` event. The agent should finish the current step, then call `zen_progress { done: true }` to clear the card. A stopped event is not an error: it means the user asked for the job to wrap up.
 
+To check Stop delivery by hand (still required on Zen 1.24b): note the `zen_events` cursor, call `zen_progress { title: "Stop check", stoppable: true }`, then press **Stop** once on the card and confirm the label changes to "Stopping...". Call `zen_events { after: <cursor>, waitSeconds: 25 }`: a working bridge returns `stopped: true` plus a `kind: "stop"` event, and the next `zen_progress` update keeps the button disabled until `zen_progress { done: true }` clears the card. If the button returns to "Retry stop", the press was not delivered; it is retried automatically after a reconnect, or press it again once the bridge is back.
+
 The global Pause switch pushes `kind: "pause"` and `kind: "resume"` events, and `zen_events` reports `paused: true` until Resume. While paused, every browser tool returns the `paused` error; do not retry in a loop. Pause also hides the progress card and defers questions.
 
 `zen_watch_add` watches a tab for:

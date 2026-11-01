@@ -10,6 +10,7 @@ import type {
   UiQuestion,
 } from "../shared/protocol.js";
 import { createOps } from "./ops.js";
+import { PendingStopStore, deliverStop } from "./pending-stop.js";
 import { ZenMcpUi } from "./ui.js";
 
 /**
@@ -51,9 +52,16 @@ import { ZenMcpUi } from "./ui.js";
   let authenticated = false;
   let clientNonce = "";
   let authTimer: ReturnType<typeof setTimeout> | null = null;
+  // A Stop press that could not be sent while the socket was down or before
+  // the handshake finished. It is retried once the connection is usable.
+  const pendingStop = new PendingStopStore();
 
   const send = (message: BridgeToServer): boolean => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    // The host closes a connection on anything but auth before the handshake,
+    // so a message is only delivered when the socket is open and authenticated.
+    if (!authenticated || !socket || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
     try {
       socket.send(JSON.stringify(message));
       return true;
@@ -108,11 +116,14 @@ import { ZenMcpUi } from "./ui.js";
   };
 
   const ui = new ZenMcpUi(win.document, {
-    onStop: (progressId) => {
-      // If the socket is down the card stays disabled; the host resends
-      // progress state (including null) after the reconnect.
-      send({ type: "ui.stop", progressId, ts: Date.now() });
-    },
+    onStop: (progressId) =>
+      deliverStop(pendingStop, progressId, (stop) =>
+        send({
+          type: "ui.stop",
+          progressId: stop.progressId,
+          ts: stop.ts,
+        })
+      ),
     onConsent: (id, granted) =>
       send({ type: "ui.consentResult", id, granted }),
     onBannerAction: (action) =>
@@ -129,6 +140,22 @@ import { ZenMcpUi } from "./ui.js";
       focused: win.document.hasFocus(),
       appVersion: String(Services.appinfo.version),
       platform: String(Services.appinfo.OS),
+    });
+  };
+
+  /**
+   * Retries a Stop press that was made while the socket was down or still
+   * authenticating. The queued timestamp is kept from the original press; the
+   * host stamps the event. The entry stays queued until the host echoes
+   * `stopRequested` or the progress card is replaced or cleared.
+   */
+  const flushPendingStop = () => {
+    const pending = pendingStop.peek();
+    if (!pending) return;
+    send({
+      type: "ui.stop",
+      progressId: pending.progressId,
+      ts: pending.ts,
     });
   };
 
@@ -206,6 +233,7 @@ import { ZenMcpUi } from "./ui.js";
     authenticated = true;
     clearAuthTimer();
     sendHello();
+    flushPendingStop();
   };
 
   const handleMessage = async (message: ServerToBridge, ws: WebSocket) => {
@@ -235,9 +263,17 @@ import { ZenMcpUi } from "./ui.js";
       case "ui.cancel":
         ui.cancelQuestion(message.id);
         return;
-      case "ui.progress":
+      case "ui.progress": {
         ui.showProgress(message.progress);
+        // The host echo confirms the Stop, the card was cleared, or a newer
+        // card replaced the one the queued press belongs to.
+        if (!message.progress || message.progress.stopRequested) {
+          pendingStop.clear();
+        } else {
+          pendingStop.clearIfProgressMoved(message.progress.id);
+        }
         return;
+      }
       case "ui.consent":
         ui.showConsent(message.consent);
         return;
@@ -397,6 +433,7 @@ import { ZenMcpUi } from "./ui.js";
       }
     }
     ui.destroy();
+    pendingStop.clear();
     if (win.__zenMcpBridge?.windowId === windowId) {
       delete win.__zenMcpBridge;
     }

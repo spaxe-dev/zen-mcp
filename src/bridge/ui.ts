@@ -26,8 +26,12 @@ export interface ActivityHandlers {
 }
 
 export interface ProgressHandlers {
-  /** Called once when the user presses Stop on a progress card. */
-  onStop?(progressId: string): void;
+  /**
+   * Called once when the user presses Stop on a progress card. Returns false
+   * when the press could not be delivered; the button is re-enabled then so
+   * the user can retry instead of being left on "Stopping...".
+   */
+  onStop?(progressId: string): boolean | void;
   /** Returns false when the approval could not be delivered. */
   onConsent?(id: string, granted: boolean): boolean;
   /** Returns false when the pause or resume request could not be delivered. */
@@ -1129,11 +1133,18 @@ export class ZenMcpUi {
       view.stopRequested = true;
       view.stop.disabled = true;
       view.stop.textContent = "Stopping\u2026";
+      let delivered = true;
       try {
-        this.#handlers.onStop?.(view.id);
+        delivered = this.#handlers.onStop?.(view.id) !== false;
       } catch {
-        // The host clears or resends the card on reconnect.
+        delivered = false;
       }
+      if (delivered || view.removed) return;
+      // The press never reached the host. Let the user try again instead of
+      // leaving the card permanently on "Stopping...".
+      view.stopRequested = false;
+      view.stop.disabled = false;
+      view.stop.textContent = "Retry stop";
     });
 
     this.#updateProgress(view, progress);
