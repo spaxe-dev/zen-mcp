@@ -85,6 +85,7 @@ Resources return errors as JSON instead of failing the request. The message desc
 - PDF text extraction depends on Zen's PDF viewer and is unreliable for hidden tabs.
 - Watches run in the server process and stop when it exits. They do not survive a restart.
 - Consent is per server process, not per browser window. Approval is reused across relaunches, and a decline requires a server restart.
+- `zen_essentials` captures a tab's space and pinned state before adding it and restores both when it is removed. The bridge never switches the user's space to do this. If Zen refuses the move back, the result includes a `limitation`; the essential still works, but the tab may need to be moved with the space tools.
 - Read-only mode blocks mutations, not reads. Session and template listings still show stored URLs.
 - The domain allowlist is checked before an action and again immediately after `zen_tabs_open`, but a redirect that happens later can move a tab outside the list. Reads recheck the tab URL.
 - The audit log redacts sensitive values and long strings, but a bounded preview of the summarized argument JSON can remain. Resource reads are logged as `resource:<uri>` entries without arguments.

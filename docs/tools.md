@@ -27,7 +27,7 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 | `zen_split_view` | Show 2 to 4 tabs from the active space side by side |
 | `zen_split_close` | Close a split view; the tabs stay open |
 | `zen_pin_tabs` | Pin or unpin tabs in a space |
-| `zen_essentials` | Add tabs to essentials or remove them |
+| `zen_essentials` | Add tabs to essentials or remove them. Both actions preserve the tab's original space and pinned state; a limitation is returned when Zen refuses the restoration |
 | `zen_containers_list` | List Firefox containers for isolation |
 
 `zen_tab_select` waits for a cross-space switch to settle, then retries the selection until Zen reports the tab as active. The returned tab has `active: true` only after that check, `windowFocused` reports whether the window actually took focus when `focusWindow: true` was requested, and a tab that never becomes active fails with `select_failed` instead of a false success.

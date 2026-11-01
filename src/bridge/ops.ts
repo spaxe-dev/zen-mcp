@@ -78,6 +78,14 @@ import {
 import { findEvidenceQuote } from "../shared/evidence.js";
 import { findLiteralMatches } from "../shared/search.js";
 import { activateTab, type TabActivationOutcome } from "./tab-activation.js";
+import {
+  captureEssentialsState,
+  EssentialsStateStore,
+  restoreEssentialsState,
+  verifyEssentialsState,
+  type EssentialsCapture,
+  type EssentialsRestoreHost,
+} from "./essentials-state.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -96,6 +104,8 @@ const EVIDENCE_SETTLE_MS = 200;
 const EVIDENCE_MAX_TEXT = 600_000;
 const EVIDENCE_HIGHLIGHT_MS = 20_000;
 const EVIDENCE_MAX_ATTEMPTS = 3;
+/** Time Zen gets to settle after an essentials change. */
+const LAYOUT_SETTLE_MS = 120;
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -143,6 +153,29 @@ export function createOps(win: ChromeWindow, windowId: string) {
   const tabsById = new Map<string, ChromeTab>();
   /** Overlay attribute names created by this bridge session, per tab. */
   const evidenceMarkers = new Map<string, string[]>();
+  /** Space and pinned state captured before tabs entered essentials. */
+  const essentialsCaptures = new EssentialsStateStore();
+
+  const essentialsRestoreHost = (): EssentialsRestoreHost => {
+    const workspaceManager = win.gZenWorkspaces;
+    const browser = win.gBrowser;
+    return {
+      moveTabsToWorkspace:
+        workspaceManager &&
+        typeof workspaceManager.moveTabsToWorkspace === "function"
+          ? (tabs, spaceId) =>
+              workspaceManager.moveTabsToWorkspace(tabs, spaceId)
+          : undefined,
+      pinTab:
+        browser && typeof browser.pinTab === "function"
+          ? (tab) => browser.pinTab(tab)
+          : undefined,
+      unpinTab:
+        browser && typeof browser.unpinTab === "function"
+          ? (tab) => browser.unpinTab(tab)
+          : undefined,
+    };
+  };
 
   const markersFor = (tabId: string): string[] =>
     evidenceMarkers.get(tabId) ?? [];
@@ -278,6 +311,22 @@ export function createOps(win: ChromeWindow, windowId: string) {
   const isEssentialTab = (tab: ChromeTab): boolean =>
     tab.hasAttribute("zen-essential") ||
     tab.getAttribute("zen-essential") === "true";
+
+  /** Formats captured restoration failures as one user-facing limitation. */
+  const describeEssentialsLimitations = (
+    notes: Map<string, Set<string>>
+  ): string | undefined => {
+    if (notes.size === 0) return undefined;
+    return [...notes]
+      .map(([tabId, reasons]) => {
+        const tab = tabsById.get(tabId);
+        const label = tab
+          ? `"${tabTitle(tab)}" (${tabId})`
+          : `(${tabId})`;
+        return `The tab ${label} ${[...reasons].join(", ")}.`;
+      })
+      .join(" ");
+  };
 
   const folderOf = (tab: ChromeTab): ChromeFolder | null => {
     const group = tab.group;
@@ -1708,15 +1757,62 @@ export function createOps(win: ChromeWindow, windowId: string) {
         throw new OpsError("no_tabs", "Provide tabIds to add to essentials");
       }
       const changed: string[] = [];
+      const tracked: Array<{
+        tab: ChromeTab;
+        tabId: string;
+        capture: EssentialsCapture;
+      }> = [];
       for (const tab of tabs) {
         if (isEssentialTab(tab)) continue;
+        const tabId = idForTab(tab);
+        // Capture before Zen can re-home the tab. Repeated adds keep the first
+        // capture so the essentials placement never overwrites the original.
+        const capture = captureEssentialsState(essentialsCaptures, tabId, tab);
         const added = await Promise.resolve(manager.addToEssentials(tab));
-        if (added === true) changed.push(idForTab(tab));
+        if (added === true) {
+          changed.push(tabId);
+          tracked.push({ tab, tabId, capture });
+        }
       }
-      if (changed.length) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
+
+      const notes = new Map<string, Set<string>>();
+      const note = (tabId: string, reasons: string[]): void => {
+        if (!reasons.length) return;
+        const existing = notes.get(tabId) ?? new Set<string>();
+        for (const reason of reasons) existing.add(reason);
+        notes.set(tabId, existing);
+      };
+      let restored = 0;
+      if (tracked.length) {
+        await sleep(LAYOUT_SETTLE_MS);
+        for (const entry of tracked) {
+          const report = restoreEssentialsState(
+            entry.capture,
+            entry.tab,
+            essentialsRestoreHost(),
+            { restorePinned: false }
+          );
+          if (report.applied && report.spaceRestored) restored++;
+          note(entry.tabId, report.reasons);
+        }
+        // Give Zen a moment to apply the restore, then confirm it held.
+        await sleep(LAYOUT_SETTLE_MS);
+        for (const entry of tracked) {
+          const verification = verifyEssentialsState(
+            entry.capture,
+            entry.tab,
+            { restorePinned: false }
+          );
+          note(entry.tabId, verification.reasons);
+        }
       }
-      return { tabIds: changed, changed: changed.length } satisfies EssentialsResult;
+      const limitation = describeEssentialsLimitations(notes);
+      return {
+        tabIds: changed,
+        changed: changed.length,
+        ...(tracked.length ? { restored } : {}),
+        ...(limitation ? { limitation } : {}),
+      } satisfies EssentialsResult;
     },
 
     "essentials.remove": async (params: EssentialsParams) => {
@@ -1732,15 +1828,72 @@ export function createOps(win: ChromeWindow, windowId: string) {
         throw new OpsError("no_tabs", "Provide tabIds to remove from essentials");
       }
       const changed: string[] = [];
+      const tracked: Array<{
+        tab: ChromeTab;
+        tabId: string;
+        capture: EssentialsCapture | undefined;
+      }> = [];
       for (const tab of tabs) {
         if (!isEssentialTab(tab)) continue;
+        const tabId = idForTab(tab);
         const removed = await Promise.resolve(manager.removeEssentials(tab));
-        if (removed !== false) changed.push(idForTab(tab));
+        if (removed !== false) {
+          changed.push(tabId);
+          // A missing capture means this bridge session did not add the tab,
+          // so its prior state is unknown and no restoration is attempted.
+          tracked.push({
+            tab,
+            tabId,
+            capture: essentialsCaptures.take(tabId),
+          });
+        }
       }
-      if (changed.length) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
+
+      const notes = new Map<string, Set<string>>();
+      const note = (tabId: string, reasons: string[]): void => {
+        if (!reasons.length) return;
+        const existing = notes.get(tabId) ?? new Set<string>();
+        for (const reason of reasons) existing.add(reason);
+        notes.set(tabId, existing);
+      };
+      let restored = 0;
+      const withCapture = tracked.filter(
+        (entry): entry is typeof entry & { capture: EssentialsCapture } =>
+          entry.capture !== undefined
+      );
+      if (withCapture.length) {
+        await sleep(LAYOUT_SETTLE_MS);
+        for (const entry of withCapture) {
+          const report = restoreEssentialsState(
+            entry.capture,
+            entry.tab,
+            essentialsRestoreHost()
+          );
+          if (
+            report.applied &&
+            report.spaceRestored &&
+            report.pinnedRestored
+          ) {
+            restored++;
+          }
+          note(entry.tabId, report.reasons);
+        }
+        await sleep(LAYOUT_SETTLE_MS);
+        for (const entry of withCapture) {
+          const verification = verifyEssentialsState(
+            entry.capture,
+            entry.tab
+          );
+          note(entry.tabId, verification.reasons);
+        }
       }
-      return { tabIds: changed, changed: changed.length } satisfies EssentialsResult;
+      const limitation = describeEssentialsLimitations(notes);
+      return {
+        tabIds: changed,
+        changed: changed.length,
+        ...(withCapture.length ? { restored } : {}),
+        ...(limitation ? { limitation } : {}),
+      } satisfies EssentialsResult;
     },
 
     "containers.list": () =>

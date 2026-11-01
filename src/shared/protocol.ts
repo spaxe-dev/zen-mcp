@@ -843,6 +843,10 @@ export interface EssentialsParams {
 export interface EssentialsResult {
   tabIds: string[];
   changed: number;
+  /** Tabs whose previous space and pinned state were confirmed. */
+  restored?: number;
+  /** Present when Zen refused or did not confirm a state restoration. */
+  limitation?: string;
 }
 
 export interface TabReadParams {

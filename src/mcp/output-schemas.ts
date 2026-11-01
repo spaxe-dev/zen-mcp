@@ -414,6 +414,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
   zen_essentials: {
     tabIds: z.array(z.string()),
     changed: z.number(),
+    restored: z.number().optional(),
+    limitation: z.string().optional(),
   },
   zen_containers_list: {
     containers: z.array(containerInfoSchema),
