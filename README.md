@@ -1,8 +1,15 @@
-# Zen MCP
-
-<p align="center">
-  <img src="docs/zen-mcp-icon.png" alt="Zen MCP icon: a browser window with a bridge between two panes" width="160" />
-</p>
+<div align="center">
+  <img src="docs/zen-mcp-icon.png" alt="Zen MCP icon: a browser window with a bridge between two panes" width="132" />
+  <h1>Zen MCP</h1>
+  <p>Let your AI agent work in Zen Browser, with you in control.</p>
+  <p>
+    <a href="https://www.npmjs.com/package/@spaxe-dev/zen-mcp"><img src="https://img.shields.io/npm/v/%40spaxe-dev%2Fzen-mcp?label=npm" alt="npm version" /></a>
+    <a href="https://www.npmjs.com/package/@spaxe-dev/zen-mcp"><img src="https://img.shields.io/npm/dm/%40spaxe-dev%2Fzen-mcp?label=downloads" alt="monthly npm downloads" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/spaxe-dev/zen-mcp" alt="MIT license" /></a>
+    <img src="https://img.shields.io/node/v/%40spaxe-dev%2Fzen-mcp?label=node" alt="Node.js requirement" />
+    <a href="https://github.com/spaxe-dev/zen-mcp/actions/workflows/ci.yml"><img src="https://github.com/spaxe-dev/zen-mcp/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  </p>
+</div>
 
 Zen MCP is an MCP server that lets an AI agent work inside [Zen Browser](https://zen-browser.app) using Zen's own spaces, folders, and tabs. The agent can research in background tabs, read and search pages without switching what you are looking at, ask you a question in a small in-browser card, and show the evidence behind an answer.
 
