@@ -113,7 +113,7 @@ npx @spaxe-dev/zen-mcp setup
 Each GitHub release also attaches a package tarball and a `SHA256SUMS` file:
 
 ```sh
-npm install -g ./zen-mcp-0.3.0.tgz
+npm install -g ./zen-mcp-0.3.2.tgz
 zen-mcp setup
 ```
 
