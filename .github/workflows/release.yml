@@ -1,0 +1,73 @@
+name: Release
+
+# Publishes the scoped package @spaxe-dev/zen-mcp and the GitHub Release.
+# The live Zen suite (npm run test:zen) is not run here: it needs a desktop
+# session and a real Zen Browser, which hosted runners do not provide.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+jobs:
+  release:
+    name: Build, release, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run build
+
+      - run: npm test
+
+      - name: Pack tarball and checksums
+        run: |
+          npm pack
+          version=$(node -p "require('./package.json').version")
+          packed=$(ls ./*.tgz)
+          mv "$packed" "zen-mcp-${version}.tgz"
+          sha256sum "zen-mcp-${version}.tgz" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zen-mcp-release
+          path: |
+            zen-mcp-*.tgz
+            SHA256SUMS
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            zen-mcp-*.tgz \
+            SHA256SUMS \
+            --title "$TAG" \
+            --generate-notes
+
+      # The unscoped name is never published. NODE_AUTH_TOKEN comes from the
+      # NPM_TOKEN secret; when it is missing the publish step is skipped and
+      # the workflow still produces the GitHub Release and artifacts.
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/') && env.NODE_AUTH_TOKEN != ''
+        run: npm publish --access public

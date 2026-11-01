@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible problem with Zen MCP.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here. Use the private channel
+        described in SECURITY.md.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: zen-version
+    attributes:
+      label: Zen version
+      description: The version shown in Zen's About window.
+      placeholder: "1.24b"
+    validations:
+      required: true
+  - type: dropdown
+    id: launch-method
+    attributes:
+      label: How was Zen launched?
+      description: Zen MCP only controls a browser it started itself.
+      options:
+        - Zen MCP launched the browser
+        - An existing Zen window was already open
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`.
+      placeholder: "v22.18.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - npm install -g @spaxe-dev/zen-mcp
+        - npx @spaxe-dev/zen-mcp
+        - GitHub release tarball
+        - From source (git clone and npm run build)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a clean Zen state when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error code or message if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste relevant output from `zen-mcp doctor` or the MCP client log.
+        Remove tokens, bridge keys, full URLs, page text, and personal paths.
+      render: text
+    validations:
+      required: false

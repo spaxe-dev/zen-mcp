@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/spaxe-dev/zen-mcp/security/advisories/new
+    about: Report privately. Do not open a public issue for a vulnerability.
+  - name: Questions and discussion
+    url: https://github.com/spaxe-dev/zen-mcp/discussions
+    about: Ask usage questions and discuss ideas before filing a request.

@@ -1,5 +1,5 @@
 {
-  "name": "zen-mcp",
+  "name": "@spaxe-dev/zen-mcp",
   "version": "0.3.0",
   "description": "An agent harness for Zen Browser. Native spaces, background research tabs, and in-browser questions.",
   "license": "MIT",
@@ -23,6 +23,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "npm run build && node dist/cli.js",
