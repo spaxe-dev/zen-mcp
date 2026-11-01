@@ -31,8 +31,8 @@
     "dev": "npm run build && node dist/cli.js",
     "start": "node dist/cli.js serve",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/unit/*.test.ts",
-    "test:zen": "tsx --test --test-concurrency=1 test/integration/*.test.ts",
+    "test": "node scripts/run-tests.mjs test/unit",
+    "test:zen": "node scripts/run-tests.mjs test/integration --test-concurrency=1",
     "prepack": "npm run build"
   },
   "keywords": [
@@ -46,7 +46,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "commander": "^15.0.0",
+    "commander": "^14.0.3",
     "ws": "^8.22.0",
     "zod": "^4.6.7"
   },
