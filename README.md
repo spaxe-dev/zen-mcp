@@ -1,5 +1,8 @@
 # Zen MCP
 
+[![CI](https://github.com/spaxe-dev/zen-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/spaxe-dev/zen-mcp/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/spaxe-dev/zen-mcp)](https://github.com/spaxe-dev/zen-mcp/releases/latest)
+
 An agent harness for [Zen Browser](https://zen-browser.app). Zen MCP gives an
 MCP agent hands-on control of a real Zen window: native spaces, folders, tabs,
 history, bookmarks, page reading, and questions that the user answers inside the
@@ -71,8 +74,18 @@ More screenshots: [progress and Stop](docs/screenshots/v0.2-progress-stop.png),
 ## Requirements
 
 - Node.js 20 or newer.
-- Zen Browser. Developed and tested against Zen 1.24b on Windows; the mechanisms
-  are Firefox-based and should work on macOS and Linux.
+- Zen Browser, with this support status:
+
+  | Platform | Status |
+  | --- | --- |
+  | Windows | Live-tested with Zen 1.24b |
+  | macOS | Code paths implemented and covered by CI; live launch not yet verified |
+  | Linux | Code paths implemented for distro, Flatpak, and Snap builds; live launch not yet verified |
+
+  The Firefox mechanisms (Marionette, profile locking, and remote chrome
+  access) are shared across platforms, but "not yet verified" means nobody has
+  run a real Zen launch there. Treat those platforms as untested until a live
+  launch, the consent card, and a clean shutdown have passed.
 - Zen MCP must start Zen itself. Firefox only exposes chrome-level remote
   control when the browser process is launched with `MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1`,
   and the harness sets that only in the child process it spawns. A Zen that was
@@ -81,6 +94,31 @@ More screenshots: [progress and Stop](docs/screenshots/v0.2-progress-stop.png),
 - The default agent profile is separate from your normal browsing profile.
   `zen-mcp setup --use-default-profile` opts into your normal profile, which
   lets the agent see pages where you are signed in.
+
+## Install
+
+With Node.js 20 or newer:
+
+```sh
+npm install -g @spaxe-dev/zen-mcp
+zen-mcp setup
+```
+
+Or run the setup without a global install:
+
+```sh
+npx @spaxe-dev/zen-mcp setup
+```
+
+Each GitHub release also attaches a package tarball and a `SHA256SUMS` file:
+
+```sh
+npm install -g ./zen-mcp-0.3.0.tgz
+zen-mcp setup
+```
+
+The installed command is `zen-mcp` in every case. `setup` detects Zen, writes a
+config, and prints an MCP snippet.
 
 ## Install from source
 
@@ -234,6 +272,32 @@ Three prompts set up common jobs: `zen_github_triage` for notifications and pull
 requests, `zen_research_brief` for a source-backed brief, and `zen_clean_tabs`
 for tab cleanup with a session saved first.
 
+### Client-visible behavior
+
+Zen MCP uses the standard MCP request metadata rather than a custom side channel:
+
+- **Structured results.** Every tool declares an `outputSchema`. A successful
+  call returns the typed object in `structuredContent` and the same JSON in a
+  text block, so older clients keep working. Errors are `isError: true` with no
+  `structuredContent`.
+- **Progress.** When a client supplies a progress token, `zen_read_page`,
+  `zen_read_pages`, and `zen_show_evidence_batch` send
+  `notifications/progress` between phases or after each tab or citation. No
+  token means no notifications.
+- **Cancellation.** A cancelled request stops waiting on the bridge and returns
+  a cancellation error. A browser command that is already in flight may still
+  finish in Zen, but the server never reports it as a success.
+- **Resources.** All five resources carry a title. Successful tools that change
+  tabs or spaces emit `notifications/resources/list_changed` so clients can
+  refresh. Resource subscriptions are not offered in 0.3; clients re-read on
+  demand. Completion is not offered either, because the fixed resource URIs
+  have no template variables to complete.
+- **Logging.** Server warnings and errors reach the client through
+  `notifications/message`. Messages contain the tool name, error code, and a
+  sanitized description with URLs replaced by `[redacted-url]`. They never
+  contain arguments, page text, tab URLs, or bridge keys. The file audit log
+  remains the durable record.
+
 ## Reading pages in the background
 
 `zen_read_page` and `zen_read_pages` never change what the user is looking at.
@@ -250,8 +314,31 @@ Formats:
 - `outline`: the heading tree.
 - `selector`: limit any format to one CSS-selected element.
 
-The result includes the title, URL, selected text, content type, and length, with
-truncation at `maxChars` (24,000 by default, 60,000 maximum).
+The result includes the title, URL, selected text, content type, length,
+`offset`, and `nextOffset`. `maxChars` limits each chunk (24,000 by default,
+60,000 maximum).
+
+Long `text` and `markdown` reads are paged. Pass `nextOffset` from one result as
+`offset` on the next call; `nextOffset` is `null` when the stream is exhausted.
+Offsets are clamped to the page length, so reading past the end returns empty
+text instead of an error.
+
+```text
+zen_read_page { tabId: "42", maxChars: 24000, offset: 0 }
+→ { text: "...", length: 85213, offset: 0, nextOffset: 24000, truncated: true }
+
+zen_read_page { tabId: "42", maxChars: 24000, offset: 24000 }
+→ { text: "...", length: 85213, offset: 24000, nextOffset: 48000, truncated: true }
+```
+
+`zen_read_pages` applies the same offset to every tab in the batch. `links`,
+`tables`, `metadata`, and `outline` ignore `offset` and return their complete
+structured data with a `limitation` note, because a character cursor does not
+map cleanly to a list of items.
+
+Offsets are positions in the extracted text, not the raw HTML. They stay stable
+while the page is unchanged. If the page changes between calls, earlier offsets
+can shift, so start again from offset 0 when the content has changed.
 
 PDF text is extracted through Zen's PDF viewer. Firefox only initializes that
 viewer for a visible PDF tab, so a PDF opened in a hidden space returns
@@ -621,7 +708,10 @@ Space and folder operations use Zen's own JS APIs (`gZenWorkspaces`,
 
 The threat model is a local process on the same account, a page the agent reads,
 or the model itself trying to drive the browser behind the user's back. Zen MCP
-is built so each of those has a hard boundary, not just a policy check.
+is built so each of those has a hard boundary, not just a policy check. The
+full threat model is in [docs/security.md](docs/security.md). To report a
+vulnerability, use the private channel in [SECURITY.md](SECURITY.md), not a
+public issue.
 
 - **Chrome access is opt-in per process.** Only a Zen spawned by Zen MCP gets
   `MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1`, and only in that child's environment. No
@@ -648,9 +738,11 @@ is built so each of those has a hard boundary, not just a policy check.
 - **The owned browser is quit on shutdown.** The server tries a graceful quit,
   then a forced quit, then terminates the recorded browser process. A browser
   whose identity was never verified is never killed.
-- **The bridge has a fixed method map.** It binds to `127.0.0.1`, requires a
-  256-bit token on the socket URL and in the hello message, and compares tokens
-  with `timingSafeEqual`. There is no eval-from-agent tool; Evidence Mode passes
+- **The bridge authenticates both sides.** It listens on `127.0.0.1` only and
+  uses a fixed method map. A 256-bit key generated for the server session is
+  shared only with the injected bridge, and every connection, including a
+  reconnect, completes a mutual HMAC-SHA256 challenge with a fresh nonce before
+  any request is accepted. There is no eval-from-agent tool; Evidence Mode passes
   only the quote, context, and offsets into scripts built by the server.
 - **Input is constrained.** `zen_tabs_open` accepts only `http:`, `https:`, and
   `about:` URLs. `zen_show_evidence` and `zen_show_evidence_batch` accept only
@@ -770,11 +862,11 @@ server.
 ## Tests
 
 ```sh
-npm test                     # 120 unit tests, no browser
+npm test                     # 185 unit tests, no browser
 ZEN_MCP_E2E=1 npm run test:zen
 ```
 
-The integration suite has 34 tests in four groups: the MCP server against a
+The integration suite has 34 tests in six groups: the MCP server against a
 real headless Zen that the server launches itself, policy enforcement with
 read-only and allowlist servers, the runtime against a real browser, and the
 security boundary. It creates spaces, reads pages and formats, moves tabs into
