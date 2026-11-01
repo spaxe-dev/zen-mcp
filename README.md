@@ -1,5 +1,9 @@
 # Zen MCP
 
+<p align="center">
+  <img src="docs/zen-mcp-icon.png" alt="Zen MCP icon: a browser window with a bridge between two panes" width="160" />
+</p>
+
 Zen MCP is an MCP server that lets an AI agent work inside [Zen Browser](https://zen-browser.app) using Zen's own spaces, folders, and tabs. The agent can research in background tabs, read and search pages without switching what you are looking at, ask you a question in a small in-browser card, and show the evidence behind an answer.
 
 Status: **0.3.x, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
@@ -192,7 +196,7 @@ Zen MCP is usable but pre-1.0. The tool surface and configuration keys have chan
 - **Windows** is the only platform with a live-tested launch, consent card, evidence overlay, and shutdown against Zen 1.24b.
 - **macOS and Linux** compile and pass unit tests on CI, but no live Zen launch has been verified. Report what you see if you test them.
 - **The live suite is manual.** It needs Zen and a desktop session and is not part of CI or the release workflow.
-- **Unit tests are broad but not exhaustive.** `npm test` currently runs 186 tests: 181 pass on Windows and 5 POSIX-specific tests are skipped. The live suite has 34 declarations across three files.
+- **Unit tests are broad but not exhaustive.** On Windows, `npm test` currently runs 163 tests: 158 pass and 5 POSIX-specific tests are skipped. The live suite has 34 declarations across three files.
 - **One agent browser per machine.** Current Zen builds use Marionette port 2828, and this server cannot share it.
 
 ## Known limitations
