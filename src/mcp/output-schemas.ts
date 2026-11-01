@@ -651,7 +651,11 @@ export const TOOL_OUTPUT_SCHEMAS = {
         at: z.string(),
         tool: z.string(),
         ok: z.boolean().optional(),
+        executed: z.boolean().optional(),
         durationMs: z.number().optional(),
+        citationsVerified: z.number().optional(),
+        citationsFailed: z.number().optional(),
+        outcome: z.enum(["success", "partial", "failed"]).optional(),
         args: z.unknown().optional(),
         error: z
           .looseObject({

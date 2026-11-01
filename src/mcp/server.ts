@@ -3,9 +3,11 @@ import { z } from "zod";
 import { BridgeRequestError } from "../bridge/host.js";
 import { dataDirPath, type ZenMcpConfig } from "../config.js";
 import {
+  auditOutcomeForResult,
   extractToolUrls,
   ToolGuard,
   ToolGuardError,
+  type AuditOutcomeFields,
   type AuditRecord,
 } from "./guard.js";
 import { TOOL_OUTPUT_SCHEMAS } from "./output-schemas.js";
@@ -202,7 +204,9 @@ export function createZenMcpServer(
     let urls: string[] = [];
     if (signal.aborted) {
       const error = new BridgeRequestError("cancelled", CANCELLED_MESSAGE);
-      guard.audit(auditRecord(tool, started, args, urls, false, error));
+      guard.audit(
+        auditRecord(tool, started, args, urls, { ok: false, executed: false }, error)
+      );
       logToolEvent("warning", tool, "cancelled", error.message);
       return errorResult(error);
     }
@@ -213,7 +217,9 @@ export function createZenMcpServer(
           "allowed until they press Resume. zen_events shows when access is " +
           "restored."
       );
-      guard.audit(auditRecord(tool, started, args, urls, false, error));
+      guard.audit(
+        auditRecord(tool, started, args, urls, { ok: false, executed: false }, error)
+      );
       logToolEvent("warning", tool, "paused", error.message);
       return errorResult(error);
     }
@@ -223,7 +229,14 @@ export function createZenMcpServer(
       guard.check(tool, args, urls);
     } catch (error) {
       guard.audit(
-        auditRecord(tool, started, args, urls, false, error)
+        auditRecord(
+          tool,
+          started,
+          args,
+          urls,
+          { ok: false, executed: false },
+          error
+        )
       );
       logToolEvent("warning", tool, errorCode(error), describeError(error));
       return errorResult(error);
@@ -236,7 +249,9 @@ export function createZenMcpServer(
       if (signal.aborted) {
         throw new BridgeRequestError("cancelled", CANCELLED_MESSAGE);
       }
-      guard.audit(auditRecord(tool, started, args, urls, true));
+      guard.audit(
+        auditRecord(tool, started, args, urls, auditOutcomeForResult(tool, value))
+      );
       if (RESOURCE_CHANGING_TOOLS.has(tool)) {
         try {
           server.sendResourceListChanged();
@@ -253,7 +268,14 @@ export function createZenMcpServer(
         ? new BridgeRequestError("cancelled", CANCELLED_MESSAGE)
         : error;
       guard.audit(
-        auditRecord(tool, started, args, urls, false, failure)
+        auditRecord(
+          tool,
+          started,
+          args,
+          urls,
+          { ok: false, executed: false },
+          failure
+        )
       );
       const code = errorCode(failure);
       logToolEvent(
@@ -2356,11 +2378,23 @@ export function createZenMcpServer(
         value = await read();
       } catch (error) {
         guard.audit(
-          auditRecord(`resource:${uri}`, started, undefined, [], false, error)
+          auditRecord(
+            `resource:${uri}`,
+            started,
+            undefined,
+            [],
+            { ok: false, executed: false },
+            error
+          )
         );
         throw error;
       }
-      guard.audit(auditRecord(`resource:${uri}`, started, undefined, [], true));
+      guard.audit(
+        auditRecord(`resource:${uri}`, started, undefined, [], {
+          ok: true,
+          executed: true,
+        })
+      );
       return value;
     });
 
@@ -2534,14 +2568,22 @@ function auditRecord(
   started: number,
   args: Record<string, unknown> | undefined,
   urls: string[],
-  ok: boolean,
+  fields: AuditOutcomeFields,
   error?: unknown
 ): AuditRecord {
   return {
     at: new Date().toISOString(),
     tool,
-    ok,
+    ok: fields.ok,
+    executed: fields.executed,
     durationMs: Date.now() - started,
+    ...(fields.citationsVerified !== undefined
+      ? { citationsVerified: fields.citationsVerified }
+      : {}),
+    ...(fields.citationsFailed !== undefined
+      ? { citationsFailed: fields.citationsFailed }
+      : {}),
+    ...(fields.outcome !== undefined ? { outcome: fields.outcome } : {}),
     ...(args !== undefined ? { args } : {}),
     ...(urls.length > 0 ? { urls: [...new Set(urls)].slice(0, 30) } : {}),
     ...(error !== undefined

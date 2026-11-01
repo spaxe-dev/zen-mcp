@@ -39,6 +39,7 @@ function record(overrides: Partial<AuditRecord> = {}): AuditRecord {
     at: new Date().toISOString(),
     tool: "zen_status",
     ok: true,
+    executed: true,
     durationMs: 3,
     ...overrides,
   };

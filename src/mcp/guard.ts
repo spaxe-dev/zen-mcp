@@ -72,15 +72,86 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "zen_clear_evidence",
 ]);
 
-export interface AuditRecord {
+/** Verification outcome of an evidence batch, when the result carries counts. */
+export type AuditOutcome = "success" | "partial" | "failed";
+
+/** Outcome fields derived from a handler result and stored on the audit line. */
+export interface AuditOutcomeFields {
+  /** True when the tool's structured result succeeded. */
+  ok: boolean;
+  /** True when the handler returned a result rather than being blocked or throwing. */
+  executed: boolean;
+  /** Citations that verified, for evidence batch results. */
+  citationsVerified?: number;
+  /** Citations that failed, for evidence batch results. */
+  citationsFailed?: number;
+  /** Batch verification outcome when citation counts are present. */
+  outcome?: AuditOutcome;
+}
+
+export interface AuditRecord extends AuditOutcomeFields {
   /** ISO timestamp of when the call finished. */
   at: string;
   tool: string;
-  ok: boolean;
   durationMs: number;
   args?: unknown;
   error?: { code?: string; message: string };
   urls?: string[];
+}
+
+/**
+ * Derives the audit flags for a handler result without inspecting page text or
+ * quote content. Tools that return no structured `ok` field keep the previous
+ * behavior: a returned result is a success. Evidence batch results add the
+ * verified and failed citation counts and a coarse outcome.
+ */
+export function auditOutcomeForResult(
+  tool: string,
+  value: unknown
+): AuditOutcomeFields {
+  const result =
+    value !== null && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const structuredOk =
+    result && typeof result.ok === "boolean" ? result.ok : undefined;
+  const fields: AuditOutcomeFields = {
+    ok: structuredOk ?? true,
+    executed: true,
+  };
+  if (!result) {
+    return fields;
+  }
+
+  const total = result.total;
+  const verified = result.verified;
+  const failed = result.failed;
+  const batchShaped =
+    tool === "zen_show_evidence_batch" ||
+    total !== undefined ||
+    verified !== undefined ||
+    failed !== undefined;
+  if (
+    !batchShaped ||
+    typeof total !== "number" ||
+    !Number.isFinite(total) ||
+    typeof verified !== "number" ||
+    !Number.isFinite(verified) ||
+    typeof failed !== "number" ||
+    !Number.isFinite(failed)
+  ) {
+    return fields;
+  }
+
+  fields.citationsVerified = verified;
+  fields.citationsFailed = failed;
+  fields.outcome =
+    fields.ok && failed === 0
+      ? "success"
+      : verified > 0
+        ? "partial"
+        : "failed";
+  return fields;
 }
 
 export interface GuardOptions {
@@ -430,7 +501,15 @@ export class ToolGuard {
           at: next.at,
           tool: next.tool,
           ok: next.ok,
+          executed: next.executed,
           durationMs: next.durationMs,
+          ...(next.citationsVerified !== undefined
+            ? { citationsVerified: next.citationsVerified }
+            : {}),
+          ...(next.citationsFailed !== undefined
+            ? { citationsFailed: next.citationsFailed }
+            : {}),
+          ...(next.outcome !== undefined ? { outcome: next.outcome } : {}),
           urls: next.urls,
           args: { truncated: true },
           ...(next.error ? { error: next.error } : {}),
