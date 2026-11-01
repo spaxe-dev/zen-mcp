@@ -131,7 +131,7 @@ A failure sets `ok` to `false`, adds `error: { code, message }`, and never highl
 | `PAGE_NOT_FOUND` | The tab closed, navigated away, or could not be reached. |
 | `PAGE_STILL_LOADING` | The document did not finish loading within 12 seconds. |
 | `QUOTE_NOT_FOUND` | The quote is absent from the page's readable text. |
-| `AMBIGUOUS_MATCH` | The passage repeats and no context selected one occurrence. |
+| `AMBIGUOUS_MATCH` | The passage repeats and no context clearly selected one occurrence, or the occurrence scan hit its cap without a clear winner. |
 | `LOW_MATCH_CONFIDENCE` | The closest fuzzy passage is below the threshold. |
 | `HIGHLIGHT_FAILED` | The page changed too often between matching and marking, or the passage is not visible. |
 | `PRIVILEGED_PAGE` | The tab is on a browser-internal page. |
@@ -144,10 +144,10 @@ Matching runs in fixed code inside the bridge, in this order:
 
 1. **Exact.** A raw substring match with exact offsets, including case.
 2. **Normalized.** HTML entities are decoded; typographic quotes, dashes, and ellipses are folded; Unicode is NFKC-normalized, lowercased, and stripped of diacritics; whitespace is collapsed. Offsets are mapped back to the raw page text so the highlight covers the original characters.
-3. **Context.** When the quote appears more than once, the 800 characters around each occurrence are scored against `context` using token containment and bigram overlap. A clear winner is required; a tie stays ambiguous.
+3. **Context.** When the quote appears more than once, the matcher scores `context` before the occurrence cap becomes a hard ambiguity. Up to 300 occurrences are scanned when context is supplied (50 without context) and each candidate is scored against 240 characters before and 240 after it, using token containment, bigram overlap, and a proximity weight that rewards context words nearer the candidate. A clear winner is required: the best score must be at least 0.2 and lead the runner-up by at least 0.1; otherwise the result stays ambiguous. A context-assisted match can still be one of several occurrences, so `occurrencesTruncated` is reported when the scan hit its cap.
 4. **Fuzzy.** Token-anchored windows are compared with a bounded Levenshtein distance. This only runs for quotes up to 300 characters and accepts a match at or above `min_confidence`. A fuzzy match never changes a number or a negation word.
 
-The matcher never picks one of several equally plausible passages. It reports `AMBIGUOUS_MATCH` or `LOW_MATCH_CONFIDENCE` instead. Before painting, the highlight script re-reads the page and checks that the raw text at the chosen offsets still equals the matched passage; if not, it re-indexes and retries, up to three times.
+The matcher never picks one of several equally plausible passages. It reports `AMBIGUOUS_MATCH` or `LOW_MATCH_CONFIDENCE` instead. Results report `occurrences`, and ambiguous results include candidate excerpts plus `occurrencesTruncated` when the scan stopped at its cap. Before painting, the highlight script re-reads the page and checks that the raw text at the chosen offsets still equals the matched passage; if not, it re-indexes and retries, up to three times.
 
 ### Supported pages
 
@@ -159,6 +159,7 @@ The matcher never picks one of several equally plausible passages. It reports `A
 ### Limitations
 
 - The first 600,000 characters of page text are indexed. Truncation is reported in `limitation`.
+- A quote is scanned up to 50 occurrences without context, or 300 with context. When the cap is reached, `occurrences` and `occurrencesTruncated` are a lower bound, and a context-assisted match can still be one of several matching passages.
 - Pages that continuously change can exhaust the three marking attempts and return `HIGHLIGHT_FAILED`.
 - The mark is an overlay, not a DOM edit. Layout changes while it is visible can move the underlying text away from the boxes. It disappears after `highlight_ms`, and `zen_clear_evidence` removes it sooner.
 - Only the current DOM is searched. Infinite-scroll content and content behind interaction are invisible until loaded.

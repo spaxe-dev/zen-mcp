@@ -84,10 +84,17 @@ interface CriticalProfile {
 
 const DEFAULT_MIN_CONFIDENCE = 0.85;
 const MAX_CANDIDATES = 5;
-const CONTEXT_WINDOW = 800;
+/** Characters of page text scored before and after each candidate. */
+const CONTEXT_BEFORE = 240;
+const CONTEXT_AFTER = 240;
+/** Token distance at which the proximity weight has halved in importance. */
+const CONTEXT_PROXIMITY_DECAY = 12;
 const CONTEXT_MIN_SCORE = 0.2;
 const CONTEXT_MIN_MARGIN = 0.1;
+/** With no context, an unbounded common word must still fail safely. */
 const MAX_OCCURRENCES = 50;
+/** Context-assisted scans look further, but stay bounded. */
+const MAX_CONTEXT_OCCURRENCES = 300;
 const MAX_FUZZY_QUOTE = 300;
 const MAX_FUZZY_WINDOWS = 160;
 const MIN_FUZZY_SIMILARITY = 0.45;
@@ -326,6 +333,11 @@ export function findEvidenceQuote(
       : [rawQuote];
 
   const context = decodeHtmlEntities(options.context ?? "").trim();
+  // Context is scored before the occurrence cap becomes a hard ambiguity, so
+  // context-assisted scans look further than the no-context safety cap.
+  const occurrenceLimit = context
+    ? MAX_CONTEXT_OCCURRENCES
+    : MAX_OCCURRENCES;
   const minConfidence = clamp(
     options.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
     0.5,
@@ -337,7 +349,7 @@ export function findEvidenceQuote(
   );
 
   for (const variant of quoteVariants) {
-    const exact = exactCandidates(page, variant);
+    const exact = exactCandidates(page, variant, occurrenceLimit);
     if (exact.starts.length > 0) {
       return resolveOccurrences(
         page,
@@ -349,7 +361,8 @@ export function findEvidenceQuote(
         1,
         context,
         maxCandidates,
-        exact.truncated
+        exact.truncated,
+        occurrenceLimit
       );
     }
   }
@@ -360,7 +373,12 @@ export function findEvidenceQuote(
   for (const variant of quoteVariants) {
     const quoteCanonical = canonicalizeEvidenceText(variant);
     if (!quoteCanonical.text) continue;
-    const found = normalizedCandidates(page, pageCanonical, quoteCanonical);
+    const found = normalizedCandidates(
+      page,
+      pageCanonical,
+      quoteCanonical,
+      occurrenceLimit
+    );
     normalizedTruncated = normalizedTruncated || found.truncated;
     normalizedSpans.push(...found.spans);
   }
@@ -373,7 +391,8 @@ export function findEvidenceQuote(
       0.99,
       context,
       maxCandidates,
-      normalizedTruncated
+      normalizedTruncated,
+      occurrenceLimit
     );
     if (outcome.status !== "not_found") return outcome;
   }
@@ -395,18 +414,20 @@ export function findEvidenceQuote(
 
 function exactCandidates(
   page: string,
-  quote: string
+  quote: string,
+  limit: number
 ): { starts: number[]; truncated: boolean } {
-  return findAll(page, quote, MAX_OCCURRENCES);
+  return findAll(page, quote, limit);
 }
 
 function normalizedCandidates(
   page: string,
   canonical: CanonicalText,
-  quoteCanonical: CanonicalText
+  quoteCanonical: CanonicalText,
+  limit: number
 ): { spans: CandidateSpan[]; truncated: boolean } {
   const quoteLength = quoteCanonical.text.length;
-  const found = findAll(canonical.text, quoteCanonical.text, MAX_OCCURRENCES);
+  const found = findAll(canonical.text, quoteCanonical.text, limit);
   const quoteFold = maxFold(quoteCanonical, 0, quoteLength);
   const seen = new Map<string, CandidateSpan>();
   for (const canonicalStart of found.starts) {
@@ -463,7 +484,8 @@ function resolveOccurrences(
   confidence: number,
   context: string,
   maxCandidates: number,
-  occurrencesTruncated = false
+  occurrencesTruncated: boolean,
+  occurrenceLimit: number
 ): EvidenceMatchOutcome {
   const candidates = spans.map((span) =>
     candidateFor(
@@ -475,20 +497,24 @@ function resolveOccurrences(
     )
   );
   if (candidates.length === 1) {
-    return { status: "matched", candidate: candidates[0], occurrences: 1 };
-  }
-
-  if (occurrencesTruncated) {
-    return ambiguousOutcome(
-      candidates,
-      maxCandidates,
-      `Found at least ${MAX_OCCURRENCES} matching passages and stopped counting at ${MAX_OCCURRENCES}. Supply a longer, more distinctive quote; no passage was highlighted.`,
-      MAX_OCCURRENCES,
-      true
-    );
+    return {
+      status: "matched",
+      candidate: candidates[0],
+      occurrences: 1,
+      ...(occurrencesTruncated ? { occurrencesTruncated: true } : {}),
+    };
   }
 
   if (!context) {
+    if (occurrencesTruncated) {
+      return ambiguousOutcome(
+        candidates,
+        maxCandidates,
+        `Found at least ${occurrenceLimit} matching passages and stopped counting at ${occurrenceLimit}. Supply a longer, more distinctive quote or nearby context; no passage was highlighted.`,
+        occurrenceLimit,
+        true
+      );
+    }
     return ambiguousOutcome(
       candidates,
       maxCandidates,
@@ -497,6 +523,8 @@ function resolveOccurrences(
     );
   }
 
+  // Score the capped candidate set before treating truncation as ambiguity: a
+  // clear context winner can still be highlighted, with truncation reported.
   scoreContexts(page, candidates, context);
   const ranked = [...candidates].sort(
     (left, right) =>
@@ -515,14 +543,18 @@ function resolveOccurrences(
         confidence: Math.min(0.95, best.confidence),
       },
       occurrences: candidates.length,
+      ...(occurrencesTruncated ? { occurrencesTruncated: true } : {}),
     };
   }
 
   return ambiguousOutcome(
     ranked,
     maxCandidates,
-    `Found ${candidates.length} matching passages and the supplied context did not clearly select one. No passage was highlighted.`,
-    candidates.length
+    occurrencesTruncated
+      ? `Found at least ${occurrenceLimit} matching passages and scored the first ${occurrenceLimit}, but the supplied context did not clearly select one. No passage was highlighted.`
+      : `Found ${candidates.length} matching passages and the supplied context did not clearly select one. No passage was highlighted.`,
+    occurrencesTruncated ? occurrenceLimit : candidates.length,
+    occurrencesTruncated
   );
 }
 
@@ -837,20 +869,43 @@ function scoreContexts(
   const contextBigrams = bigramsOf(contextTokens);
 
   for (const candidate of candidates) {
-    const from = Math.max(0, candidate.start - CONTEXT_WINDOW);
-    const to = Math.min(page.length, candidate.end + CONTEXT_WINDOW);
-    const windowText = canonicalizeEvidenceText(
-      page.slice(from, to)
-    ).text;
-    const windowTokens = tokensOf(windowText).map((token) => token.text);
+    // Separate before/after windows keep clustered occurrences from sharing
+    // one symmetric window, while still collecting token containment and
+    // bigram overlap from either side.
+    const before = tokensOf(
+      canonicalizeEvidenceText(
+        page.slice(Math.max(0, candidate.start - CONTEXT_BEFORE), candidate.start)
+      ).text
+    ).map((token) => token.text);
+    const after = tokensOf(
+      canonicalizeEvidenceText(
+        page.slice(candidate.end, Math.min(page.length, candidate.end + CONTEXT_AFTER))
+      ).text
+    ).map((token) => token.text);
+    const windowTokens = [...before, ...after];
     const windowSet = new Set(windowTokens);
 
     let tokenHits = 0;
+    let proximityHits = 0;
     for (const token of uniqueContext) {
       if (windowSet.has(token)) tokenHits += 1;
+      // Distance is measured in tokens from the candidate boundary. A token
+      // right next to the candidate weighs more than one at the window edge,
+      // so two clustered candidates still rank differently.
+      let distance = Number.POSITIVE_INFINITY;
+      const beforeIndex = before.lastIndexOf(token);
+      if (beforeIndex >= 0) distance = before.length - beforeIndex;
+      const afterIndex = after.indexOf(token);
+      if (afterIndex >= 0) distance = Math.min(distance, afterIndex + 1);
+      if (distance !== Number.POSITIVE_INFINITY) {
+        proximityHits += 1 / (1 + (distance - 1) / CONTEXT_PROXIMITY_DECAY);
+      }
     }
     const tokenScore = uniqueContext.length
       ? tokenHits / uniqueContext.length
+      : 0;
+    const proximityScore = uniqueContext.length
+      ? proximityHits / uniqueContext.length
       : 0;
 
     const windowBigrams = bigramsOf(windowTokens);
@@ -862,7 +917,9 @@ function scoreContexts(
       ? bigramHits / contextBigrams.size
       : 0;
 
-    candidate.contextScore = round(tokenScore * 0.65 + bigramScore * 0.35);
+    candidate.contextScore = round(
+      tokenScore * 0.45 + bigramScore * 0.3 + proximityScore * 0.25
+    );
   }
 }
 

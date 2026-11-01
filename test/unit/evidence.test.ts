@@ -122,6 +122,71 @@ describe("evidence quote matching", () => {
     assert.equal(outcome.status, "ambiguous");
   });
 
+  it("uses context to match past the occurrence cap and reports truncation", () => {
+    const filler = "lorem ipsum dolor sit amet ".repeat(10);
+    const segments: string[] = [];
+    for (let index = 0; index < 320; index += 1) {
+      segments.push("alpha");
+      if (index === 250) segments.push("distinctive haystack marker");
+      segments.push(filler);
+    }
+    const page = segments.join(" ");
+    const outcome = findEvidenceQuote(page, {
+      quote: "alpha",
+      context: "distinctive haystack marker",
+    });
+    assert.equal(outcome.status, "matched");
+    if (outcome.status !== "matched") return;
+    assert.equal(outcome.candidate.method, "context");
+    assert.equal(outcome.occurrences, 300);
+    assert.equal(outcome.occurrencesTruncated, true);
+    const contextIndex = page.indexOf("distinctive haystack marker");
+    assert.ok(contextIndex - outcome.candidate.start > 0);
+    assert.ok(contextIndex - outcome.candidate.start < 20);
+  });
+
+  it("distinguishes clustered repeats by context proximity", () => {
+    const phrase = "The shared passage is here.";
+    const filler = "filler ".repeat(30);
+    const page =
+      "Alpha section. " +
+      phrase +
+      " " +
+      filler +
+      "Omega marker. " +
+      phrase +
+      " " +
+      filler +
+      phrase;
+    const outcome = findEvidenceQuote(page, {
+      quote: phrase,
+      context: "Omega marker",
+    });
+    assert.equal(outcome.status, "matched");
+    if (outcome.status !== "matched") return;
+    assert.equal(outcome.candidate.method, "context");
+    assert.equal(outcome.occurrences, 3);
+    const contextIndex = page.indexOf("Omega marker");
+    assert.ok(outcome.candidate.start > contextIndex);
+    assert.ok(outcome.candidate.start - contextIndex < 20);
+  });
+
+  it("stays ambiguous when clustered context fits every occurrence", () => {
+    const line = "Alpha section. The shared passage is here.";
+    const page = [line, line, line].join(" ");
+    const outcome = findEvidenceQuote(page, {
+      quote: "The shared passage is here.",
+      context: "Alpha section",
+    });
+    assert.equal(outcome.status, "ambiguous");
+    if (outcome.status !== "ambiguous") return;
+    assert.equal(outcome.occurrences, 3);
+    assert.equal(outcome.candidates.length, 3);
+    for (const candidate of outcome.candidates) {
+      assert.equal(candidate.excerpt, "The shared passage is here.");
+    }
+  });
+
   it("falls back to fuzzy matching for a minor wording difference", () => {
     const page = "The quick brown fox jumps over the lazy dog.";
     const outcome = findEvidenceQuote(page, {
