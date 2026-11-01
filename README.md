@@ -73,7 +73,7 @@ More screenshots: [progress and Stop](docs/screenshots/v0.2-progress-stop.png),
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 22 or newer (Node 22 and 24 are tested in CI).
 - Zen Browser, with this support status:
 
   | Platform | Status |
@@ -97,7 +97,7 @@ More screenshots: [progress and Stop](docs/screenshots/v0.2-progress-stop.png),
 
 ## Install
 
-With Node.js 20 or newer:
+With Node.js 22 or newer:
 
 ```sh
 npm install -g @spaxe-dev/zen-mcp

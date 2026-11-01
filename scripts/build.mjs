@@ -20,7 +20,7 @@ await build({
   outfile: join(dist, "cli.js"),
   platform: "node",
   format: "esm",
-  target: "node20",
+  target: "node22",
   packages: "external",
   banner: { js: "#!/usr/bin/env node" },
 });

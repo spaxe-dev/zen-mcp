@@ -33,6 +33,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-platform launch handling for Windows installs, macOS app bundles,
   and Linux distro, Flatpak, and Snap package layouts.
 
+### Changed
+
+- Node.js 22 is now the minimum supported version, and CI covers Node 22 and
+  24. Node 20 reached end-of-life and is no longer tested or targeted.
+
 ### Security
 
 - Bridge reconnects now require mutual authentication, with a fresh challenge
