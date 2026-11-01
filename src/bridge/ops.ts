@@ -557,7 +557,8 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
   const readPdfTab = async (
     tab: ChromeTab,
-    maxChars: number
+    maxChars: number,
+    offset: number
   ): Promise<PageReadResult> => {
     const unavailable =
       "Could not extract text from this PDF. It may still be loading, " +
@@ -594,13 +595,22 @@ export function createOps(win: ChromeWindow, windowId: string) {
     }
     if (!text) throw new OpsError("pdf_unreadable", unavailable);
 
+    const start = Math.min(Math.max(0, offset), text.length);
+    const body = text.slice(start, start + maxChars);
+    const nextOffset =
+      body.length > 0 && start + body.length < text.length
+        ? start + body.length
+        : null;
+
     return {
       title,
       url: tabUrl(tab),
       selectedText: "",
-      text: text.slice(0, maxChars),
-      truncated: text.length > maxChars,
+      text: body,
+      truncated: nextOffset !== null,
       length: text.length,
+      offset: start,
+      nextOffset,
       description: null,
       format: "text",
       contentType: "application/pdf",
@@ -949,13 +959,17 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
       const maxChars = clamp(params?.maxChars ?? 24_000, 500, 60_000);
+      const requestedOffset = Number(params?.offset);
+      const offset = Number.isFinite(requestedOffset)
+        ? Math.max(0, Math.floor(requestedOffset))
+        : 0;
       const format = params?.format;
       const selector = params?.selector ? String(params.selector).trim() : undefined;
 
       // PDFs render in the pdf.js viewer, which the page read script cannot
       // see. Their text comes straight from the viewer instead.
       if (isPdfTab(tab)) {
-        return readPdfTab(tab, maxChars);
+        return readPdfTab(tab, maxChars, offset);
       }
       const contentType = contentTypeOf(tab);
 
@@ -990,6 +1004,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
           {
             script: buildReadScript({
               maxChars,
+              offset,
               ...(format ? { format } : {}),
               ...(selector ? { selector } : {}),
             }),
@@ -1024,6 +1039,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       return toPageReadResult(page, {
         maxChars,
         contentType,
+        offset,
       }) satisfies PageReadResult;
     },
 

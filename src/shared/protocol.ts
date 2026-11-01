@@ -523,6 +523,12 @@ export interface PageReadResult {
   text: string;
   truncated: boolean;
   length: number;
+  /** Character offset that was applied to the text or markdown stream. */
+  offset: number;
+  /** Next offset to request, or null when this stream is exhausted. */
+  nextOffset: number | null;
+  /** Set when the read ignored an option, such as offset on a structured format. */
+  limitation?: string;
   description: string | null;
   /** Defaults to "text" when the bridge does not report a format. */
   format?: ReadFormat;
@@ -842,6 +848,8 @@ export interface EssentialsResult {
 export interface TabReadParams {
   tabId: string;
   maxChars?: number;
+  /** Character offset into the text or markdown stream. */
+  offset?: number;
   format?: ReadFormat;
   selector?: string;
 }

@@ -37,6 +37,18 @@ describe("page read script", () => {
     assert.match(plain, /const selector = null;/);
   });
 
+  it("embeds a non-negative offset", () => {
+    assert.match(
+      buildReadScript({ maxChars: 500, offset: 12_000 }),
+      /const offset = 12000;/
+    );
+    assert.match(buildReadScript({ maxChars: 500 }), /const offset = 0;/);
+    assert.match(
+      buildReadScript({ maxChars: 500, offset: -50 }),
+      /const offset = 0;/
+    );
+  });
+
   it("embeds every format name", () => {
     for (const format of FORMATS) {
       const script = buildReadScript({ maxChars: 100, format });
@@ -99,6 +111,7 @@ describe("page read script", () => {
       selectedText: "",
       text: "hello",
       fullLength: 10,
+      offset: 0,
       readyState: "",
       description: null,
       format: "text",
@@ -280,6 +293,7 @@ describe("page read script", () => {
       selectedText: "pick",
       text: "x".repeat(50),
       fullLength: 100,
+      offset: 0,
       readyState: "complete",
       description: "A description",
     });
@@ -291,8 +305,16 @@ describe("page read script", () => {
     assert.equal(short.title, "Example");
     assert.equal(short.description, "A description");
 
-    const wide = toPageReadResult(page, { maxChars: 5_000 });
+    const widePage = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "x".repeat(100),
+      fullLength: 100,
+      offset: 0,
+    });
+    assert.ok(widePage);
+    const wide = toPageReadResult(widePage, { maxChars: 5_000 });
     assert.equal(wide.truncated, false);
+    assert.equal(wide.nextOffset, null);
   });
 
   it("copies format fields into the read result", () => {
@@ -370,5 +392,99 @@ describe("page read script", () => {
     const result = toPageReadResult(page, { maxChars: 10 });
     assert.equal(result.metadata?.title, "Example");
     assert.deepEqual(result.outline, [{ level: 2, text: "Section" }]);
+  });
+
+  it("reports offset and nextOffset for text reads", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "0123456789",
+      fullLength: 100,
+      offset: 0,
+    });
+    assert.ok(page);
+
+    const first = toPageReadResult(page, { maxChars: 10 });
+    assert.equal(first.offset, 0);
+    assert.equal(first.nextOffset, 10);
+    assert.equal(first.truncated, true);
+    assert.equal(first.length, 100);
+
+    const second = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "abcdefghij",
+      fullLength: 100,
+      offset: 80,
+    });
+    assert.ok(second);
+    const rest = toPageReadResult(second, { maxChars: 10 });
+    assert.equal(rest.offset, 80);
+    assert.equal(rest.nextOffset, 90);
+    assert.equal(rest.truncated, true);
+  });
+
+  it("returns an empty final chunk at the end of a page", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "",
+      fullLength: 100,
+      offset: 100,
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { maxChars: 10, offset: 100 });
+    assert.equal(result.text, "");
+    assert.equal(result.offset, 100);
+    assert.equal(result.nextOffset, null);
+    assert.equal(result.truncated, false);
+  });
+
+  it("clamps offsets beyond the page length", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      text: "",
+      fullLength: 100,
+      offset: 999,
+    });
+    assert.equal(page?.offset, 100);
+
+    const result = toPageReadResult(page!, { maxChars: 10, offset: 999 });
+    assert.equal(result.offset, 100);
+    assert.equal(result.nextOffset, null);
+  });
+
+  it("uses the markdown stream for the next offset", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "markdown",
+      text: "plain preview",
+      fullLength: 50,
+      offset: 20,
+      markdown: "0123456789",
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.length, 50);
+    assert.equal(result.offset, 20);
+    assert.equal(result.nextOffset, 30);
+    assert.equal(result.markdown, "0123456789");
+  });
+
+  it("ignores offset for structured reads and explains why", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "links",
+      text: "x".repeat(50),
+      fullLength: 100,
+      offset: 0,
+      links: [{ text: "Example", url: "https://example.com/x" }],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { maxChars: 50, offset: 25 });
+    assert.equal(result.offset, 0);
+    assert.equal(result.nextOffset, null);
+    assert.match(result.limitation ?? "", /ignored offset=25/);
+    assert.equal(result.links?.length, 1);
   });
 });

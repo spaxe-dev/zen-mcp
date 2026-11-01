@@ -108,6 +108,13 @@ export interface ShowEvidenceOptions {
   highlightMs?: number;
   /** Bring the source tab and window to the front. Defaults to false. */
   focus?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface ShowEvidenceBatchOptions extends EvidenceBatchOptions {
+  signal?: AbortSignal;
+  /** Called once per finished citation, including failures. */
+  onProgress?: (completed: number, total: number) => void;
 }
 
 export interface ClearEvidenceOptions {
@@ -505,10 +512,19 @@ export class ZenRuntime {
   async request<T extends BridgeMethod>(
     method: T,
     params: BridgeMethodMap[T]["params"],
-    options: { windowId?: string; timeoutMs?: number; allowLaunch?: boolean } = {}
+    options: {
+      windowId?: string;
+      timeoutMs?: number;
+      allowLaunch?: boolean;
+      signal?: AbortSignal;
+    } = {}
   ): Promise<BridgeMethodMap[T]["result"]> {
     await this.connect({ allowLaunch: options.allowLaunch });
-    return this.hub.request(method, params, options);
+    return this.hub.request(method, params, {
+      windowId: options.windowId,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
   }
 
   async status(windowId?: string): Promise<BridgeStatus> {
@@ -558,9 +574,11 @@ export class ZenRuntime {
     options: {
       windowId?: string;
       maxChars?: number;
+      offset?: number;
       tabId?: string;
       format?: ReadFormat;
       selector?: string;
+      signal?: AbortSignal;
     } = {}
   ): Promise<PageReadResult> {
     await this.connect();
@@ -582,14 +600,19 @@ export class ZenRuntime {
       tabIds: string[];
       windowId?: string;
       maxChars?: number;
+      offset?: number;
       format?: ReadFormat;
       selector?: string;
+      signal?: AbortSignal;
+      /** Called once per finished tab, including failures. */
+      onProgress?: (completed: number, total: number) => void;
     }
   ): Promise<BatchReadResult> {
     await this.connect();
     const tabIds = [...new Set(options.tabIds)].slice(0, MAX_BATCH_READ);
     const pages: BatchReadEntry[] = new Array(tabIds.length);
     let next = 0;
+    let completed = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
         const index = next++;
@@ -600,10 +623,12 @@ export class ZenRuntime {
             {
               tabId,
               maxChars: options.maxChars,
+              offset: options.offset,
               format: options.format,
               selector: options.selector,
             },
-            options.windowId
+            options.windowId,
+            { signal: options.signal }
           );
           pages[index] = {
             tabId,
@@ -618,6 +643,9 @@ export class ZenRuntime {
             ok: false,
             error: String((error as Error)?.message ?? error),
           };
+        } finally {
+          completed += 1;
+          options.onProgress?.(completed, tabIds.length);
         }
       }
     };
@@ -987,7 +1015,8 @@ export class ZenRuntime {
           minConfidence: options.minConfidence,
           highlightMs: options.highlightMs,
         },
-        target.windowId
+        target.windowId,
+        { signal: options.signal }
       );
     } catch (error) {
       op = {
@@ -1045,7 +1074,7 @@ export class ZenRuntime {
    * source URL and reporting per-citation results even when some fail.
    */
   async showEvidenceBatch(
-    options: EvidenceBatchOptions
+    options: ShowEvidenceBatchOptions
   ): Promise<EvidenceBatchResult> {
     await this.connect();
     const focus = options.focus === true;
@@ -1241,74 +1270,81 @@ export class ZenRuntime {
     const highlightMs = clampInt(options.highlightMs, 1_000, 120_000, 25_000);
     const results: EvidenceShowResult[] = new Array(total);
     let next = 0;
+    let completed = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
         const index = next++;
         if (index >= citations.length) return;
-        const citation = citations[index];
-        const target = targets[index];
-        const claim = citation.claim?.trim() || undefined;
-        if (!target) {
-          results[index] = {
-            ok: false,
-            tabId: null,
-            tabReused: false,
-            focused: false,
-            sourceUrl: citation.url,
-            url: citation.url,
-            title: citation.sourceTitle?.trim() || "",
-            claim,
-            error: {
-              code: "PAGE_NOT_FOUND",
-              message:
-                `Could not open ${citation.url}.` +
-                (openError ? ` ${openError}` : ""),
-            },
-          };
-          continue;
-        }
-
-        let op: EvidenceOpResult;
         try {
-          op = await this.hub.showEvidence(
-            {
-              tabId: target.tab.id,
-              quote: citation.quote,
-              ...(citation.context?.trim()
-                ? { context: citation.context.trim() }
-                : {}),
-              ...(options.minConfidence !== undefined
-                ? { minConfidence: options.minConfidence }
-                : {}),
-              highlightMs,
-            },
-            target.windowId
-          );
-        } catch (error) {
-          op = {
-            ok: false,
-            tabId: target.tab.id,
-            url: target.tab.url,
-            title: target.tab.title,
-            error: evidenceFailureFromError(error),
-          };
-        }
+          const citation = citations[index];
+          const target = targets[index];
+          const claim = citation.claim?.trim() || undefined;
+          if (!target) {
+            results[index] = {
+              ok: false,
+              tabId: null,
+              tabReused: false,
+              focused: false,
+              sourceUrl: citation.url,
+              url: citation.url,
+              title: citation.sourceTitle?.trim() || "",
+              claim,
+              error: {
+                code: "PAGE_NOT_FOUND",
+                message:
+                  `Could not open ${citation.url}.` +
+                  (openError ? ` ${openError}` : ""),
+              },
+            };
+            continue;
+          }
 
-        results[index] = {
-          ...op,
-          tabId: op.tabId ?? target.tab.id,
-          url: op.url || target.tab.url,
-          title:
-            op.title ||
-            target.tab.title ||
-            citation.sourceTitle?.trim() ||
-            "",
-          tabReused: target.reused,
-          focused:
-            focus && firstTarget?.tab.id === target.tab.id,
-          sourceUrl: citation.url,
-          claim,
-        };
+          let op: EvidenceOpResult;
+          try {
+            op = await this.hub.showEvidence(
+              {
+                tabId: target.tab.id,
+                quote: citation.quote,
+                ...(citation.context?.trim()
+                  ? { context: citation.context.trim() }
+                  : {}),
+                ...(options.minConfidence !== undefined
+                  ? { minConfidence: options.minConfidence }
+                  : {}),
+                highlightMs,
+              },
+              target.windowId,
+              { signal: options.signal }
+            );
+          } catch (error) {
+            op = {
+              ok: false,
+              tabId: target.tab.id,
+              url: target.tab.url,
+              title: target.tab.title,
+              error: evidenceFailureFromError(error),
+            };
+          }
+
+          results[index] = {
+            ...op,
+            tabId: op.tabId ?? target.tab.id,
+            url: op.url || target.tab.url,
+            title:
+              op.title ||
+              target.tab.title ||
+              citation.sourceTitle?.trim() ||
+              "",
+            tabReused: target.reused,
+            focused:
+              focus && firstTarget?.tab.id === target.tab.id,
+            sourceUrl: citation.url,
+            claim,
+          };
+        } finally {
+          completed += 1;
+          options.onProgress?.(completed, total);
+        }
       }
     };
     await Promise.all(

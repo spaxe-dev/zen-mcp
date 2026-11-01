@@ -9,6 +9,8 @@ import type {
 
 export interface ReadScriptOptions {
   maxChars: number;
+  /** Character offset into the text or markdown stream. */
+  offset?: number;
   format?: ReadFormat;
   selector?: string;
 }
@@ -19,6 +21,8 @@ export interface PageSnapshot {
   selectedText: string;
   text: string;
   fullLength: number;
+  /** Character offset the script applied to the primary stream. */
+  offset: number;
   readyState: string;
   description: string | null;
   format: ReadFormat;
@@ -193,6 +197,10 @@ export function buildReadScript(options: ReadScriptOptions): string {
   const maxChars = Number.isFinite(requested)
     ? Math.max(0, Math.floor(requested))
     : 24_000;
+  const requestedOffset = Number(options?.offset);
+  const offset = Number.isFinite(requestedOffset)
+    ? Math.max(0, Math.floor(requestedOffset))
+    : 0;
   const format = normalizeFormat(options?.format);
   const selector =
     typeof options?.selector === "string" && options.selector.trim()
@@ -201,6 +209,7 @@ export function buildReadScript(options: ReadScriptOptions): string {
 
   return String.raw`
 const maxChars = ${JSON.stringify(maxChars)};
+const offset = ${JSON.stringify(offset)};
 const format = ${JSON.stringify(format)};
 const selector = ${JSON.stringify(selector)};
 const FENCE = String.fromCharCode(96, 96, 96);
@@ -860,8 +869,8 @@ if (root) {
     return normalizeText(String(root.innerText || root.textContent || ""));
   }, "");
 }
-var textLength = text.length;
-var primaryLength = textLength;
+var primaryLength = text.length;
+var primarySource = text;
 
 var markdown = "";
 if (format === "markdown") {
@@ -869,9 +878,21 @@ if (format === "markdown") {
     return buildMarkdown(root);
   }, null);
   if (rawMarkdown !== null) {
-    markdown = String(rawMarkdown).slice(0, maxChars);
-    primaryLength = String(rawMarkdown).length;
+    primarySource = String(rawMarkdown);
+    primaryLength = primarySource.length;
   }
+}
+
+// Paging applies to the text and markdown streams only. Structured formats
+// keep returning their complete lists so a character offset never silently
+// drops items.
+var appliedOffset = 0;
+if (format === "text" || format === "markdown") {
+  appliedOffset = Math.min(offset, primaryLength);
+}
+var visibleText = text.slice(appliedOffset, appliedOffset + maxChars);
+if (format === "markdown") {
+  markdown = primarySource.slice(appliedOffset, appliedOffset + maxChars);
 }
 
 var selectedText = "";
@@ -892,8 +913,9 @@ var out = {
   title: String(document.title || ""),
   url: String(location.href || ""),
   selectedText: selectedText,
-  text: text.slice(0, maxChars),
+  text: visibleText,
   fullLength: primaryLength,
+  offset: appliedOffset,
   readyState: String(document.readyState || ""),
   description: description || null,
   format: format,
@@ -950,6 +972,17 @@ export function coercePageSnapshot(value: unknown): PageSnapshot | null {
   const fullLength = Number.isFinite(numeric)
     ? Math.max(0, Math.floor(numeric))
     : text.length;
+  const numericOffset =
+    typeof raw.offset === "number"
+      ? raw.offset
+      : raw.offset === null ||
+          raw.offset === undefined ||
+          raw.offset === ""
+        ? Number.NaN
+        : Number(raw.offset);
+  const offset = Number.isFinite(numericOffset)
+    ? Math.min(fullLength, Math.max(0, Math.floor(numericOffset)))
+    : 0;
 
   const snapshot: PageSnapshot = {
     title: asString(raw.title, 1_000),
@@ -957,6 +990,7 @@ export function coercePageSnapshot(value: unknown): PageSnapshot | null {
     selectedText: asString(raw.selectedText, MAX_SELECTED),
     text,
     fullLength,
+    offset,
     readyState: asString(raw.readyState, 40),
     description: asNullableString(raw.description, 2_000),
     format: normalizeFormat(raw.format),
@@ -990,9 +1024,15 @@ export function coercePageSnapshot(value: unknown): PageSnapshot | null {
 
 export function toPageReadResult(
   page: PageSnapshot,
-  options: { maxChars?: number; contentType?: string | null } = {}
+  options: {
+    maxChars?: number;
+    contentType?: string | null;
+    /** Original offset requested, used to report ignored offsets. */
+    offset?: number;
+  } = {}
 ): PageReadResult {
   const format = normalizeFormat(page?.format);
+  const structured = format !== "text" && format !== "markdown";
   const limit = Number(options?.maxChars);
   const hasLimit = options?.maxChars !== undefined && Number.isFinite(limit);
   const maxChars = hasLimit ? Math.max(0, Math.floor(limit)) : null;
@@ -1012,8 +1052,26 @@ export function toPageReadResult(
     format === "markdown" && typeof page.markdown === "string"
       ? page.markdown.length
       : text.length;
-  const truncated =
-    maxChars !== null ? fullLength > maxChars : fullLength > primary;
+  const rawOffset = Number(page?.offset);
+  const appliedOffset =
+    structured
+      ? 0
+      : Number.isFinite(rawOffset)
+        ? Math.min(fullLength, Math.max(0, Math.floor(rawOffset)))
+        : 0;
+  const nextOffset =
+    !structured && primary > 0 && appliedOffset + primary < fullLength
+      ? appliedOffset + primary
+      : null;
+  const truncated = structured
+    ? maxChars !== null
+      ? fullLength > maxChars
+      : fullLength > primary
+    : nextOffset !== null;
+  const requestedOffset = Math.max(
+    0,
+    Math.floor(Number(options?.offset) || 0)
+  );
 
   const result: PageReadResult = {
     title: typeof page?.title === "string" ? page.title : "",
@@ -1023,6 +1081,8 @@ export function toPageReadResult(
     text,
     truncated,
     length: fullLength,
+    offset: appliedOffset,
+    nextOffset,
     description:
       page?.description === null || page?.description === undefined
         ? null
@@ -1068,6 +1128,13 @@ export function toPageReadResult(
       level: Number(heading?.level) || 1,
       text: String(heading?.text ?? ""),
     }));
+  }
+
+  if (structured && requestedOffset > 0) {
+    result.limitation =
+      `offset is only supported for text and markdown reads. This ${format} ` +
+      `read ignored offset=${requestedOffset} and returned the complete ` +
+      `${format} data.`;
   }
 
   return result;

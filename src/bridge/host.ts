@@ -96,9 +96,13 @@ interface PendingRequest {
   method: string;
   windowId: string | null;
   timer: NodeJS.Timeout;
+  /** Removes the timeout and any abort listener; safe to call twice. */
+  cleanup(): void;
   resolve(value: unknown): void;
   reject(error: Error): void;
 }
+
+const CANCELLED_MESSAGE = "The request was cancelled by the client.";
 
 interface PendingQuestion {
   question: UiQuestion;
@@ -513,8 +517,6 @@ export class BridgeHub {
             );
             return;
           }
-          this.#pendingRequests.delete(pending.id);
-          clearTimeout(pending.timer);
           if (message.ok) {
             pending.resolve(message.result);
           } else {
@@ -543,10 +545,8 @@ export class BridgeHub {
           this.#primaryWindowId = this.#connections.keys().next().value ?? null;
         }
         this.#logger.info(`bridge disconnected from window ${connection.windowId}`);
-        for (const [id, pending] of this.#pendingRequests) {
+        for (const pending of [...this.#pendingRequests.values()]) {
           if (pending.windowId === connection.windowId) {
-            clearTimeout(pending.timer);
-            this.#pendingRequests.delete(id);
             pending.reject(
               new BridgeRequestError(
                 "bridge_disconnected",
@@ -836,22 +836,50 @@ export class BridgeHub {
   async request<T extends BridgeMethod>(
     method: T,
     params: BridgeMethodMap[T]["params"],
-    options: { windowId?: string; timeoutMs?: number } = {}
+    options: {
+      windowId?: string;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {}
   ): Promise<BridgeMethodMap[T]["result"]> {
     this.#assertActive();
+    if (options.signal?.aborted) {
+      throw new BridgeRequestError("cancelled", CANCELLED_MESSAGE);
+    }
     const connection = this.#connectionFor(options.windowId);
     const id = `r-${++this.#requestSeq}-${randomUUID().slice(0, 8)}`;
     const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    const signal = options.signal;
 
     return new Promise<BridgeMethodMap[T]["result"]>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let settled = false;
+      let timer: NodeJS.Timeout;
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         this.#pendingRequests.delete(id);
-        reject(
-          new BridgeRequestError(
-            "bridge_timeout",
-            `The Zen window did not finish "${method}" within ${Math.round(
-              timeoutMs / 1000
-            )}s`
+        fn();
+      };
+      const onAbort = () => {
+        // The Marionette command may keep running in the browser; stop waiting
+        // and record that it was abandoned rather than reporting success.
+        this.#logger.debug(`abandoned "${method}" after client cancellation`);
+        settle(() => reject(new BridgeRequestError("cancelled", CANCELLED_MESSAGE)));
+      };
+      timer = setTimeout(() => {
+        settle(() =>
+          reject(
+            new BridgeRequestError(
+              "bridge_timeout",
+              `The Zen window did not finish "${method}" within ${Math.round(
+                timeoutMs / 1000
+              )}s`
+            )
           )
         );
       }, timeoutMs);
@@ -861,10 +889,11 @@ export class BridgeHub {
         method,
         windowId: connection.windowId,
         timer,
-        resolve: (value) =>
-          resolve(value as BridgeMethodMap[T]["result"]),
-        reject,
+        cleanup,
+        resolve: (value) => settle(() => resolve(value as BridgeMethodMap[T]["result"])),
+        reject: (error) => settle(() => reject(error)),
       });
+      signal?.addEventListener("abort", onAbort, { once: true });
       const sent = this.#send(connection, {
         type: "req",
         id,
@@ -872,11 +901,11 @@ export class BridgeHub {
         params: params as unknown,
       });
       if (!sent) {
-        this.#pendingRequests.delete(id);
-        clearTimeout(timer);
-        reject(
-          new BridgeUnavailableError(
-            "The Zen window closed its agent connection. Reconnecting may fix this."
+        settle(() =>
+          reject(
+            new BridgeUnavailableError(
+              "The Zen window closed its agent connection. Reconnecting may fix this."
+            )
           )
         );
       }
@@ -990,12 +1019,14 @@ export class BridgeHub {
 
   async readTab(
     params: BridgeMethodMap["tabs.read"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ): Promise<PageReadResult> {
     const page = await this.request("tabs.read", params, {
       windowId,
       // PDF extraction waits for the viewer, and rich formats do more work.
       timeoutMs: 40_000,
+      signal: options.signal,
     });
     if (page.url) {
       this.#assertUrlAllowed(page.url, "Refusing to return content from");
@@ -1005,12 +1036,14 @@ export class BridgeHub {
 
   async showEvidence(
     params: BridgeMethodMap["tabs.evidence"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ): Promise<EvidenceOpResult> {
     const result = await this.request("tabs.evidence", params, {
       windowId,
       // The bridge waits for the page to load and may retry a stale match.
       timeoutMs: 45_000,
+      signal: options.signal,
     });
     if (result.url) {
       this.#assertUrlAllowed(result.url, "Refusing to return evidence from");

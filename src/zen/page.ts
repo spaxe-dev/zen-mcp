@@ -8,10 +8,14 @@ const DEFAULT_CHARS = 24_000;
 export interface PageReadOptions {
   windowId?: string;
   maxChars?: number;
+  /** Character offset into the text or markdown stream. */
+  offset?: number;
   /** Read this tab instead of the active one, without selecting it. */
   tabId?: string;
   format?: ReadFormat;
   selector?: string;
+  /** Client cancellation for the underlying bridge request. */
+  signal?: AbortSignal;
 }
 
 function clampMaxChars(value: number | undefined): number {
@@ -39,10 +43,12 @@ export async function readActivePage(
     {
       tabId: active.id,
       maxChars: clampMaxChars(options.maxChars),
+      offset: options.offset,
       format: options.format,
       selector: options.selector,
     },
-    options.windowId
+    options.windowId,
+    { signal: options.signal }
   );
 }
 
@@ -61,9 +67,11 @@ export async function readTabPage(
     {
       tabId,
       maxChars: clampMaxChars(options.maxChars),
+      offset: options.offset,
       format: options.format,
       selector: options.selector,
     },
-    options.windowId
+    options.windowId,
+    { signal: options.signal }
   );
 }
