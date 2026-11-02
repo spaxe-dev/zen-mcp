@@ -4,14 +4,45 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.3] - 2026-11-02
 
 ### Added
 
 - `zen-mcp onboard` lists common MCP clients, preselects the ones found on
   this machine, and merges a `zen-mcp` stdio server into each selected
-  client's configuration. An **Other MCP client** option prints a paste-ready
-  prompt for clients the picker does not know.
+  client's configuration. Existing servers, JSONC comments, trailing commas,
+  and TOML tables are left alone, and rerunning updates the entry instead of
+  duplicating it. An **Other MCP client** option prints a paste-ready prompt
+  for clients the picker does not know.
+
+### Fixed
+
+- Launch ownership is read through the chrome sandbox globals with a component
+  service fallback, so Zen 1.24b can start and an unavailable chrome scope
+  produces a clear error instead of bare `moz-nullprincipal` frames. (#15)
+- POSIX process detection covers the real Zen process names and reports
+  platform status correctly. (#15)
+- Foreground tab selection activates the requested tab and reports the
+  observed focus state instead of a false success. (#16)
+- Show source repaints the evidence overlay and scrolls the quoted passage
+  back into view after the first highlight expires. (#17)
+- Adding and removing an essential restores the tab's original space and
+  pinned state. (#18)
+- Closing a split view verifies the split is gone and closes only clearly
+  synthetic leftovers. (#19)
+- Evidence scoring checks surrounding context before the occurrence cap, so a
+  repeated word can still be disambiguated. (#20)
+- Quotes that are definitely absent return `QUOTE_NOT_FOUND` instead of
+  `LOW_MATCH_CONFIDENCE`. (#21)
+- Batch evidence records the real citation outcomes in the audit log instead
+  of reporting a partial failure as clean. (#22)
+- A Stop press from the progress card produces a stop event, changes the
+  button to "Stopping...", and is re-sent after a bridge reconnect. (#23)
+- Concurrent evidence work on one tab is serialized, so verification and
+  clearing cannot leave an overlay host behind.
+- Consent decline guidance now says to restart the server, and batch evidence
+  uses the documented 20-second highlight default.
+- Sandbox script errors report the error name and message before the stack.
 
 ## [0.3.2] - 2026-11-01
 
@@ -86,6 +117,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.3.3]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.3
 [0.3.2]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.2
 [0.3.1]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.0
