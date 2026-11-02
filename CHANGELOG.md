@@ -19,9 +19,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Glance validates the selected tab's current URL as `http(s)`, enforces the
   domain allowlist before the preview loads, and uses a content principal for
-  the URL instead of the system principal.
+  the URL instead of the system principal. It also checks the URL the preview
+  actually committed and closes the preview when a redirect leaves the
+  allowlist.
 - Malformed safety settings in the config file or safety environment variables
   stop startup with a clear error instead of falling back to a weaker policy.
+  That includes `autoLaunch` and `autoAttachWindows`, which no longer fall back
+  to `true` when the value is malformed.
 - Read-only mode also blocks `zen_progress`, `zen_ask`, and `zen_notify`, so an
   agent cannot draw or change cards while the server is read-only.
 - `zen_tabs_close`, `zen_folder_create`, and `zen_folder_add_tabs` cap their

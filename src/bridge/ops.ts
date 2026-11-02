@@ -141,6 +141,92 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const GLANCE_SETTLE_MS = 10_000;
+const GLANCE_POLL_MS = 50;
+
+/** Zen resolves a normal glance with its Tab; anything else cannot be checked. */
+function isGlanceTab(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "linkedBrowser" in (result as Record<string, unknown>)
+  );
+}
+
+/** The URL a glance tab has actually committed, once it leaves about:blank. */
+function glanceUrlOf(result: unknown): string | undefined {
+  const browser = (
+    result as { linkedBrowser?: { currentURI?: { spec?: unknown } } } | null
+  )?.linkedBrowser;
+  const spec = browser?.currentURI?.spec;
+  if (typeof spec !== "string" || !spec || spec === "about:blank") {
+    return undefined;
+  }
+  return spec;
+}
+
+async function waitForGlanceUrl(
+  result: unknown
+): Promise<string | undefined> {
+  const deadline = Date.now() + GLANCE_SETTLE_MS;
+  let observed = glanceUrlOf(result);
+  while (!observed && Date.now() < deadline) {
+    await sleep(GLANCE_POLL_MS);
+    observed = glanceUrlOf(result);
+  }
+  return observed;
+}
+
+/**
+ * Glance can follow a redirect after opening, so keep watching the committed
+ * URL and close the preview if it leaves the allowlist.
+ */
+function watchGlanceRedirects(
+  result: unknown,
+  manager: { closeGlance?: (options?: Record<string, unknown>) => unknown },
+  allowedDomains: string[]
+): void {
+  const tab = result as {
+    linkedBrowser?: {
+      addEventListener?: (...args: unknown[]) => void;
+      removeEventListener?: (...args: unknown[]) => void;
+    };
+    addEventListener?: (...args: unknown[]) => void;
+    removeEventListener?: (...args: unknown[]) => void;
+  } | null;
+  const browser = tab?.linkedBrowser;
+  if (typeof browser?.addEventListener !== "function") return;
+
+  function stop() {
+    try {
+      browser?.removeEventListener?.("locationchange", check, true);
+      tab?.removeEventListener?.("GlanceClose", stop, true);
+    } catch {
+      // The tab is already gone.
+    }
+  }
+
+  function check() {
+    const current = glanceUrlOf(result);
+    if (!current) return;
+    const target = normalizeWebUrl(current);
+    if (target && isUrlAllowed(target.href, allowedDomains)) return;
+    stop();
+    try {
+      manager.closeGlance?.({ noAnimation: true, skipPermitUnload: true });
+    } catch {
+      // Closing is best effort; the host also checks the returned URL.
+    }
+  }
+
+  try {
+    browser.addEventListener("locationchange", check, true);
+    tab?.addEventListener?.("GlanceClose", stop, true);
+  } catch {
+    // Without a listener the final-URL check at open time still applies.
+  }
+}
+
 class OpsError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -2041,11 +2127,56 @@ export function createOps(win: ChromeWindow, windowId: string) {
           )}`
         );
       }
+      if (!result) {
+        return {
+          opened: false,
+          url,
+          mode: "none",
+          message: "Zen declined to open the glance view.",
+        } satisfies GlanceResult;
+      }
+
+      const closePreview = () => {
+        try {
+          manager.closeGlance?.({ noAnimation: true, skipPermitUnload: true });
+        } catch {
+          // Closing is best effort; the policy violation is reported below.
+        }
+      };
+
+      // The requested URL is not necessarily the URL that loads: a redirect
+      // can leave the allowlist. Verify what the preview committed.
+      const loadedUrl = isGlanceTab(result)
+        ? await waitForGlanceUrl(result)
+        : undefined;
+      if (!loadedUrl) {
+        closePreview();
+        throw new OpsError(
+          "glance_failed",
+          "The preview opened but its URL could not be verified, so it was closed."
+        );
+      }
+      const loaded = normalizeWebUrl(loadedUrl);
+      if (!loaded) {
+        closePreview();
+        throw new OpsError(
+          "invalid_url",
+          `The preview loaded "${loadedUrl}", which is not an http(s) URL.`
+        );
+      }
+      if (!isUrlAllowed(loaded.href, allowedDomains)) {
+        closePreview();
+        throw new OpsError(
+          "domain_not_allowed",
+          `The preview redirected to ${loaded.hostname}, which is outside the ` +
+            "configured domain allowlist, so it was closed."
+        );
+      }
+      watchGlanceRedirects(result, manager, allowedDomains);
       return {
-        opened: !!result,
-        url,
-        mode: result ? "glance" : "none",
-        message: result ? undefined : "Zen declined to open the glance view.",
+        opened: true,
+        url: loaded.href,
+        mode: "glance",
       } satisfies GlanceResult;
     },
 

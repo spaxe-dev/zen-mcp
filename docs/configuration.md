@@ -95,7 +95,7 @@ Session and template files are written atomically with owner-only permissions. T
 
 Numeric file values outside their range are clamped when loaded. `config set` rejects them instead, so use it when you want a validation error.
 
-Policy keys are validated by type. `readOnly`, `requireConsent`, `useDefaultProfile`, and `auditLog` must be JSON booleans, and `allowedDomains` must be an array of strings. A malformed value stops the server with a config error instead of falling back to a weaker default.
+Policy keys are validated by type. `readOnly`, `requireConsent`, `useDefaultProfile`, `auditLog`, `autoLaunch`, and `autoAttachWindows` must be JSON booleans, and `allowedDomains` must be an array of strings. A malformed value stops the server with a config error instead of falling back to a weaker default.
 
 ### Marionette port
 
