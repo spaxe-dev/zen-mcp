@@ -18,8 +18,10 @@ export function e2eEnabled(): boolean {
 /**
  * Only the headless flag. Isolation from a running user Zen must come from
  * the launcher's own `-no-remote`, so the tests exercise the production path.
+ * Set ZEN_MCP_TEST_HEADFUL=1 to watch a run in a real window.
  */
-const TEST_LAUNCH_ARGS = ["--headless"];
+const TEST_LAUNCH_ARGS =
+  process.env.ZEN_MCP_TEST_HEADFUL === "1" ? [] : ["--headless"];
 
 let generatedProfile: string | null = null;
 
