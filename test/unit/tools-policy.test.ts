@@ -26,14 +26,9 @@ const AUTO_LAUNCH_TOOLS = new Set([
   "zen_find_text",
   "zen_search_tabs",
   "zen_tabs_audit",
-  "zen_ask",
-  "zen_notify",
 ]);
 
-/** Tools that draw transient UI cards without changing browser state. */
-const UI_ONLY_TOOLS = new Set(["zen_ask", "zen_notify", "zen_progress"]);
-
-const EXEMPT_TOOLS = new Set([...AUTO_LAUNCH_TOOLS, ...UI_ONLY_TOOLS]);
+const EXEMPT_TOOLS = new Set(AUTO_LAUNCH_TOOLS);
 
 async function registeredTools() {
   const config = {
@@ -94,6 +89,26 @@ describe("tool policy", () => {
         MUTATING_TOOLS.has(name),
         false,
         `${name} is exempt and must stay available in read-only mode`
+      );
+    }
+  });
+
+  it("caps tab id arrays in the tool schemas", async () => {
+    const tools = await registeredTools();
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    for (const name of [
+      "zen_tabs_close",
+      "zen_folder_create",
+      "zen_folder_add_tabs",
+    ]) {
+      const schema = byName.get(name)?.inputSchema as
+        | { properties?: { tabIds?: { maxItems?: number } } }
+        | undefined;
+      assert.equal(
+        schema?.properties?.tabIds?.maxItems,
+        100,
+        `${name} must cap tabIds at 100`
       );
     }
   });

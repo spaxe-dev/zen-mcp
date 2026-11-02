@@ -38,9 +38,9 @@ export class ToolGuardError extends Error {
 }
 
 /**
- * Tools that change browser, server or persisted state. Everything else
- * (status, lists, reads, history, bookmarks, containers, answers, events,
- * audit, ask, notify, progress) stays available in read-only mode.
+ * Tools that change browser, server, persisted or on-screen state. Everything
+ * else (status, lists, reads, history, bookmarks, containers, answers, events,
+ * audit) stays available in read-only mode.
  */
 export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "zen_launch",
@@ -70,6 +70,9 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "zen_show_evidence",
   "zen_show_evidence_batch",
   "zen_clear_evidence",
+  "zen_progress",
+  "zen_ask",
+  "zen_notify",
 ]);
 
 /** Verification outcome of an evidence batch, when the result carries counts. */

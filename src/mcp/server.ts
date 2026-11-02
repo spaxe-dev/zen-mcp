@@ -77,8 +77,9 @@ function raceWithAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-const SERVER_INSTRUCTIONS = `${BRAND} drives the user's Zen Browser from outside the page. Zen spaces are workspaces: tabs can live in a space the user is not looking at, and switching is instant for them.
+const MAX_TAB_IDS_PER_CALL = 100;
 
+const SERVER_INSTRUCTIONS = `${BRAND} drives the user's Zen Browser from outside the page. Zen spaces are workspaces: tabs can live in a space the user is not looking at, and switching is instant for them.
 Background research is the default workflow. Never take over the user's screen:
 1. Look first with zen_status, zen_spaces_list, and zen_tabs_list.
 2. zen_space_create with a short, descriptive name. It does not switch spaces by default. zen_template_apply("research") is faster when a ready-made layout fits.
@@ -571,7 +572,11 @@ export function createZenMcpServer(
       description:
         "Close one or more tabs by id. Closing tabs is destructive to the user's session; only close tabs the agent opened, or tabs the user explicitly named.",
       inputSchema: {
-        tabIds: z.array(z.string().min(1)).min(1).describe("Tab ids from zen_tabs_list."),
+        tabIds: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_TAB_IDS_PER_CALL)
+          .describe(`Tab ids from zen_tabs_list. At most ${MAX_TAB_IDS_PER_CALL} per call.`),
       },
       annotations: { readOnlyHint: false, destructiveHint: true },
     },
@@ -847,8 +852,11 @@ export function createZenMcpServer(
         label: z.string().min(1).describe("Folder label."),
         tabIds: z
           .array(z.string().min(1))
+          .max(MAX_TAB_IDS_PER_CALL)
           .optional()
-          .describe("Tabs to move into the folder."),
+          .describe(
+            `Tabs to move into the folder. At most ${MAX_TAB_IDS_PER_CALL} per call.`
+          ),
         space: z
           .string()
           .optional()
@@ -878,7 +886,13 @@ export function createZenMcpServer(
         "Move existing tabs into an existing folder. The tabs must be in the folder's space and not already grouped.",
       inputSchema: {
         folderId: z.string().min(1).describe("Folder id from zen_folders_list."),
-        tabIds: z.array(z.string().min(1)).min(1).describe("Tab ids to move."),
+        tabIds: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_TAB_IDS_PER_CALL)
+          .describe(
+            `Tab ids to move. At most ${MAX_TAB_IDS_PER_CALL} per call.`
+          ),
       },
       annotations: { readOnlyHint: false },
     },

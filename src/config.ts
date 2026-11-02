@@ -94,19 +94,21 @@ export function loadConfig(): ZenMcpConfig {
   const envConsentTimeout = process.env.ZEN_MCP_CONSENT_TIMEOUT_SECONDS;
   const envLaunchArgs = process.env.ZEN_MCP_LAUNCH_ARGS;
 
-  const fileReadOnly = fileBoolean(
+  const fileReadOnly = fileSafetyBoolean(
     fileConfig.readOnly,
+    "readOnly",
     DEFAULT_CONFIG.readOnly
   );
-  const fileAuditLog = fileBoolean(
+  const fileAuditLog = fileSafetyBoolean(
     fileConfig.auditLog,
+    "auditLog",
     DEFAULT_CONFIG.auditLog
   );
-  const fileDomains = Array.isArray(fileConfig.allowedDomains)
-    ? fileConfig.allowedDomains.filter(
-        (entry): entry is string => typeof entry === "string"
-      )
-    : DEFAULT_CONFIG.allowedDomains;
+  const fileDomains = fileStringArray(
+    fileConfig.allowedDomains,
+    "allowedDomains",
+    DEFAULT_CONFIG.allowedDomains
+  );
   const domains =
     envDomains !== undefined
       ? envDomains
@@ -130,15 +132,20 @@ export function loadConfig(): ZenMcpConfig {
         : undefined),
     useDefaultProfile:
       envUseDefault !== undefined
-        ? parseBoolean(envUseDefault, DEFAULT_CONFIG.useDefaultProfile)
-        : fileBoolean(
+        ? envBoolean("ZEN_MCP_USE_DEFAULT_PROFILE", envUseDefault)
+        : fileSafetyBoolean(
             fileConfig.useDefaultProfile,
+            "useDefaultProfile",
             DEFAULT_CONFIG.useDefaultProfile
           ),
     requireConsent:
       envConsent !== undefined
-        ? parseBoolean(envConsent, DEFAULT_CONFIG.requireConsent)
-        : fileBoolean(fileConfig.requireConsent, DEFAULT_CONFIG.requireConsent),
+        ? envBoolean("ZEN_MCP_REQUIRE_CONSENT", envConsent)
+        : fileSafetyBoolean(
+            fileConfig.requireConsent,
+            "requireConsent",
+            DEFAULT_CONFIG.requireConsent
+          ),
     consentTimeoutSeconds:
       envConsentTimeout !== undefined && envConsentTimeout.trim()
         ? boundedInt(
@@ -167,14 +174,14 @@ export function loadConfig(): ZenMcpConfig {
           ),
     readOnly:
       envReadOnly !== undefined
-        ? parseBoolean(envReadOnly, fileReadOnly)
+        ? envBoolean("ZEN_MCP_READ_ONLY", envReadOnly)
         : fileReadOnly,
     allowedDomains: domains.map((domain) =>
       domain.replace(/^\*?\./, "").toLowerCase()
     ),
     auditLog:
       envAuditLog !== undefined
-        ? parseBoolean(envAuditLog, fileAuditLog)
+        ? envBoolean("ZEN_MCP_AUDIT_LOG", envAuditLog)
         : fileAuditLog,
     watchMinIntervalSeconds:
       envWatchMin !== undefined && envWatchMin.trim()
@@ -228,10 +235,44 @@ function readConfigFile(): Partial<ZenMcpConfig> {
   }
 }
 
-function parseBoolean(value: string, fallback: boolean): boolean {
-  if (/^(1|true|yes|on)$/i.test(value.trim())) return true;
-  if (/^(0|false|no|off)$/i.test(value.trim())) return false;
-  return fallback;
+function envBoolean(name: string, value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (/^(1|true|yes|on)$/.test(normalized)) return true;
+  if (/^(0|false|no|off)$/.test(normalized)) return false;
+  throw new Error(
+    `Invalid ${name} value "${value}": use 1/0, true/false, yes/no, or on/off.`
+  );
+}
+
+function fileSafetyBoolean(
+  value: unknown,
+  field: string,
+  fallback: boolean
+): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  throw new Error(
+    `Invalid config at ${configFilePath()}: "${field}" must be true or false. ` +
+      "Fix or delete the file."
+  );
+}
+
+function fileStringArray(
+  value: unknown,
+  field: string,
+  fallback: string[]
+): string[] {
+  if (value === undefined) return fallback;
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string")
+  ) {
+    throw new Error(
+      `Invalid config at ${configFilePath()}: "${field}" must be an array of ` +
+        "strings. Fix or delete the file."
+    );
+  }
+  return value;
 }
 
 function fileBoolean(value: unknown, fallback: boolean): boolean {
