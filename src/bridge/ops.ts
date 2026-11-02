@@ -77,6 +77,7 @@ import {
 } from "../shared/evidence-script.js";
 import { findEvidenceQuote } from "../shared/evidence.js";
 import { findLiteralMatches } from "../shared/search.js";
+import { isUrlAllowed, normalizeWebUrl } from "../shared/url-policy.js";
 import { activateTab, type TabActivationOutcome } from "./tab-activation.js";
 import {
   captureEssentialsState,
@@ -1944,11 +1945,11 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const sourceTab = params?.tabId
         ? resolveTabs([String(params.tabId)])[0]
         : null;
-      let url: string;
+      let rawUrl: string;
       let userContextId: number | undefined;
       if (sourceTab) {
-        url = tabUrl(sourceTab);
-        if (!url) {
+        rawUrl = tabUrl(sourceTab);
+        if (!rawUrl) {
           throw new OpsError(
             "invalid_url",
             `The tab "${tabTitle(sourceTab)}" has no URL to preview.`
@@ -1957,7 +1958,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
         const containerId = containerIdOf(sourceTab);
         userContextId = containerId > 0 ? containerId : undefined;
       } else {
-        url = normalizeUrl(String(params?.url ?? ""));
+        rawUrl = normalizeUrl(String(params?.url ?? ""));
         if (
           params?.container !== undefined &&
           params?.container !== null &&
@@ -1967,6 +1968,29 @@ export function createOps(win: ChromeWindow, windowId: string) {
           userContextId =
             container.userContextId > 0 ? container.userContextId : undefined;
         }
+      }
+
+      // Glance hands the URL to a privileged loader, so reject everything that
+      // is not plain web content before the preview starts.
+      const preview = normalizeWebUrl(rawUrl);
+      if (!preview) {
+        throw new OpsError(
+          "invalid_url",
+          `Refusing to preview "${rawUrl}". Glance only opens http(s) URLs.`
+        );
+      }
+      const url = preview.href;
+      const allowedDomains = Array.isArray(params?.allowedDomains)
+        ? params.allowedDomains.filter(
+            (entry): entry is string => typeof entry === "string"
+          )
+        : [];
+      if (!isUrlAllowed(url, allowedDomains)) {
+        throw new OpsError(
+          "domain_not_allowed",
+          `Refusing to preview ${preview.hostname}, which is outside the ` +
+            "configured domain allowlist."
+        );
       }
 
       const manager = win.gZenGlanceManager;
@@ -1980,6 +2004,22 @@ export function createOps(win: ChromeWindow, windowId: string) {
         } satisfies GlanceResult;
       }
 
+      let triggeringPrincipal: unknown;
+      try {
+        triggeringPrincipal =
+          Services.scriptSecurityManager.createContentPrincipal(
+            Services.io.newURI(url),
+            userContextId ? { userContextId } : {}
+          );
+      } catch (error) {
+        throw new OpsError(
+          "glance_failed",
+          `Could not prepare the preview: ${String(
+            (error as Error)?.message ?? error
+          )}`
+        );
+      }
+
       const width = clamp(Number(params?.width ?? 960), 240, 4096);
       const height = clamp(Number(params?.height ?? 720), 240, 4096);
       let result: unknown = null;
@@ -1990,7 +2030,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
           clientY: 120,
           width,
           height,
-          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          triggeringPrincipal,
           ...(userContextId ? { userContextId } : {}),
         });
       } catch (error) {

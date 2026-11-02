@@ -703,6 +703,47 @@ describe(
       }
     });
 
+    it("previews an allowed URL and refuses a privileged tab", async () => {
+      const opened = await runtime.hub.openTabs({
+        urls: [`${page.url}?glance=1`],
+        space: spaceId,
+        background: true,
+      });
+      const glanceId = opened.tabs[0]?.id ?? "";
+      assert.ok(glanceId);
+      let privilegedId = "";
+      try {
+        const preview = await runtime.hub.openGlance({ tabId: glanceId });
+        assert.equal(preview.opened, true, "Zen opens an http(s) glance");
+        assert.equal(preview.url, `${page.url}?glance=1`);
+
+        const privileged = await runtime.hub.openTabs({
+          urls: ["about:robots"],
+          space: spaceId,
+          background: true,
+        });
+        privilegedId = privileged.tabs[0]?.id ?? "";
+        assert.ok(privilegedId, "opened an about: tab");
+        await assert.rejects(
+          () => runtime.hub.openGlance({ tabId: privilegedId }),
+          (error: { code?: string }) => error.code === "invalid_url"
+        );
+      } finally {
+        await runtime.marionette
+          .executeChrome(`
+            const win = Services.wm.getMostRecentWindow("navigator:browser");
+            if (win.gZenGlanceManager?.closeGlance) {
+              win.gZenGlanceManager.closeGlance();
+            }
+          `)
+          .catch(() => undefined);
+        const ids = [glanceId, privilegedId].filter(Boolean);
+        if (ids.length) {
+          await runtime.hub.closeTabs({ tabIds: ids }).catch(() => undefined);
+        }
+      }
+    });
+
     it("deletes a space and the tabs it holds", async () => {
       const deleted = await runtime.hub.deleteSpace({ space: spaceId });
       assert.equal(deleted.deleted, true);
