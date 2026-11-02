@@ -696,16 +696,30 @@ export class MarionetteClient {
  * reported faithfully. The wrapper receives the WebDriver async callback as
  * its last argument.
  */
-function wrapScript(body: string): string {
+export function wrapScript(body: string): string {
   return [
     "const __zenMcpDone = arguments[arguments.length - 1];",
+    // Gecko's Error.stack contains frames only, with no name or message line,
+    // so report all three. Otherwise a sandbox failure arrives as line numbers
+    // with no explanation.
+    "const __zenMcpDescribe = (error) => {",
+    "  try {",
+    "    if (!error || typeof error !== 'object') return String(error);",
+    "    const name = error.name ? String(error.name) : 'Error';",
+    "    const message = error.message ? String(error.message) : String(error);",
+    "    const stack = error.stack ? String(error.stack) : '';",
+    "    return stack ? name + ': ' + message + '\\n' + stack : name + ': ' + message;",
+    "  } catch (describeError) {",
+    "    return 'Script threw an error that could not be described';",
+    "  }",
+    "};",
     "(async () => {",
     body,
     "})().then(",
     "  (value) => __zenMcpDone({ __zenMcpOk: true, value }),",
     "  (error) => __zenMcpDone({",
     "    __zenMcpOk: false,",
-    "    error: String((error && (error.stack || error.message)) || error),",
+    "    error: __zenMcpDescribe(error),",
     "  })",
     ");",
   ].join("\n");

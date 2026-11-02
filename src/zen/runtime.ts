@@ -350,7 +350,13 @@ export class ZenRuntime {
     let nonce: string | null = null;
     try {
       nonce = await this.marionette.executeChrome<string | null>(
-        'return Services.env.get("ZEN_MCP_LAUNCH_NONCE") ?? null;',
+        [
+          "const { Services } = ChromeUtils.importESModule(",
+          '  "resource://gre/modules/Services.sys.mjs"',
+          ");",
+          // nsIEnvironment returns an empty string for unset variables.
+          'return Services.env.get("ZEN_MCP_LAUNCH_NONCE") || null;',
+        ].join("\n"),
         { timeoutMs: 10_000 }
       );
     } catch (error) {
