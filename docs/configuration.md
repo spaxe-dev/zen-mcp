@@ -10,6 +10,7 @@ zen-mcp launch                  Launch Zen once, verify ownership, then quit it
 zen-mcp status                  Print config, profile mode, and port state
 zen-mcp doctor                  Check config, executable, bridge, profile, port, policy
 zen-mcp setup                   Detect Zen, write config, print an MCP snippet
+zen-mcp onboard                 Pick MCP clients and add Zen MCP to their config
 zen-mcp setup --use-default-profile
 zen-mcp setup --dedicated-profile
 zen-mcp config show             Print the config path and values
@@ -32,6 +33,19 @@ zen-mcp config set <key> <value>
 | `--skip-doctor` | Write the config without running diagnostics |
 
 `setup` does not install anything into Zen. The bridge is injected at runtime.
+
+## MCP clients
+
+`onboard` merges Zen MCP into MCP client configurations:
+
+```text
+zen-mcp onboard
+zen-mcp onboard --clients claude-code,cursor
+zen-mcp onboard --clients all
+zen-mcp onboard --clients other
+```
+
+The picker knows Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Windsurf, Cline, and Zed. It preselects clients found on this machine. Only the `zen-mcp` entry is created or replaced; other servers stay, and JSONC files keep their comments and trailing commas. `other` prints a step-by-step runbook with config paths, entry shapes, merge rules, a validation checklist and a completion report. `--command` changes the command clients should run.
 
 ## File locations
 
