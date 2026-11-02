@@ -127,6 +127,9 @@ describe("MUTATING_TOOLS", () => {
       "zen_show_evidence",
       "zen_show_evidence_batch",
       "zen_clear_evidence",
+      "zen_progress",
+      "zen_ask",
+      "zen_notify",
     ];
     assert.equal(MUTATING_TOOLS.size, expected.length);
     for (const tool of expected) {
@@ -219,7 +222,7 @@ describe("ToolGuard.check", () => {
     }
   });
 
-  it("allows reads, status and questions in read-only mode", () => {
+  it("allows reads, status and answers in read-only mode", () => {
     const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
     for (const tool of [
       "zen_status",
@@ -232,11 +235,20 @@ describe("ToolGuard.check", () => {
       "zen_events",
       "zen_audit",
       "zen_watch_list",
-      "zen_ask",
-      "zen_notify",
-      "zen_progress",
     ]) {
       assert.doesNotThrow(() => guard.check(tool), tool);
+    }
+  });
+
+  it("blocks on-screen cards in read-only mode", () => {
+    const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
+    for (const tool of ["zen_progress", "zen_ask", "zen_notify"]) {
+      assert.throws(
+        () => guard.check(tool),
+        (error: unknown) =>
+          error instanceof ToolGuardError && error.code === "read_only",
+        tool
+      );
     }
   });
 

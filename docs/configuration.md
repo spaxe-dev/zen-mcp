@@ -95,6 +95,8 @@ Session and template files are written atomically with owner-only permissions. T
 
 Numeric file values outside their range are clamped when loaded. `config set` rejects them instead, so use it when you want a validation error.
 
+Policy keys are validated by type. `readOnly`, `requireConsent`, `useDefaultProfile`, and `auditLog` must be JSON booleans, and `allowedDomains` must be an array of strings. A malformed value stops the server with a config error instead of falling back to a weaker default.
+
 ### Marionette port
 
 Current Zen builds listen on 2828. The launcher passes `-marionette` without a port, so Zen does not follow `marionettePort`; the setting only changes the port the server tries to reach. Leave it at `2828` unless you know your Zen build supports another port. If another process owns 2828, quit that process; changing the setting usually makes the launch fail.
@@ -109,17 +111,19 @@ Environment variables override the file for that process. They are never written
 | `ZEN_MCP_DATA_DIR` | Sessions, templates, audit log, and the default agent profile directory |
 | `ZEN_MCP_ZEN_PATH` | Zen executable |
 | `ZEN_MCP_PROFILE` | Custom agent profile directory |
-| `ZEN_MCP_USE_DEFAULT_PROFILE` | `1` uses Zen's normal profile instead of the dedicated one |
-| `ZEN_MCP_REQUIRE_CONSENT` | `0` skips the one-time approval card |
+| `ZEN_MCP_USE_DEFAULT_PROFILE` | `1`, `true`, `yes`, or `on` uses Zen's normal profile instead of the dedicated one |
+| `ZEN_MCP_REQUIRE_CONSENT` | `0`, `false`, `no`, or `off` skips the one-time approval card |
 | `ZEN_MCP_CONSENT_TIMEOUT_SECONDS` | How long a tool waits for approval |
 | `ZEN_MCP_LAUNCH_ARGS` | Extra Zen arguments, split on whitespace |
 | `ZEN_MCP_MARIONETTE_PORT` | Port the server connects to (see [Marionette port](#marionette-port)) |
-| `ZEN_MCP_READ_ONLY` | `1`, `true`, or `yes` enables read-only mode |
+| `ZEN_MCP_READ_ONLY` | `1`, `true`, `yes`, or `on` enables read-only mode |
 | `ZEN_MCP_ALLOWED_DOMAINS` | Comma-separated domain allowlist |
-| `ZEN_MCP_AUDIT_LOG` | `1`, `true`, or `yes` enables the audit log |
+| `ZEN_MCP_AUDIT_LOG` | `1`, `true`, `yes`, or `on` enables the audit log |
 | `ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS` | Lower bound for watch polling |
 | `ZEN_MCP_LOG` | `debug`, `info`, `warn`, or `error` |
 | `ZEN_MCP_BRIDGE_SCRIPT` | Override the bundled `bridge.js` path; `doctor` warns when set |
+
+Boolean variables accept `1`/`0`, `true`/`false`, `yes`/`no`, or `on`/`off`, ignoring case and surrounding spaces. Any other value stops the server with an error instead of falling back to the file or default.
 
 Logs always go to **stderr**; stdout belongs to the MCP transport.
 

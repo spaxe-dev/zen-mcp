@@ -104,23 +104,42 @@ describe("config", () => {
     }
   });
 
-  it("falls back to the file when an environment boolean is unrecognized", () => {
+  it("rejects an unrecognized safety environment value", () => {
     writeFileSync(configPath, JSON.stringify({ readOnly: true }), "utf8");
     process.env.ZEN_MCP_READ_ONLY = "enabled";
     try {
-      assert.equal(loadConfig().readOnly, true);
+      assert.throws(
+        () => loadConfig(),
+        /Invalid ZEN_MCP_READ_ONLY value "enabled"/
+      );
     } finally {
       delete process.env.ZEN_MCP_READ_ONLY;
     }
   });
 
-  it("ignores non-boolean file values and bounds numbers", () => {
+  it("rejects malformed safety settings in the config file", () => {
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ readOnly: "false" }, /"readOnly" must be true or false/],
+      [{ requireConsent: "no" }, /"requireConsent" must be true or false/],
+      [{ auditLog: 0 }, /"auditLog" must be true or false/],
+      [{ allowedDomains: "example.com" }, /"allowedDomains" must be an array/],
+      [
+        { allowedDomains: ["example.com", 7] },
+        /"allowedDomains" must be an array of strings/,
+      ],
+    ];
+    for (const [value, pattern] of cases) {
+      writeFileSync(configPath, JSON.stringify(value), "utf8");
+      assert.throws(() => loadConfig(), pattern, JSON.stringify(value));
+    }
+  });
+
+  it("bounds numbers and keeps valid booleans", () => {
     writeFileSync(
       configPath,
       JSON.stringify({
-        readOnly: "false",
-        requireConsent: "no",
-        watchdog: "nope",
+        readOnly: true,
+        requireConsent: true,
         watchMinIntervalSeconds: 10_000_000,
         marionettePort: 999_999,
         consentTimeoutSeconds: "nope",
@@ -128,7 +147,7 @@ describe("config", () => {
       "utf8"
     );
     const config = loadConfig();
-    assert.equal(config.readOnly, false);
+    assert.equal(config.readOnly, true);
     assert.equal(config.requireConsent, true);
     assert.equal(config.watchMinIntervalSeconds, 3600);
     assert.equal(config.marionettePort, 65535);

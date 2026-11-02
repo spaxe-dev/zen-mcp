@@ -57,7 +57,7 @@ The banner in Zen has a Pause button. Pausing rejects pending bridge requests, h
 
 A command that is already executing in Zen when Pause is pressed may still finish in the browser. The server drops its result and rejects later requests. Pause is held in memory, is not persisted, and does not remove evidence overlays that are already visible.
 
-`readOnly` blocks the complete mutating tool set: `zen_launch` and 26 other tools covering spaces, tabs, folders, pins, essentials, split view, Glance, clipboard writes, watches, sessions, templates, tab grouping, and evidence operations. Reads, lists, status, questions, events, and the audit log keep working. A read-only server also refuses to auto-launch Zen, so it never starts a process or creates a profile.
+`readOnly` blocks the complete mutating tool set: `zen_launch` and 29 other tools covering spaces, tabs, folders, pins, essentials, split view, Glance, clipboard writes, watches, sessions, templates, tab grouping, evidence operations, and the on-screen progress, question, and notification cards. Reads, lists, status, events, collected answers, and the audit log keep working. A read-only server also refuses to auto-launch Zen, so it never starts a process or creates a profile.
 
 Read-only mode is not a confidentiality boundary. Session and template listings still return stored URLs, and page reads still return page text. Use Pause when the user wants to stop browser access entirely.
 
@@ -65,7 +65,7 @@ Read-only mode is not a confidentiality boundary. Session and template listings 
 
 One normalizer is shared by the MCP guard, the runtime, and the bridge. Inputs without a scheme are treated as `https`. `zen_tabs_open` accepts `http(s)` and `about:` URLs; Glance previews and both Evidence tools accept only `http(s)`. With an empty allowlist these are all permitted. With a non-empty allowlist, every URL is matched by host, so an `about:` URL is rejected along with any other non-`http(s)` scheme.
 
-The domain allowlist matches a host exactly or as a subdomain on a label boundary, and is checked before tabs open, Glance, evidence, watches, session restores, and template applies. The tab URL is checked again immediately after `zen_tabs_open` returns, and a tab that landed outside the list is closed. A slow script or meta redirect after that check can still move the tab; reads recheck the URL before returning content. An empty list allows every domain; a list whose entries all normalize away denies everything. Sessions and templates are sanitized and capped before use.
+The domain allowlist matches a host exactly or as a subdomain on a label boundary, and is checked before tabs open, Glance, evidence, watches, session restores, and template applies. Glance resolves the selected tab's current URL, requires `http(s)`, and checks the allowlist before the preview loads, so a privileged or off-list tab is refused before any load starts. The preview uses a content principal for that URL rather than the system principal. The tab URL is checked again immediately after `zen_tabs_open` returns, and a tab that landed outside the list is closed. A slow script or meta redirect after that check can still move the tab; reads recheck the URL before returning content. An empty list allows every domain; a list whose entries all normalize away denies everything. Sessions and templates are sanitized and capped before use.
 
 ### Reads
 

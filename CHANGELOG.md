@@ -17,6 +17,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Glance validates the selected tab's current URL as `http(s)`, enforces the
+  domain allowlist before the preview loads, and uses a content principal for
+  the URL instead of the system principal.
+- Malformed safety settings in the config file or safety environment variables
+  stop startup with a clear error instead of falling back to a weaker policy.
+- Read-only mode also blocks `zen_progress`, `zen_ask`, and `zen_notify`, so an
+  agent cannot draw or change cards while the server is read-only.
+- `zen_tabs_close`, `zen_folder_create`, and `zen_folder_add_tabs` cap their
+  tab id lists at 100 per call.
 - Launch ownership is read through the chrome sandbox globals with a component
   service fallback, so Zen 1.24b can start and an unavailable chrome scope
   produces a clear error instead of bare `moz-nullprincipal` frames. (#15)
