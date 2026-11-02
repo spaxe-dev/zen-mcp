@@ -351,11 +351,25 @@ export class ZenRuntime {
     try {
       nonce = await this.marionette.executeChrome<string | null>(
         [
-          "const { Services } = ChromeUtils.importESModule(",
-          '  "resource://gre/modules/Services.sys.mjs"',
-          ");",
+          // Marionette's chrome sandbox exposes these globals but cannot load
+          // resource:// modules, so use them directly and fall back to the
+          // component service when a build hides `Services`.
+          'const env = typeof Services !== "undefined" && Services.env',
+          "  ? Services.env",
+          '  : typeof Cc !== "undefined" && typeof Ci !== "undefined"',
+          '    ? Cc["@mozilla.org/process/environment;1"].getService(',
+          "        Ci.nsIEnvironment",
+          "      )",
+          "    : null;",
+          "if (!env) {",
+          "  throw new Error(",
+          '    "Chrome scope is unavailable, so the launch nonce could not be " +',
+          '      "read. Zen 138 or newer is required, and the launcher must not " +',
+          '      "drop MOZ_REMOTE_ALLOW_SYSTEM_ACCESS."',
+          "  );",
+          "}",
           // nsIEnvironment returns an empty string for unset variables.
-          'return Services.env.get("ZEN_MCP_LAUNCH_NONCE") || null;',
+          'return env.get("ZEN_MCP_LAUNCH_NONCE") || null;',
         ].join("\n"),
         { timeoutMs: 10_000 }
       );
