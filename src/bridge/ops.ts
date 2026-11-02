@@ -190,6 +190,22 @@ export function createOps(win: ChromeWindow, windowId: string) {
     }
     evidenceMarkers.set(tabId, markers.slice(-20));
   };
+  /**
+   * Serializes evidence work per tab. Batch verification can run two quotes
+   * from the same source at once, and interleaved paint/record steps leave an
+   * overlay host that clear cannot find.
+   */
+  const tabLocks = new Map<string, Promise<unknown>>();
+  const serializeTab = <T>(tabId: string, work: () => Promise<T>): Promise<T> => {
+    const previous = tabLocks.get(tabId) ?? Promise.resolve();
+    const run = previous.then(work, work);
+    tabLocks.set(tabId, run);
+    const release = (): void => {
+      if (tabLocks.get(tabId) === run) tabLocks.delete(tabId);
+    };
+    void run.then(release, release);
+    return run;
+  };
 
   const idForTab = (tab: ChromeTab): string => {
     let id = tabIds.get(tab);
@@ -1290,6 +1306,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
 
+      return serializeTab(tabId, async () => {
       const [tab] = resolveTabs([tabId]);
       const listedUrl = tabUrl(tab);
       const listedTitle = tabTitle(tab);
@@ -1651,6 +1668,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "once the page settles.",
         },
       } satisfies EvidenceOpResult;
+      });
     },
 
     "tabs.evidenceClear": async (
@@ -1660,6 +1678,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       if (!tabId) {
         throw new OpsError("no_tab", "Provide the tabId whose marks to clear.");
       }
+      return serializeTab(tabId, async () => {
       const [tab] = resolveTabs([tabId]);
       const markers = markersFor(tabId);
       if (markers.length === 0) {
@@ -1678,6 +1697,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const report = coerceEvidenceClear(raw);
       rememberMarkers(tabId, []);
       return { tabId, removed: report.removed } satisfies EvidenceClearResult;
+      });
     },
 
     "folders.list": () =>
