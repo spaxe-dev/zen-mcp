@@ -116,6 +116,7 @@ The installed command is `zen-mcp`. Nothing is installed into Zen itself; the br
 
 ```sh
 zen-mcp setup      # detects Zen, writes a config, prints an MCP snippet
+zen-mcp onboard    # pick MCP clients and add Zen MCP to their config
 zen-mcp doctor     # config, executable, Marionette, bridge, profile, policy
 zen-mcp status     # config, profile mode, and port state
 ```
@@ -124,7 +125,23 @@ zen-mcp status     # config, profile mode, and port state
 
 ### Connect an MCP client
 
-Claude Code:
+Run the picker:
+
+```sh
+zen-mcp onboard
+```
+
+It lists Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Windsurf, Cline, and Zed. Clients found on this machine are preselected. Use the arrow keys to move, space to toggle, and enter to confirm. Zen MCP merges a `zen-mcp` entry into each selected client's own configuration file and leaves other servers alone. Choose **Other MCP client** to print a step-by-step runbook for any agent: known config paths, the right entry shape for JSON, VS Code, Zed and TOML clients, merge rules, a validation checklist, and a completion report.
+
+For scripts or a shell without a TTY, name the clients:
+
+```sh
+zen-mcp onboard --clients claude-code,cursor
+zen-mcp onboard --clients all --command /path/to/zen-mcp
+zen-mcp onboard --clients other
+```
+
+Claude Code by hand:
 
 ```sh
 claude mcp add zen-mcp -- zen-mcp serve

@@ -9,6 +9,19 @@ import {
   type ZenMcpConfig,
 } from "./config.js";
 import { createZenMcpServer } from "./mcp/server.js";
+import {
+  agentSetupPrompt,
+  applyClient,
+  catalog,
+  clientIds,
+} from "./onboard/clients.js";
+import {
+  buildOptions,
+  pickClients,
+  SelectionCancelled,
+  type PickerResult,
+} from "./onboard/picker.js";
+import { createTheme } from "./onboard/theme.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
 import { createLogger } from "./utils/logger.js";
 import { runDoctor, type DoctorReport } from "./zen/doctor.js";
@@ -101,6 +114,26 @@ program
   )
   .option("--skip-doctor", "Write the config without running diagnostics.")
   .action((options) => setup(options));
+
+program
+  .command("onboard")
+  .description(
+    "Pick MCP clients and add Zen MCP to their configuration."
+  )
+  .option(
+    "--clients <ids>",
+    "Comma-separated client ids or 'all'. Skips the interactive picker."
+  )
+  .option(
+    "--command <command>",
+    "Command clients should run. Defaults to `zen-mcp`."
+  )
+  .option("--other", "Also print a setup prompt for any other client.")
+  .addHelpText(
+    "after",
+    `\nClient ids: ${clientIds().join(", ")}, other.`
+  )
+  .action((options) => onboard(options));
 
 const configCommand = program
   .command("config")
@@ -325,6 +358,150 @@ async function setup(options: {
     "\nIf Zen MCP is not on your PATH, point command at the absolute path " +
       "of dist/cli.js and keep args as [\"serve\"]."
   );
+  console.log(
+    "Run `zen-mcp onboard` to add Zen MCP to a supported MCP client."
+  );
+}
+
+async function onboard(options: {
+  clients?: string;
+  command?: string;
+  other?: boolean;
+}): Promise<void> {
+  const context = { command: options.command?.trim() || "zen-mcp" };
+  const theme = createTheme(process.stdout);
+  const rule = theme.unicode ? "─".repeat(56) : "-".repeat(56);
+  const entries = catalog(context);
+  const known = new Set(entries.map((entry) => entry.id));
+
+  let selected: string[];
+  let includeOther = Boolean(options.other);
+
+  if (options.clients?.trim()) {
+    const tokens = options.clients
+      .split(",")
+      .map((token) => token.trim())
+      .filter(Boolean);
+    const unknown = tokens.filter(
+      (token) => token !== "other" && token !== "all" && !known.has(token)
+    );
+    if (unknown.length > 0) {
+      console.error(`Unknown client(s): ${unknown.join(", ")}.`);
+      console.error(`Valid clients: ${[...known].join(", ")}, other, all.`);
+      process.exitCode = 1;
+      return;
+    }
+    selected = tokens.includes("all")
+      ? entries.map((entry) => entry.id)
+      : tokens.filter((token) => token !== "other");
+    includeOther = includeOther || tokens.includes("other");
+  } else {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.error("The client picker needs an interactive terminal.");
+      console.error("Use --clients with a comma-separated list instead:");
+      console.error("  zen-mcp onboard --clients claude-code,cursor,other");
+      console.error(`Valid clients: ${[...known].join(", ")}, other.`);
+      process.exitCode = 1;
+      return;
+    }
+    let result: PickerResult;
+    try {
+      result = await pickClients(buildOptions(entries));
+    } catch (error) {
+      if (error instanceof SelectionCancelled) {
+        console.log("Cancelled. No client configuration was changed.");
+        process.exitCode = 130;
+        return;
+      }
+      throw error;
+    }
+    selected = result.selected;
+    includeOther = includeOther || result.other;
+  }
+
+  if (selected.length === 0 && !includeOther) {
+    console.log(
+      theme.dim("  Nothing selected. No client configuration was changed.")
+    );
+    return;
+  }
+
+  if (!existsSync(configFilePath())) {
+    const updates: Partial<ZenMcpConfig> = {};
+    try {
+      updates.zenPath = findZenExecutable(loadConfig());
+    } catch {
+      // `zen-mcp doctor` explains detection failures.
+    }
+    const path = saveConfig(updates);
+    const mark = theme.unicode ? theme.green("✓") : "[ ok ]";
+    console.log(`  ${mark} Saved config ${theme.dim(path)}`);
+    console.log("");
+  }
+
+  let failed = 0;
+  if (selected.length > 0) {
+    let connected = 0;
+    console.log(`  ${theme.bold("Client configuration")}`);
+    console.log(`  ${theme.dim(rule)}`);
+
+    for (const id of selected) {
+      const result = applyClient(id, context);
+      if (result.status === "ok") {
+        connected += 1;
+        const mark = theme.unicode ? theme.green("✓") : "[ ok ]";
+        console.log(
+          `  ${mark} ${result.label.padEnd(18)} ${theme.dim(result.message)}`
+        );
+      } else {
+        failed += 1;
+        const mark = theme.unicode ? theme.red("✗") : "[FAIL]";
+        console.log(
+          `  ${mark} ${result.label.padEnd(18)} ${theme.red(result.message)}`
+        );
+      }
+    }
+
+    console.log("");
+    console.log(
+      `  ${
+        failed === 0
+          ? theme.green(
+              `${connected} client${connected === 1 ? "" : "s"} connected`
+            )
+          : theme.yellow(`${connected} connected, ${failed} failed`)
+      }`
+    );
+  }
+
+  if (includeOther) {
+    console.log("");
+    console.log(`  ${theme.bold("Other client")}`);
+    console.log(`  ${theme.dim(rule)}`);
+    console.log(`  ${theme.dim("Paste this prompt into your agent.")}`);
+    console.log("");
+    console.log(agentSetupPrompt(context.command));
+  }
+
+  console.log("");
+  console.log(
+    theme.dim(
+      selected.length > 0
+        ? "  Restart the selected clients so they load the server. On the first " +
+            "browser tool, approve the card in Zen."
+        : "  Restart the client after your agent updates its configuration. On " +
+            "the first browser tool, approve the card in Zen."
+    )
+  );
+  if (!options.command) {
+    console.log(
+      theme.dim(
+        "  If `zen-mcp` is not on your PATH, rerun with " +
+          "--command <absolute path to dist/cli.js>."
+      )
+    );
+  }
+  if (failed > 0) process.exitCode = 1;
 }
 
 function configShow(): void {

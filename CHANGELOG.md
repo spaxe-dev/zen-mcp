@@ -4,6 +4,15 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `zen-mcp onboard` lists common MCP clients, preselects the ones found on
+  this machine, and merges a `zen-mcp` stdio server into each selected
+  client's configuration. An **Other MCP client** option prints a paste-ready
+  prompt for clients the picker does not know.
+
 ## [0.3.2] - 2026-11-01
 
 ### Fixed
