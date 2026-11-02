@@ -209,9 +209,14 @@ export function loadConfig(): ZenMcpConfig {
       3_600,
       DEFAULT_CONFIG.askTimeoutSeconds
     ),
-    autoLaunch: fileBoolean(fileConfig.autoLaunch, DEFAULT_CONFIG.autoLaunch),
-    autoAttachWindows: fileBoolean(
+    autoLaunch: fileSafetyBoolean(
+      fileConfig.autoLaunch,
+      "autoLaunch",
+      DEFAULT_CONFIG.autoLaunch
+    ),
+    autoAttachWindows: fileSafetyBoolean(
       fileConfig.autoAttachWindows,
+      "autoAttachWindows",
       DEFAULT_CONFIG.autoAttachWindows
     ),
   };
@@ -273,10 +278,6 @@ function fileStringArray(
     );
   }
   return value;
-}
-
-function fileBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
 }
 
 function boundedInt(

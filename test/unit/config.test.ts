@@ -122,6 +122,11 @@ describe("config", () => {
       [{ readOnly: "false" }, /"readOnly" must be true or false/],
       [{ requireConsent: "no" }, /"requireConsent" must be true or false/],
       [{ auditLog: 0 }, /"auditLog" must be true or false/],
+      [{ autoLaunch: "yes" }, /"autoLaunch" must be true or false/],
+      [
+        { autoAttachWindows: 1 },
+        /"autoAttachWindows" must be true or false/,
+      ],
       [{ allowedDomains: "example.com" }, /"allowedDomains" must be an array/],
       [
         { allowedDomains: ["example.com", 7] },
