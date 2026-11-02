@@ -501,6 +501,208 @@ describe(
       assert.match(owned.text, /Page-owned lookalike marker/);
     });
 
+    it("selects a background tab and reports it active", async () => {
+      const opened = await runtime.hub.openTabs({
+        urls: [`${page.url}?select=1`],
+        space: spaceId,
+        background: true,
+      });
+      const selectId = opened.tabs[0]?.id ?? "";
+      assert.ok(selectId);
+
+      const selected = await runtime.hub.selectTab({
+        tabId: selectId,
+        focusWindow: true,
+      });
+      assert.equal(selected.tab.active, true, "selection report is active");
+      assert.equal(selected.tab.id, selectId);
+      assert.equal(selected.windowFocused, true, "window focus is confirmed");
+
+      const status = await runtime.status();
+      assert.equal(status.activeTab?.id, selectId, "status agrees with selection");
+
+      await runtime.hub.closeTabs({ tabIds: [selectId] });
+    });
+
+    it("re-highlights evidence when Show source is used", async () => {
+      await runtime.hub.selectTab({ tabId, focusWindow: true });
+      const shown = await runtime.showEvidence({
+        url: page.url,
+        quote: EVIDENCE_QUOTE,
+        claim: "Show source re-highlight",
+        highlightMs: 1_000,
+      });
+      assert.equal(shown.ok, true, JSON.stringify(shown.error));
+      assert.equal(shown.focused, false);
+
+      const expireDeadline = Date.now() + 8_000;
+      let expired: { hosts: number } | null = null;
+      while (Date.now() < expireDeadline) {
+        expired = await inspectContent(page.url);
+        if (expired?.hosts === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      assert.equal(expired?.hosts, 0, "the original highlight expired");
+
+      const clicked = await pollUi(
+        ".card.activity:last-of-type",
+        `const button = card.querySelector("button.action");
+         if (!button) return { ok: false, why: "no action button" };
+         if (!/Show source/i.test(button.textContent || "")) {
+           return { ok: false, why: "label: " + button.textContent };
+         }
+         button.click();
+         return { ok: true, label: button.textContent || "" };`
+      );
+      assert.equal(clicked.ok, true, `Show source: ${clicked.why}`);
+
+      const revealDeadline = Date.now() + 10_000;
+      let revealed: { hosts: number; closed: boolean; scrollY: number } | null =
+        null;
+      while (Date.now() < revealDeadline) {
+        revealed = await inspectContent(page.url);
+        if (revealed && revealed.hosts > 0 && revealed.scrollY > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      assert.ok(revealed, "Show source repaints the mark");
+      assert.ok(revealed.hosts > 0, "the repainted overlay exists");
+      assert.ok(revealed.closed, "the repainted mark stays in a closed root");
+      assert.ok(revealed.scrollY > 0, "Show source scrolls to the passage");
+
+      const status = await runtime.status();
+      assert.equal(status.activeTab?.id, tabId, "Show source selects the tab");
+      await runtime.clearEvidence({ tabId });
+    });
+
+    it("delivers a Stop press from the progress card", async () => {
+      const before = await runtime.events({ waitSeconds: 0 });
+      const started = await runtime.progress({
+        title: "Stop press check",
+        step: "Waiting for the user",
+        stoppable: true,
+      });
+      assert.equal(started.delivered, true);
+      const progressId = started.progress?.id;
+      assert.ok(progressId);
+
+      const clicked = await pollUi(
+        ".card.progress-card",
+        `const button = card.querySelector(".stop-button");
+         if (!button) return { ok: false, why: "no stop button" };
+         button.click();
+         return { ok: true, label: button.textContent || "" };`
+      );
+      assert.equal(clicked.ok, true, `Stop button: ${clicked.why}`);
+      assert.match(clicked.label, /Stopping/);
+
+      const after = await runtime.events({
+        after: before.cursor,
+        waitSeconds: 10,
+      });
+      assert.ok(
+        after.events.some((event) => event.kind === "stop"),
+        "a stop event is recorded"
+      );
+      assert.equal(after.stopped, true, "the stop request is acknowledged");
+
+      const cleared = await runtime.progress({ done: true });
+      assert.equal(cleared.progress?.id, progressId);
+    });
+
+    it("closes a split view without leaving residue", async () => {
+      const opened = await runtime.hub.openTabs({
+        urls: [`${page.url}?split-a=1`, `${page.url}?split-b=1`],
+        space: spaceId,
+        background: true,
+      });
+      const splitIds = opened.tabs.map((tab) => tab.id);
+      assert.equal(splitIds.length, 2);
+
+      const before = await runtime.hub.listTabs({ space: spaceId });
+      const split = await runtime.hub.openSplit({
+        tabIds: splitIds,
+        activate: true,
+      });
+      assert.equal(split.split, true);
+
+      const closed = await runtime.hub.closeSplit({
+        tabId: split.tabIds[0] ?? splitIds[0],
+      });
+      assert.equal(closed.unsplit, true);
+
+      const after = await runtime.hub.listTabs({ space: spaceId });
+      const existing = new Set(before.tabs.map((tab) => tab.id));
+      const residue = after.tabs
+        .filter((tab) => !existing.has(tab.id))
+        .map((tab) => tab.url);
+      assert.deepEqual(residue, [], "no stray or duplicated tabs");
+      assert.equal(
+        after.tabs.filter((tab) => tab.splitView).length,
+        0,
+        "no tab still reports a split view"
+      );
+
+      for (const id of splitIds) {
+        await runtime.hub.closeTabs({ tabIds: [id] }).catch(() => undefined);
+      }
+    });
+
+    it("keeps an essential in its original space", async () => {
+      const otherSpace = await runtime.hub.createSpace({
+        name: "Zen MCP Other Space",
+        switchTo: false,
+      });
+      const otherSpaceId = otherSpace.space.id;
+      let essentialId = "";
+      try {
+        const opened = await runtime.hub.openTabs({
+          urls: [`${page.url}?essential-space=1`],
+          space: spaceId,
+          background: true,
+        });
+        essentialId = opened.tabs[0]?.id ?? "";
+        assert.ok(essentialId);
+        assert.equal(opened.tabs[0].spaceId, spaceId);
+
+        await runtime.hub.switchSpace({ space: otherSpaceId });
+        const added = await runtime.hub.addEssentials({
+          tabIds: [essentialId],
+        });
+        assert.equal(added.changed, 1);
+        const removed = await runtime.hub.removeEssentials({
+          tabIds: [essentialId],
+        });
+        assert.equal(removed.changed, 1);
+
+        const listed = await runtime.hub.listTabs({});
+        const restored = listed.tabs.find((tab) => tab.id === essentialId);
+        assert.ok(restored);
+        assert.equal(
+          restored.spaceId,
+          spaceId,
+          "remove returns the tab to its original space"
+        );
+        const status = await runtime.status();
+        assert.equal(
+          status.activeSpaceId,
+          otherSpaceId,
+          "neither action switches the user's space"
+        );
+      } finally {
+        if (essentialId) {
+          await runtime.hub
+            .closeTabs({ tabIds: [essentialId] })
+            .catch(() => undefined);
+        }
+        await runtime.hub
+          .switchSpace({ space: spaceId })
+          .catch(() => undefined);
+        await runtime.hub
+          .deleteSpace({ space: otherSpaceId })
+          .catch(() => undefined);
+      }
+    });
+
     it("deletes a space and the tabs it holds", async () => {
       const deleted = await runtime.hub.deleteSpace({ space: spaceId });
       assert.equal(deleted.deleted, true);
