@@ -867,6 +867,8 @@ export interface GlanceParams {
   container?: string | number;
   width?: number;
   height?: number;
+  /** Host allowlist enforced by the bridge before the preview loads. */
+  allowedDomains?: string[];
 }
 
 export interface GlanceResult {

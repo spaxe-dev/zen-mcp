@@ -1143,10 +1143,17 @@ export class BridgeHub {
     params: BridgeMethodMap["glance.open"]["params"],
     windowId?: string
   ) {
-    const result = await this.request("glance.open", params, {
-      windowId,
-      timeoutMs: 30_000,
-    });
+    if (params?.url) {
+      this.#assertUrlAllowed(String(params.url), "Refusing to preview");
+    }
+    const result = await this.request(
+      "glance.open",
+      { ...params, allowedDomains: this.#allowedDomains },
+      {
+        windowId,
+        timeoutMs: 30_000,
+      }
+    );
     if (result.url) {
       this.#assertUrlAllowed(result.url, "Refusing to preview");
     }
