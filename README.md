@@ -13,7 +13,7 @@
 
 Zen MCP is an MCP server that lets an AI agent work inside [Zen Browser](https://zen-browser.app) using Zen's own spaces, folders, and tabs. The agent can research in background tabs, read and search pages without switching what you are looking at, ask you a question in a small in-browser card, and show the evidence behind an answer.
 
-Status: **0.3.x, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
+Status: **0.4.x, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
 
 ## What it does
 
@@ -96,7 +96,7 @@ npx @spaxe-dev/zen-mcp setup
 Each GitHub release also attaches a package tarball and `SHA256SUMS`:
 
 ```sh
-npm install -g ./zen-mcp-0.3.3.tgz
+npm install -g ./zen-mcp-0.4.0.tgz
 zen-mcp setup
 ```
 

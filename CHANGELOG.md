@@ -4,7 +4,7 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-08
 
 ### Added
 
@@ -149,6 +149,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.4.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.4.0
 [0.3.3]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.3
 [0.3.2]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.2
 [0.3.1]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.1
