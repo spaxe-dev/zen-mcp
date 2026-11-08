@@ -54,6 +54,25 @@ export function moveCursor(options: SelectOption[], cursor: number, delta: numbe
   return (((cursor + delta) % size) + size) % size;
 }
 
+/**
+ * Returns the slice of `total` lines to draw. The window only moves when the
+ * cursor would leave it, so short moves do not make the list jump around.
+ */
+export function scrollWindow(
+  total: number,
+  cursor: number,
+  height: number,
+  start = 0
+): { start: number; end: number } {
+  const size = Math.max(1, Math.min(height, total));
+  const limit = Math.max(0, total - size);
+  let next = Math.max(0, Math.min(start, limit));
+  if (cursor < next) next = cursor;
+  if (cursor >= next + size) next = cursor - size + 1;
+  next = Math.max(0, Math.min(next, limit));
+  return { start: next, end: Math.min(total, next + size) };
+}
+
 /** Selects or clears every client row; the Other row keeps its state. */
 export function toggleAll(options: SelectOption[], selected: boolean): SelectOption[] {
   return options.map((option) =>
@@ -68,6 +87,29 @@ export function pickerResult(options: SelectOption[]): PickerResult {
       .map((option) => option.id),
     other: options.some((option) => option.other && option.selected),
   };
+}
+
+type BodyEntry =
+  | { kind: "header"; text: string }
+  | { kind: "blank" }
+  | { kind: "option"; rowIndex: number };
+
+/** Section labels scroll with the rows so the pane itself never moves. */
+function buildBodyEntries(rows: SelectOption[]): BodyEntry[] {
+  const entries: BodyEntry[] = [];
+  rows.forEach((row, index) => {
+    if (index === 0) {
+      entries.push({ kind: "header", text: "POPULAR" });
+    } else if (row.other) {
+      entries.push({ kind: "blank" });
+      entries.push({ kind: "header", text: "OTHER" });
+    } else if (rows[index - 1]?.popular && !row.popular) {
+      entries.push({ kind: "blank" });
+      entries.push({ kind: "header", text: "MORE CLIENTS" });
+    }
+    entries.push({ kind: "option", rowIndex: index });
+  });
+  return entries;
 }
 
 /**
@@ -89,10 +131,40 @@ export async function pickClients(
   let painted = 0;
   const theme = createTheme(output);
   const columns = output.columns ?? 80;
+  const terminalRows = output.rows ?? 24;
   const width = Math.max(44, Math.min(columns - 4, 64));
   const showDetail = columns >= 72;
   const detailLimit = Math.max(18, columns - 40);
   const rule = theme.dim("─".repeat(width));
+  const headerHeight = 4;
+  const footerHeight = rows.some((row) => row.detected) ? 3 : 4;
+  const bodyHeight = Math.max(3, terminalRows - headerHeight - footerHeight);
+  const body = buildBodyEntries(rows);
+  let scrollStart = 0;
+  let pageSize = bodyHeight;
+
+  const paintRow = (
+    row: SelectOption,
+    index: number,
+    final: boolean
+  ): string => {
+    const marker = final ? " " : index === cursor ? theme.cyan("❯") : " ";
+    const box = row.selected ? theme.green("[●]") : theme.dim("[ ]");
+    const padding = row.label.padEnd(20);
+    const label = index === cursor && !final ? theme.bold(padding) : padding;
+    const tagName = row.detected ? "detected" : row.popular ? "popular" : "";
+    const tag = tagName
+      ? row.detected
+        ? theme.green(tagName.padEnd(10))
+        : theme.dim(tagName.padEnd(10))
+      : " ".repeat(10);
+    const detail = !showDetail
+      ? ""
+      : row.detail.length > detailLimit
+        ? `${row.detail.slice(0, detailLimit - 1).trimEnd()}…`
+        : row.detail;
+    return `  ${marker} ${box} ${label} ${tag} ${theme.dim(detail)}`.trimEnd();
+  };
 
   const paint = (final = false): void => {
     const lines: string[] = [];
@@ -106,41 +178,34 @@ export async function pickClients(
     lines.push(`  ${theme.dim("Connect Zen to the agents you use.")}`);
     lines.push("");
 
-    rows.forEach((row, index) => {
-      const previous = rows[index - 1];
-      if (index === 0) {
-        lines.push(`  ${theme.dim("POPULAR")}`);
-      } else if (row.other) {
-        lines.push("");
-        lines.push(`  ${theme.dim("OTHER")}`);
-      } else if (previous?.popular && !row.popular) {
-        lines.push("");
-        lines.push(`  ${theme.dim("MORE CLIENTS")}`);
-      }
+    const scrolling = body.length > bodyHeight;
+    const visible = scrolling ? Math.max(1, bodyHeight - 2) : bodyHeight;
+    pageSize = visible;
+    const cursorLine = body.findIndex(
+      (entry) => entry.kind === "option" && entry.rowIndex === cursor
+    );
+    const window = scrollWindow(body.length, cursorLine, visible, scrollStart);
+    scrollStart = window.start;
 
-      const marker = final ? " " : index === cursor ? theme.cyan("❯") : " ";
-      const box = row.selected ? theme.green("[●]") : theme.dim("[ ]");
-      const padding = row.label.padEnd(20);
-      const label = index === cursor && !final ? theme.bold(padding) : padding;
-      const tagName = row.detected
-        ? "detected"
-        : row.popular
-          ? "popular"
-          : "";
-      const tag = tagName
-        ? row.detected
-          ? theme.green(tagName.padEnd(10))
-          : theme.dim(tagName.padEnd(10))
-        : " ".repeat(10);
-      const detail = !showDetail
-        ? ""
-        : row.detail.length > detailLimit
-          ? `${row.detail.slice(0, detailLimit - 1).trimEnd()}…`
-          : row.detail;
+    if (scrolling) {
       lines.push(
-        `  ${marker} ${box} ${label} ${tag} ${theme.dim(detail)}`.trimEnd()
+        window.start > 0 ? `  ${theme.dim(`↑ ${window.start} more`)}` : ""
       );
-    });
+    }
+    for (let index = window.start; index < window.end; index += 1) {
+      const entry = body[index];
+      if (entry.kind === "option") {
+        lines.push(paintRow(rows[entry.rowIndex], entry.rowIndex, final));
+      } else if (entry.kind === "header") {
+        lines.push(`  ${theme.dim(entry.text)}`);
+      } else {
+        lines.push("");
+      }
+    }
+    if (scrolling) {
+      const below = body.length - window.end;
+      lines.push(below > 0 ? `  ${theme.dim(`↓ ${below} more`)}` : "");
+    }
 
     lines.push("");
     if (!rows.some((row) => row.detected)) {
@@ -212,6 +277,18 @@ export async function pickClients(
           break;
         case "down":
           cursor = moveCursor(rows, cursor, 1);
+          break;
+        case "pageup":
+          cursor = moveCursor(rows, cursor, -pageSize);
+          break;
+        case "pagedown":
+          cursor = moveCursor(rows, cursor, pageSize);
+          break;
+        case "home":
+          cursor = 0;
+          break;
+        case "end":
+          cursor = rows.length - 1;
           break;
         case "space":
         case "spacebar":

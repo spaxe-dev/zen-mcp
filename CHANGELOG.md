@@ -4,6 +4,25 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `zen-mcp onboard` now covers 28 MCP clients. Alongside the original nine it
+  knows OpenCode, oh-my-pi (OMP), DeepSeek Harness (DSH), ZCode (Z.ai), Roo
+  Code, Kilo Code, Continue, Amp, Crush, Qwen Code, Kiro, Warp, Copilot CLI,
+  Factory Droid, Amazon Q, Goose, LM Studio, Junie and Pi.
+- The client list scrolls inside a fixed pane, with `up N more` and
+  `down N more` markers and Page Up, Page Down, Home and End keys. The header
+  and the selection footer stay in place while the rows move.
+- Writers for the formats those clients use: nested JSON keys such as
+  `mcp.servers` and `amp.mcpServers`, JSONC with comments and trailing commas,
+  TOML tables, YAML (the DSH patch file, Continue's list and Goose's
+  `extensions` mapping) and shell rc files (Crush). Each writer creates or
+  replaces only the `zen-mcp` entry and leaves every other entry alone.
+- The Other client runbook describes each of these config paths and entry
+  shapes.
+
 ## [0.3.3] - 2026-11-02
 
 ### Added

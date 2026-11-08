@@ -45,7 +45,7 @@ zen-mcp onboard --clients all
 zen-mcp onboard --clients other
 ```
 
-The picker knows Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Windsurf, Cline, and Zed. It preselects clients found on this machine. Only the `zen-mcp` entry is created or replaced; other servers stay, and JSONC files keep their comments and trailing commas. `other` prints a step-by-step runbook with config paths, entry shapes, merge rules, a validation checklist and a completion report. `--command` changes the command clients should run.
+The picker knows Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, OpenCode, oh-my-pi, DeepSeek Harness, ZCode, Windsurf, Cline, Zed, Roo Code, Kilo Code, Continue, Amp, Crush, Qwen Code, Kiro, Warp, Copilot CLI, Factory Droid, Amazon Q, Goose, LM Studio, Junie, and Pi. The list scrolls inside the pane, and clients found on this machine are preselected. Only the `zen-mcp` entry is created or replaced; other servers stay, and JSONC files keep their comments and trailing commas. `other` prints a step-by-step runbook with config paths, entry shapes, merge rules, a validation checklist and a completion report. `--command` changes the command clients should run.
 
 ## File locations
 

@@ -131,7 +131,7 @@ Run the picker:
 zen-mcp onboard
 ```
 
-It lists Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Windsurf, Cline, and Zed. Clients found on this machine are preselected. Use the arrow keys to move, space to toggle, and enter to confirm. Zen MCP merges a `zen-mcp` entry into each selected client's own configuration file and leaves other servers alone. Choose **Other MCP client** to print a step-by-step runbook for any agent: known config paths, the right entry shape for JSON, VS Code, Zed and TOML clients, merge rules, a validation checklist, and a completion report.
+It lists Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, OpenCode, oh-my-pi, DeepSeek Harness, ZCode, Windsurf, Cline, Zed, Roo Code, Kilo Code, Continue, Amp, Crush, Qwen Code, Kiro, Warp, Copilot CLI, Factory Droid, Amazon Q, Goose, LM Studio, Junie, and Pi. The list scrolls inside the picker, and clients found on this machine are preselected. Use the arrow keys, Page Up, Page Down, Home and End to move, space to toggle, and enter to confirm. Zen MCP merges a `zen-mcp` entry into each selected client's own configuration file and leaves other servers alone. Choose **Other MCP client** to print a step-by-step runbook for any agent: known config paths, the right entry shape for JSON, nested JSON, VS Code, Zed, TOML, YAML and shell clients, merge rules, a validation checklist, and a completion report.
 
 For scripts or a shell without a TTY, name the clients:
 
