@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
   agentSetupPrompt,
@@ -23,6 +23,7 @@ import {
   moveCursor,
   pickClients,
   pickerResult,
+  scrollWindow,
   toggleAll,
 } from "../../src/onboard/picker.js";
 
@@ -187,6 +188,25 @@ describe("onboard clients", () => {
       "windsurf",
       "cline",
       "zed",
+      "opencode",
+      "omp",
+      "dsh",
+      "zcode",
+      "roo-code",
+      "kilo-code",
+      "continue",
+      "amp",
+      "crush",
+      "qwen-code",
+      "kiro",
+      "warp",
+      "copilot-cli",
+      "droid",
+      "amazon-q",
+      "goose",
+      "lm-studio",
+      "junie",
+      "pi",
     ]);
   });
 
@@ -256,6 +276,106 @@ describe("onboard clients", () => {
       codex?.configPath,
       join(tmpdir(), "custom-codex", "config.toml")
     );
+  });
+
+  describe("additional clients", () => {
+    const temp = mkdtempSync(join(tmpdir(), "zen-mcp-onboard-more-"));
+    const context = {
+      home: temp,
+      platform: "linux" as const,
+      env: { XDG_CONFIG_HOME: join(temp, "config") },
+      command: "zen-mcp",
+    };
+
+    after(() => rmSync(temp, { recursive: true, force: true }));
+
+    it("creates OpenCode's nested mcp.servers object", () => {
+      const result = applyClient("opencode", context);
+      assert.equal(result.status, "ok");
+
+      const parsed = JSON.parse(readFileSync(result.path, "utf8"));
+      assert.deepEqual(parsed.mcp.servers["zen-mcp"], {
+        type: "local",
+        command: ["zen-mcp", "serve"],
+      });
+    });
+
+    it("merges into an existing nested JSON object", () => {
+      const path = join(temp, ".zcode", "cli", "config.json");
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          mcp: { servers: { other: { command: "other" } } },
+        }),
+        "utf8"
+      );
+
+      const result = applyClient("zcode", context);
+      assert.equal(result.path, path);
+
+      const parsed = JSON.parse(readFileSync(path, "utf8"));
+      assert.deepEqual(parsed.mcp.servers.other, { command: "other" });
+      assert.deepEqual(parsed.mcp.servers["zen-mcp"], {
+        command: "zen-mcp",
+        args: ["serve"],
+        env: {},
+      });
+    });
+
+    it("writes and updates the DSH plugin patch once", () => {
+      const result = applyClient("dsh", context);
+      let text = readFileSync(result.path, "utf8");
+      assert.match(text, /- insert:/);
+      assert.match(text, /id: zen-mcp/);
+      assert.match(text, /@deepseek-ai\/dsh-mcp-client/);
+      assert.match(text, /transport: stdio/);
+
+      applyClient("dsh", context);
+      text = readFileSync(result.path, "utf8");
+      assert.equal((text.match(/id: zen-mcp/g) ?? []).length, 1);
+    });
+
+    it("adds one Continue list item", () => {
+      applyClient("continue", context);
+      applyClient("continue", context);
+
+      const text = readFileSync(
+        join(temp, ".continue", "config.yaml"),
+        "utf8"
+      );
+      assert.equal((text.match(/- name: zen-mcp/g) ?? []).length, 1);
+      assert.match(text, /mcpServers:\n {2}- name: zen-mcp\n {4}type: stdio/);
+    });
+
+    it("keeps other Goose extensions when adding Zen", () => {
+      const path = join(temp, "config", "goose", "config.yaml");
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        "extensions:\n  other:\n    type: stdio\n\ntheme: dark\n",
+        "utf8"
+      );
+
+      applyClient("goose", context);
+
+      const text = readFileSync(path, "utf8");
+      assert.match(text, /other:\n {4}type: stdio/);
+      assert.match(text, / {2}zen-mcp:\n {4}type: stdio/);
+      assert.match(text, /theme: dark/);
+    });
+
+    it("adds one Crush command", () => {
+      applyClient("crush", context);
+      applyClient("crush", context);
+
+      const text = readFileSync(
+        join(temp, "config", "crush", "crushrc"),
+        "utf8"
+      );
+      assert.equal((text.match(/^mcp add zen-mcp/mg) ?? []).length, 1);
+      assert.match(text, /--command zen-mcp --args serve/);
+    });
   });
 
   describe("applyClient", () => {
@@ -433,6 +553,43 @@ describe("onboard picker", () => {
     assert.deepEqual(pickerResult(options), { selected: ["a"], other: true });
   });
 
+  it("scrolls only when the cursor leaves the window", () => {
+    assert.deepEqual(scrollWindow(30, 0, 5), { start: 0, end: 5 });
+    assert.deepEqual(scrollWindow(30, 4, 5), { start: 0, end: 5 });
+    assert.deepEqual(scrollWindow(30, 5, 5), { start: 1, end: 6 });
+    assert.deepEqual(scrollWindow(30, 29, 5), { start: 25, end: 30 });
+    assert.deepEqual(scrollWindow(30, 6, 5, 0), { start: 2, end: 7 });
+    assert.deepEqual(scrollWindow(3, 2, 5), { start: 0, end: 3 });
+  });
+
+  it("keeps the pane fixed while the list scrolls", async () => {
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    output.rows = 14;
+    output.columns = 100;
+    const options = buildOptions(
+      Array.from({ length: 20 }, (_, index) => client(`c${index}`))
+    );
+
+    const pending = pickClients(options, {
+      input: input as unknown as NodeJS.ReadStream,
+      output: output as unknown as NodeJS.WriteStream,
+    });
+
+    for (let index = 0; index < 15; index += 1) {
+      input.emit("keypress", undefined, key("down"));
+    }
+    input.emit("keypress", " ", key("space"));
+    input.emit("keypress", undefined, key("return"));
+
+    assert.deepEqual(await pending, { selected: ["c15"], other: false });
+    const plain = output.text.replace(/\x1b\[[0-9;]*m/g, "");
+    assert.match(plain, /↑ \d+ more/);
+    assert.match(plain, /↓ \d+ more/);
+    assert.match(plain, /ZEN MCP/);
+    assert.match(plain, /Selection confirmed/);
+  });
+
   it("renders, toggles and confirms from keypress events", async () => {
     const input = new FakeInput();
     const output = new FakeOutput();
@@ -480,6 +637,8 @@ class FakeInput extends EventEmitter {
 
 class FakeOutput {
   isTTY = true;
+  columns = 80;
+  rows: number | undefined;
   text = "";
 
   write(chunk: string): boolean {

@@ -13,7 +13,7 @@
 
 Zen MCP is an MCP server that lets an AI agent work inside [Zen Browser](https://zen-browser.app) using Zen's own spaces, folders, and tabs. The agent can research in background tabs, read and search pages without switching what you are looking at, ask you a question in a small in-browser card, and show the evidence behind an answer.
 
-Status: **0.3.x, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
+Status: **0.4.x, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
 
 ## What it does
 
@@ -96,7 +96,7 @@ npx @spaxe-dev/zen-mcp setup
 Each GitHub release also attaches a package tarball and `SHA256SUMS`:
 
 ```sh
-npm install -g ./zen-mcp-0.3.3.tgz
+npm install -g ./zen-mcp-0.4.0.tgz
 zen-mcp setup
 ```
 
@@ -131,7 +131,7 @@ Run the picker:
 zen-mcp onboard
 ```
 
-It lists Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, Windsurf, Cline, and Zed. Clients found on this machine are preselected. Use the arrow keys to move, space to toggle, and enter to confirm. Zen MCP merges a `zen-mcp` entry into each selected client's own configuration file and leaves other servers alone. Choose **Other MCP client** to print a step-by-step runbook for any agent: known config paths, the right entry shape for JSON, VS Code, Zed and TOML clients, merge rules, a validation checklist, and a completion report.
+It lists Claude Code, Claude Desktop, Cursor, VS Code, Codex CLI, Gemini CLI, OpenCode, oh-my-pi, DeepSeek Harness, ZCode, Windsurf, Cline, Zed, Roo Code, Kilo Code, Continue, Amp, Crush, Qwen Code, Kiro, Warp, Copilot CLI, Factory Droid, Amazon Q, Goose, LM Studio, Junie, and Pi. The list scrolls inside the picker, and clients found on this machine are preselected. Use the arrow keys, Page Up, Page Down, Home and End to move, space to toggle, and enter to confirm. Zen MCP merges a `zen-mcp` entry into each selected client's own configuration file and leaves other servers alone. Choose **Other MCP client** to print a step-by-step runbook for any agent: known config paths, the right entry shape for JSON, nested JSON, VS Code, Zed, TOML, YAML and shell clients, merge rules, a validation checklist, and a completion report.
 
 For scripts or a shell without a TTY, name the clients:
 

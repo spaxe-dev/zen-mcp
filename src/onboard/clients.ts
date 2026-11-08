@@ -31,18 +31,21 @@ interface ClientDefinition {
   label: string;
   detail: string;
   popular: boolean;
-  format: "json" | "toml";
+  format: "json" | "toml" | "yaml" | "bash";
   configPaths(ctx: ResolvedContext): string[];
   /** Directories or files whose presence means the client is installed. */
   detectPaths(ctx: ResolvedContext): string[];
   json?: {
-    key: string;
+    /** Nested key path to the server map, for example ["mcp", "servers"]. */
+    path: string[];
     entry(ctx: ResolvedContext): Record<string, unknown>;
   };
   toml?: {
     section: string;
     values(ctx: ResolvedContext): Record<string, string | string[]>;
   };
+  /** Text formats that cannot be parsed generically (YAML, shell files). */
+  text?: (existing: string | undefined, ctx: ResolvedContext) => string;
 }
 
 export interface ClientEntry {
@@ -53,7 +56,7 @@ export interface ClientEntry {
   detected: boolean;
   /** File that will be created or updated. */
   configPath: string;
-  format: "json" | "toml";
+  format: "json" | "toml" | "yaml" | "bash";
 }
 
 export interface ApplyResult {
@@ -72,6 +75,15 @@ const CLINE_SETTINGS = join(
   "cline_mcp_settings.json"
 );
 
+/** Cross-platform tools keep their config under `~/.config` on every OS. */
+const xdgConfig = (ctx: ResolvedContext): string =>
+  ctx.env.XDG_CONFIG_HOME ?? join(ctx.home, ".config");
+
+const mcpServers = (ctx: ResolvedContext): Record<string, unknown> => ({
+  command: ctx.command,
+  args: [...SERVER_ARGS],
+});
+
 const DEFINITIONS: ClientDefinition[] = [
   {
     id: "claude-code",
@@ -85,7 +97,7 @@ const DEFINITIONS: ClientDefinition[] = [
       join(ctx.home, ".claude"),
     ],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -103,7 +115,7 @@ const DEFINITIONS: ClientDefinition[] = [
     ],
     detectPaths: (ctx) => [join(ctx.configBase, "Claude")],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -119,7 +131,7 @@ const DEFINITIONS: ClientDefinition[] = [
     configPaths: (ctx) => [join(ctx.home, ".cursor", "mcp.json")],
     detectPaths: (ctx) => [join(ctx.home, ".cursor")],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -141,7 +153,7 @@ const DEFINITIONS: ClientDefinition[] = [
       join(ctx.configBase, "Code - Insiders", "User"),
     ],
     json: {
-      key: "servers",
+      path: ["servers"],
       entry: (ctx) => ({
         type: "stdio",
         command: ctx.command,
@@ -178,7 +190,7 @@ const DEFINITIONS: ClientDefinition[] = [
     configPaths: (ctx) => [join(ctx.home, ".gemini", "settings.json")],
     detectPaths: (ctx) => [join(ctx.home, ".gemini")],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -196,7 +208,7 @@ const DEFINITIONS: ClientDefinition[] = [
     ],
     detectPaths: (ctx) => [join(ctx.home, ".codeium", "windsurf")],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -220,7 +232,7 @@ const DEFINITIONS: ClientDefinition[] = [
       dirname(join(ctx.configBase, "Windsurf", CLINE_SETTINGS)),
     ],
     json: {
-      key: "mcpServers",
+      path: ["mcpServers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
@@ -240,11 +252,350 @@ const DEFINITIONS: ClientDefinition[] = [
       join(ctx.configBase, ctx.platform === "linux" ? "zed" : "Zed"),
     ],
     json: {
-      key: "context_servers",
+      path: ["context_servers"],
       entry: (ctx) => ({
         command: ctx.command,
         args: [...SERVER_ARGS],
       }),
+    },
+  },
+  {
+    id: "opencode",
+    label: "OpenCode",
+    detail: "sst terminal agent",
+    popular: true,
+    format: "json",
+    configPaths: (ctx) => [
+      join(xdgConfig(ctx), "opencode", "opencode.json"),
+      join(xdgConfig(ctx), "opencode", "opencode.jsonc"),
+    ],
+    detectPaths: (ctx) => [join(xdgConfig(ctx), "opencode")],
+    json: {
+      path: ["mcp", "servers"],
+      entry: (ctx) => ({
+        type: "local",
+        command: [ctx.command, ...SERVER_ARGS],
+      }),
+    },
+  },
+  {
+    id: "omp",
+    label: "oh-my-pi (omp)",
+    detail: "can1357's terminal agent",
+    popular: true,
+    format: "json",
+    configPaths: (ctx) => [
+      join(
+        ctx.env.PI_CONFIG_DIR ?? join(ctx.home, ".omp"),
+        "agent",
+        "mcp.json"
+      ),
+    ],
+    detectPaths: (ctx) => [
+      ctx.env.PI_CONFIG_DIR ?? join(ctx.home, ".omp"),
+    ],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => ({
+        type: "stdio",
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+      }),
+    },
+  },
+  {
+    id: "dsh",
+    label: "DeepSeek Harness",
+    detail: "dsh agent framework",
+    popular: true,
+    format: "yaml",
+    configPaths: (ctx) => [
+      join(ctx.env.DSH_HOME ?? join(ctx.home, ".dsh"), "cordis.patch.yml"),
+    ],
+    detectPaths: (ctx) => [ctx.env.DSH_HOME ?? join(ctx.home, ".dsh")],
+    text: (existing, ctx) => mergeDshPatch(existing, ctx),
+  },
+  {
+    id: "zcode",
+    label: "ZCode (Z.ai)",
+    detail: "Z.ai coding agent",
+    popular: true,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".zcode", "cli", "config.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".zcode")],
+    json: {
+      path: ["mcp", "servers"],
+      entry: (ctx) => ({
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+        env: {},
+      }),
+    },
+  },
+  {
+    id: "roo-code",
+    label: "Roo Code",
+    detail: "VS Code extension",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [
+      join(
+        ctx.configBase,
+        "Code",
+        "User",
+        "globalStorage",
+        "rooveterinaryinc.roo-cline",
+        "settings",
+        "mcp_settings.json"
+      ),
+    ],
+    detectPaths: (ctx) => [
+      join(
+        ctx.configBase,
+        "Code",
+        "User",
+        "globalStorage",
+        "rooveterinaryinc.roo-cline"
+      ),
+    ],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => ({
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+        disabled: false,
+        alwaysAllow: [],
+      }),
+    },
+  },
+  {
+    id: "kilo-code",
+    label: "Kilo Code",
+    detail: "Kilo editor extension",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(xdgConfig(ctx), "kilo", "kilo.jsonc")],
+    detectPaths: (ctx) => [join(xdgConfig(ctx), "kilo")],
+    json: {
+      path: ["mcp"],
+      entry: (ctx) => ({
+        type: "local",
+        command: [ctx.command, ...SERVER_ARGS],
+        enabled: true,
+        timeout: 10000,
+      }),
+    },
+  },
+  {
+    id: "continue",
+    label: "Continue",
+    detail: "VS Code and JetBrains extension",
+    popular: false,
+    format: "yaml",
+    configPaths: (ctx) => [join(ctx.home, ".continue", "config.yaml")],
+    detectPaths: (ctx) => [join(ctx.home, ".continue")],
+    text: (existing, ctx) =>
+      mergeYamlListSection(existing, "mcpServers", SERVER_ENTRY_NAME, [
+        `name: ${SERVER_ENTRY_NAME}`,
+        "type: stdio",
+        `command: ${yamlScalar(ctx.command)}`,
+        `args: ${yamlFlowArray(SERVER_ARGS)}`,
+      ]),
+  },
+  {
+    id: "amp",
+    label: "Amp",
+    detail: "Sourcegraph terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [
+      ctx.platform === "win32"
+        ? join(ctx.configBase, "amp", "settings.json")
+        : join(xdgConfig(ctx), "amp", "settings.json"),
+    ],
+    detectPaths: (ctx) => [
+      ctx.platform === "win32"
+        ? join(ctx.configBase, "amp")
+        : join(xdgConfig(ctx), "amp"),
+    ],
+    json: {
+      path: ["amp.mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "crush",
+    label: "Crush",
+    detail: "Charmbracelet terminal agent",
+    popular: false,
+    format: "bash",
+    configPaths: (ctx) => [
+      ctx.env.CRUSH_GLOBAL_CONFIG ?? join(xdgConfig(ctx), "crush", "crushrc"),
+    ],
+    detectPaths: (ctx) => [join(xdgConfig(ctx), "crush")],
+    text: (existing, ctx) => mergeCrushrc(existing, ctx),
+  },
+  {
+    id: "qwen-code",
+    label: "Qwen Code",
+    detail: "Alibaba terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [
+      join(ctx.env.QWEN_HOME ?? join(ctx.home, ".qwen"), "settings.json"),
+    ],
+    detectPaths: (ctx) => [ctx.env.QWEN_HOME ?? join(ctx.home, ".qwen")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "kiro",
+    label: "Kiro",
+    detail: "AWS agentic IDE and CLI",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".kiro", "settings", "mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".kiro")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => ({
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+        disabled: false,
+        autoApprove: [],
+      }),
+    },
+  },
+  {
+    id: "warp",
+    label: "Warp",
+    detail: "Warp terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".warp", ".mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".warp")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "copilot-cli",
+    label: "Copilot CLI",
+    detail: "GitHub Copilot terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".copilot", "mcp-config.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".copilot")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => ({
+        type: "local",
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+        tools: ["*"],
+      }),
+    },
+  },
+  {
+    id: "droid",
+    label: "Factory Droid",
+    detail: "Factory terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".factory", "mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".factory")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => ({
+        type: "stdio",
+        command: ctx.command,
+        args: [...SERVER_ARGS],
+        disabled: false,
+      }),
+    },
+  },
+  {
+    id: "amazon-q",
+    label: "Amazon Q",
+    detail: "Amazon Q Developer CLI",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [
+      join(ctx.home, ".aws", "amazonq", "mcp.json"),
+    ],
+    detectPaths: (ctx) => [join(ctx.home, ".aws", "amazonq")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "goose",
+    label: "Goose",
+    detail: "Block's terminal agent",
+    popular: false,
+    format: "yaml",
+    configPaths: (ctx) => [
+      ctx.platform === "win32"
+        ? join(ctx.configBase, "Block", "goose", "config", "config.yaml")
+        : join(xdgConfig(ctx), "goose", "config.yaml"),
+    ],
+    detectPaths: (ctx) => [
+      ctx.platform === "win32"
+        ? join(ctx.configBase, "Block", "goose")
+        : join(xdgConfig(ctx), "goose"),
+    ],
+    text: (existing, ctx) =>
+      mergeYamlMappingSection(existing, "extensions", SERVER_ENTRY_NAME, [
+        "type: stdio",
+        `name: ${SERVER_ENTRY_NAME}`,
+        "enabled: true",
+        `cmd: ${yamlScalar(ctx.command)}`,
+        `args: ${yamlFlowArray(SERVER_ARGS)}`,
+        "envs: {}",
+        "timeout: 300",
+      ]),
+  },
+  {
+    id: "lm-studio",
+    label: "LM Studio",
+    detail: "LM Studio desktop app",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".lmstudio", "mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".lmstudio")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "junie",
+    label: "Junie",
+    detail: "JetBrains Junie CLI",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".junie", "mcp", "mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".junie")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
+    },
+  },
+  {
+    id: "pi",
+    label: "Pi",
+    detail: "pi.dev terminal agent",
+    popular: false,
+    format: "json",
+    configPaths: (ctx) => [join(ctx.home, ".pi", "agent", "mcp.json")],
+    detectPaths: (ctx) => [join(ctx.home, ".pi")],
+    json: {
+      path: ["mcpServers"],
+      entry: (ctx) => mcpServers(ctx),
     },
   },
 ];
@@ -257,7 +608,7 @@ export function clientIds(): string[] {
 /** Lists every supported client and its resolved config path. */
 export function catalog(ctx: ClientContext = {}): ClientEntry[] {
   const resolved = resolveContext(ctx);
-  return DEFINITIONS.map((definition) => {
+  const entries = DEFINITIONS.map((definition) => {
     const paths = definition.configPaths(resolved);
     return {
       id: definition.id,
@@ -269,6 +620,11 @@ export function catalog(ctx: ClientContext = {}): ClientEntry[] {
       format: definition.format,
     };
   });
+  // The picker draws one POPULAR section, so popular entries must be adjacent.
+  return [
+    ...entries.filter((entry) => entry.popular),
+    ...entries.filter((entry) => !entry.popular),
+  ];
 }
 
 /** Adds or replaces the Zen MCP server in one client's configuration. */
@@ -294,7 +650,9 @@ export function applyClient(id: string, ctx: ClientContext = {}): ApplyResult {
       ? readFileTextBounded(path, MAX_CLIENT_CONFIG_BYTES)
       : undefined;
 
-    if (definition.format === "toml") {
+    if (definition.text) {
+      atomicWritePrivate(path, definition.text(existing, resolved));
+    } else if (definition.format === "toml") {
       const toml = definition.toml;
       if (!toml) throw new Error("TOML settings are missing for this client");
       const next = mergeTomlServer(
@@ -306,7 +664,11 @@ export function applyClient(id: string, ctx: ClientContext = {}): ApplyResult {
     } else {
       const json = definition.json;
       if (!json) throw new Error("JSON settings are missing for this client");
-      const next = mergeJsonServer(existing, json.key, json.entry(resolved));
+      const next = mergeJsonServerPath(
+        existing,
+        json.path,
+        json.entry(resolved)
+      );
       atomicWritePrivate(path, next);
     }
 
@@ -338,11 +700,22 @@ export function mergeJsonServer(
   key: string,
   entry: Record<string, unknown>
 ): string {
+  return mergeJsonServerPath(existing, [key], entry);
+}
+
+/** Merges into a nested key path, creating missing objects along the way. */
+export function mergeJsonServerPath(
+  existing: string | undefined,
+  path: string[],
+  entry: Record<string, unknown>
+): string {
   let text = existing;
   if (text && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
 
   if (!text || !text.trim()) {
-    return `${JSON.stringify({ [key]: { [SERVER_ENTRY_NAME]: entry } }, null, 2)}\n`;
+    const root: Record<string, unknown> = {};
+    placeJsonServer(root, path, entry);
+    return `${JSON.stringify(root, null, 2)}\n`;
   }
 
   let parsed: unknown;
@@ -350,7 +723,7 @@ export function mergeJsonServer(
     parsed = JSON.parse(text);
   } catch (error) {
     try {
-      return mergeJsoncServer(text, key, entry);
+      return mergeJsoncServerPath(text, path, entry);
     } catch {
       throw new Error(
         `existing file is not valid JSON or JSONC (${(error as Error).message})`
@@ -361,21 +734,34 @@ export function mergeJsonServer(
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("existing file is not a JSON object");
   }
-  const root = parsed as Record<string, unknown>;
+  placeJsonServer(parsed as Record<string, unknown>, path, entry);
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
 
-  const current = root[key];
-  if (
-    current !== undefined &&
-    (current === null || typeof current !== "object" || Array.isArray(current))
-  ) {
-    throw new Error(`"${key}" is not a JSON object`);
+function placeJsonServer(
+  root: Record<string, unknown>,
+  path: string[],
+  entry: Record<string, unknown>
+): void {
+  let node = root;
+  for (const key of path) {
+    const current = node[key];
+    if (current === undefined) {
+      const created: Record<string, unknown> = {};
+      node[key] = created;
+      node = created;
+      continue;
+    }
+    if (
+      current === null ||
+      typeof current !== "object" ||
+      Array.isArray(current)
+    ) {
+      throw new Error(`"${key}" is not a JSON object`);
+    }
+    node = current as Record<string, unknown>;
   }
-
-  root[key] = {
-    ...((current as Record<string, unknown> | undefined) ?? {}),
-    [SERVER_ENTRY_NAME]: entry,
-  };
-  return `${JSON.stringify(root, null, 2)}\n`;
+  node[SERVER_ENTRY_NAME] = entry;
 }
 
 interface JsoncMember {
@@ -395,30 +781,57 @@ interface JsoncObject {
  * Merges into a JSONC document without reserializing it, so comments and
  * trailing commas survive. Only the `zen-mcp` entry is replaced or added.
  */
-function mergeJsoncServer(
+function mergeJsoncServerPath(
   text: string,
-  key: string,
+  path: string[],
   entry: Record<string, unknown>
 ): string {
   const rootStart = skipJsoncTrivia(text, 0);
   if (text[rootStart] !== "{") {
     throw new Error("the top level is not a JSON object");
   }
-  const root = scanJsoncObject(text, rootStart);
-  if (!root) throw new Error("the file has an unterminated object");
+  let object = scanJsoncObject(text, rootStart);
+  if (!object) throw new Error("the file has an unterminated object");
 
-  const target = root.members.find((member) => member.key === key);
-  if (!target) {
-    return insertJsoncMember(text, root, key, {
-      [SERVER_ENTRY_NAME]: entry,
-    });
+  for (let index = 0; index < path.length; index += 1) {
+    const key = path[index];
+    const member = object.members.find((item) => item.key === key);
+    if (!member) {
+      return insertJsoncMember(
+        text,
+        object,
+        key,
+        nestedJsonValue(path.slice(index + 1), entry)
+      );
+    }
+    if (text[member.valueStart] !== "{") {
+      throw new Error(`"${key}" is not a JSON object`);
+    }
+    const child = scanJsoncObject(text, member.valueStart);
+    if (!child) throw new Error(`"${key}" is not a complete object`);
+    if (index === path.length - 1) {
+      return upsertJsoncServer(text, child, entry);
+    }
+    object = child;
   }
-  if (text[target.valueStart] !== "{") {
-    throw new Error(`"${key}" is not a JSON object`);
-  }
-  const serverMap = scanJsoncObject(text, target.valueStart);
-  if (!serverMap) throw new Error(`"${key}" is not a complete object`);
+  throw new Error("the server path is empty");
+}
 
+function nestedJsonValue(
+  keys: string[],
+  entry: Record<string, unknown>
+): Record<string, unknown> {
+  return keys.reduceRight<Record<string, unknown>>(
+    (value, key) => ({ [key]: value }),
+    { [SERVER_ENTRY_NAME]: entry }
+  );
+}
+
+function upsertJsoncServer(
+  text: string,
+  serverMap: JsoncObject,
+  entry: Record<string, unknown>
+): string {
   const current = serverMap.members.find(
     (member) => member.key === SERVER_ENTRY_NAME
   );
@@ -662,6 +1075,257 @@ export function mergeTomlServer(
   return `${lines.join("\n")}\n`;
 }
 
+function yamlScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
+function yamlFlowArray(values: string[]): string {
+  return `[${values.map(yamlScalar).join(", ")}]`;
+}
+
+interface YamlSection {
+  start: number;
+  end: number;
+  indent: string;
+}
+
+/** Finds a top-level YAML key and the lines that belong to it. */
+function findYamlSection(lines: string[], section: string): YamlSection | null {
+  const header = new RegExp(`^${escapeRegExp(section)}:\\s*(?:#.*)?$`);
+  const start = lines.findIndex((line) => header.test(line));
+  if (start < 0) return null;
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (
+      line.trim() === "" ||
+      /^[ \t]/.test(line) ||
+      line.trimStart().startsWith("#")
+    ) {
+      end += 1;
+    } else {
+      break;
+    }
+  }
+  const child = lines
+    .slice(start + 1, end)
+    .find((line) => /^[ \t]+\S/.test(line));
+  return { start, end, indent: child?.match(/^[ \t]+/)?.[0] ?? "  " };
+}
+
+function splitYamlLines(existing: string | undefined): string[] {
+  const lines = (existing ?? "").replace(/\r\n/g, "\n").split("\n");
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
+ * Adds or replaces one key under a top-level YAML mapping. The block is
+ * spliced into the text so comments and unrelated keys keep their place.
+ */
+function mergeYamlMappingSection(
+  existing: string | undefined,
+  section: string,
+  key: string,
+  block: string[]
+): string {
+  const lines = splitYamlLines(existing);
+  const found = findYamlSection(lines, section);
+
+  if (!found) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      `${section}:`,
+      `${key}:`,
+      ...block.map((line) => `  ${line}`)
+    );
+    return `${lines.join("\n")}\n`;
+  }
+
+  const indent = found.indent;
+  const keyLine = `${indent}${key}:`;
+  const keyPattern = new RegExp(
+    `^${escapeRegExp(indent)}${escapeRegExp(key)}:\\s*(?:#.*)?$`
+  );
+  const index = lines.findIndex(
+    (line, position) =>
+      position > found.start && position < found.end && keyPattern.test(line)
+  );
+
+  if (index >= 0) {
+    let end = index + 1;
+    while (end < found.end) {
+      const line = lines[end];
+      if (line.trim() === "") {
+        end += 1;
+        continue;
+      }
+      const lineIndent = line.match(/^[ \t]*/)?.[0].length ?? 0;
+      if (lineIndent <= indent.length) break;
+      end += 1;
+    }
+    lines.splice(
+      index,
+      end - index,
+      keyLine,
+      ...block.map((line) => `  ${indent}${line}`)
+    );
+  } else {
+    lines.splice(
+      found.end,
+      0,
+      keyLine,
+      ...block.map((line) => `  ${indent}${line}`)
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** Adds or replaces one `- name:` item under a top-level YAML list. */
+function mergeYamlListSection(
+  existing: string | undefined,
+  section: string,
+  name: string,
+  block: string[]
+): string {
+  const lines = splitYamlLines(existing);
+  const found = findYamlSection(lines, section);
+  const item = [`- name: ${name}`, ...block.slice(1)];
+
+  if (!found) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`${section}:`, ...item.map((line) => `  ${line}`));
+    return `${lines.join("\n")}\n`;
+  }
+
+  const itemIndent =
+    lines
+      .slice(found.start + 1, found.end)
+      .find((line) => /^[ \t]*-[ \t]+\S/.test(line))
+      ?.match(/^[ \t]*/)?.[0] ?? "  ";
+  const namePattern = new RegExp(
+    `^${escapeRegExp(itemIndent)}-[ \\t]+name:\\s*['"]?${escapeRegExp(
+      name
+    )}['"]?\\s*(?:#.*)?$`
+  );
+  const index = lines.findIndex(
+    (line, position) =>
+      position > found.start && position < found.end && namePattern.test(line)
+  );
+
+  if (index >= 0) {
+    let end = index + 1;
+    while (end < found.end) {
+      const line = lines[end];
+      if (line.trim() === "") {
+        end += 1;
+        continue;
+      }
+      if (new RegExp(`^${escapeRegExp(itemIndent)}-[ \\t]`).test(line)) break;
+      if ((line.match(/^[ \t]*/)?.[0].length ?? 0) < itemIndent.length) break;
+      end += 1;
+    }
+    lines.splice(
+      index,
+      end - index,
+      `${itemIndent}${item[0]}`,
+      ...item.slice(1).map((line) => `${itemIndent}  ${line}`)
+    );
+  } else {
+    lines.splice(
+      found.end,
+      0,
+      `${itemIndent}${item[0]}`,
+      ...item.slice(1).map((line) => `${itemIndent}  ${line}`)
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** DSH stores MCP clients as plugin entries in a Cordis patch overlay. */
+function mergeDshPatch(
+  existing: string | undefined,
+  ctx: ResolvedContext
+): string {
+  const lines = splitYamlLines(existing);
+  const item = [
+    "- id: zen-mcp",
+    "  name: '@deepseek-ai/dsh-mcp-client'",
+    "  config:",
+    "    serverName: zen_mcp",
+    "    transport: stdio",
+    `    command: ${yamlScalar(ctx.command)}`,
+    `    args: ${yamlFlowArray(SERVER_ARGS)}`,
+  ];
+  const idPattern = /^([ \t]*)-[ \t]*id:\s*['"]?zen-mcp['"]?\s*$/;
+  const index = lines.findIndex((line) => idPattern.test(line));
+
+  if (index < 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("- insert:", ...item.map((line) => `    ${line}`));
+    return `${lines.join("\n")}\n`;
+  }
+
+  const indent = lines[index].match(idPattern)?.[1] ?? "  ";
+  let start = index;
+  while (start > 0) {
+    const previous = lines[start - 1];
+    const previousIndent = previous.match(/^[ \t]*/)?.[0].length ?? 0;
+    if (previousIndent < indent.length) break;
+    if (
+      previousIndent === indent.length &&
+      /^[ \t]*-[ \t]/.test(previous)
+    ) {
+      break;
+    }
+    start -= 1;
+  }
+
+  let end = index + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    const lineIndent = line.match(/^[ \t]*/)?.[0].length ?? 0;
+    if (line.trim() !== "" && lineIndent < indent.length) break;
+    if (lineIndent === indent.length && /^[ \t]*-[ \t]/.test(line)) break;
+    end += 1;
+  }
+
+  lines.splice(
+    start,
+    end - start,
+    ...item.map((line) => `${indent}${line}`)
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+/** Crush reads a shell rc file, so the entry is an `mcp add` command. */
+function mergeCrushrc(
+  existing: string | undefined,
+  ctx: ResolvedContext
+): string {
+  const lines = splitYamlLines(existing);
+  const command = `mcp add zen-mcp --command ${shellQuote(
+    ctx.command
+  )} --args ${SERVER_ARGS.map(shellQuote).join(" ")}`;
+  const index = lines.findIndex((line) =>
+    /^\s*mcp\s+add\s+zen-mcp(?:\s|$)/.test(line)
+  );
+  if (index >= 0) {
+    lines[index] = command;
+  } else {
+    if (lines.length > 0) lines.push("");
+    lines.push(command);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** A paste-ready runbook for any client the picker does not know. */
 export function agentSetupPrompt(
   command = "zen-mcp",
@@ -676,14 +1340,21 @@ export function agentSetupPrompt(
         : definition.id === "cline"
           ? " (same relative path under Cursor or Windsurf)"
           : "";
+    const jsonPath = definition.json?.path;
     const shape =
-      definition.id === "vscode"
-        ? ' top-level `servers`, entry needs `"type": "stdio"`'
-        : definition.id === "zed"
-          ? " top-level `context_servers`"
-          : definition.id === "codex"
-            ? " TOML table `[mcp_servers.zen-mcp]`"
-            : " top-level `mcpServers`";
+      definition.format === "toml"
+        ? " TOML table `[mcp_servers.zen-mcp]`"
+        : definition.format === "yaml"
+          ? " YAML configuration, keep existing entries"
+          : definition.format === "bash"
+            ? " shell rc file, add it with `mcp add`"
+            : definition.id === "vscode"
+              ? ' top-level `servers`, entry needs `"type": "stdio"`'
+              : jsonPath && jsonPath.length > 1
+                ? ` nested \`${jsonPath.join(".")}\` object`
+                : jsonPath?.[0] === "context_servers"
+                  ? " top-level `context_servers`"
+                  : " top-level `mcpServers`";
     return `- ${definition.label}: \`${path}\`${detail};${shape}.`;
   }).join("\n");
 
