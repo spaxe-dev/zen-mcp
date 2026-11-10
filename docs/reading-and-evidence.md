@@ -58,6 +58,12 @@ The scan covers links, buttons, inputs other than hidden ones, textareas, select
 
 `zen_click` refuses a disabled target, checks the tab URL, the frame URL, and an anchor's `href` against the domain allowlist, then sends a native click. `zen_type` refuses disabled or read-only targets and file inputs, can clear the field first, and caps text at 10,000 characters. It reports `typed` (a character count), never the text, and adds a limitation when the target is a password field. Frame actions report `framePath` and the frame's current `frameUrl`. Neither tool evaluates agent-supplied JavaScript, and both are blocked in read-only mode because they change page state.
 
+Both results include `effect`. Before the action the bridge hashes the acted-on document's URL, title, rendered text, element count, and non-password form values; after the action it polls for up to 1.2 seconds and compares. The effect says which of those changed and how long it watched. It is an observation, not proof that the click or typed text caused the change. When the document could not be signed, `effect.probeFailed` is true and `changed` is false.
+
+### Waiting for state
+
+`zen_wait_for` waits for one condition in one tab without changing the page. Use it after an action whose effect was inconclusive, or before an action that depends on content arriving. The conditions are a selector being present, text appearing (or with `until: "absent"`, disappearing), the document URL containing a string, and the title containing a string. Provide exactly one. The default timeout is 5000 ms, the maximum is 30000 ms, and the default poll interval is 250 ms. A timeout returns `matched: false` with a limitation rather than throwing. Pass `frame_path` to probe a frame; each poll re-resolves the frame and rechecks the allowlist. The probe is fixed server code and returns only the URL, title, ready state, and match flag, never page text.
+
 A click is a real input event. It can submit a form, start a download, open a dialog, navigate, or make a purchase. The allowlist covers the tab URL before the action, the frame URL, an anchor target, and the tab URL after the action; it cannot predict what an in-page script does in between.
 
 ### PDFs

@@ -193,6 +193,30 @@ const pageActionTargetSchema = z.looseObject({
   sensitive: z.boolean(),
 });
 
+const pageActionEffectSchema = z.looseObject({
+  changed: z.boolean(),
+  urlChanged: z.boolean(),
+  titleChanged: z.boolean(),
+  domChanged: z.boolean(),
+  valueChanged: z.boolean(),
+  waitedMs: z.number(),
+  probeFailed: z.boolean().optional(),
+});
+
+const waitForShape = {
+  matched: z.boolean(),
+  waitedMs: z.number(),
+  condition: z.enum(["selector", "text", "urlContains", "titleContains"]),
+  until: z.enum(["present", "absent"]),
+  query: z.string(),
+  tabId: z.string(),
+  url: z.string(),
+  title: z.string(),
+  framePath: z.array(z.number()).optional(),
+  frameUrl: z.string().nullable().optional(),
+  limitation: z.string().optional(),
+};
+
 const pageReadShape = {
   title: z.string(),
   url: z.string(),
@@ -519,6 +543,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
     ),
   },
   zen_find_text: textSearchShape,
+  zen_wait_for: waitForShape,
   zen_click: {
     clicked: z.boolean(),
     tabId: z.string(),
@@ -528,6 +553,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
     framePath: z.array(z.number()).optional(),
     frameUrl: z.string().nullable().optional(),
     limitation: z.string().optional(),
+    effect: pageActionEffectSchema.optional(),
   },
   zen_type: {
     typed: z.number(),
@@ -539,6 +565,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
     framePath: z.array(z.number()).optional(),
     frameUrl: z.string().nullable().optional(),
     limitation: z.string().optional(),
+    effect: pageActionEffectSchema.optional(),
   },
   zen_search_tabs: {
     query: z.string(),

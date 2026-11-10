@@ -81,6 +81,8 @@ Both tools require an `http(s)` tab, refuse frames that are not `http(s)`, and a
 
 `zen_type` refuses disabled and read-only targets and file inputs, caps text at 10,000 characters, and reports only a character count. Password inputs are never included in `value`, and a type into a password field returns a limitation instead of echoing anything. Interactive refs expire after another interactive read or a navigation, so a stale ref fails rather than targeting a different element. A ref still resolves against the page as it exists at action time, so a page that changes between the read and the action can move its controls; read again when the target matters.
 
+`zen_wait_for` and the post-action effect probes are also fixed scripts. The wait probe returns only the document URL, title, ready state, and whether one server-chosen condition holds. The effect signature returns hashes of text and non-password form values, plus counts and lengths, never the values themselves. `zen_wait_for` is read-only and stays available in read-only mode; it does not select the tab or touch the page, and each frame poll rechecks the allowlist.
+
 ### Private windows
 
 Private windows are skipped during bridge injection, and an existing bridge found in a private window is destroyed. This is a best-effort boundary: the detection path is implemented, but private-window behavior is not covered by the automated live suite. Do not rely on it as the only protection when using the normal profile.

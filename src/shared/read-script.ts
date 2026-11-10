@@ -1477,6 +1477,217 @@ return {
 `;
 }
 
+export interface WaitProbeOptions {
+  selector?: string;
+  text?: string;
+  urlContains?: string;
+  titleContains?: string;
+}
+
+export interface WaitProbe {
+  url: string;
+  title: string;
+  readyState: string;
+  /** True when the requested condition currently holds. */
+  matched: boolean;
+}
+
+/**
+ * A fixed probe for zen_wait_for. It never returns page text, only whether the
+ * requested condition holds and the document's URL and title.
+ */
+export function buildWaitProbeScript(
+  options: WaitProbeOptions = {}
+): string {
+  const selector =
+    typeof options.selector === "string" && options.selector.trim()
+      ? options.selector.trim()
+      : null;
+  const text =
+    typeof options.text === "string" && options.text.trim()
+      ? options.text.trim()
+      : null;
+  const urlContains =
+    typeof options.urlContains === "string" && options.urlContains.trim()
+      ? options.urlContains.trim()
+      : null;
+  const titleContains =
+    typeof options.titleContains === "string" && options.titleContains.trim()
+      ? options.titleContains.trim()
+      : null;
+
+  return String.raw`
+const selector = ${JSON.stringify(selector)};
+const text = ${JSON.stringify(text)};
+const urlContains = ${JSON.stringify(urlContains)};
+const titleContains = ${JSON.stringify(titleContains)};
+
+var url = "";
+try {
+  url = String(location.href || "");
+} catch (e) {}
+var title = "";
+try {
+  title = String(document.title || "");
+} catch (e) {}
+var readyState = "";
+try {
+  readyState = String(document.readyState || "");
+} catch (e) {}
+
+var matched = false;
+if (selector) {
+  try {
+    matched = !!document.querySelector(selector);
+  } catch (e) {
+    matched = false;
+  }
+} else if (text) {
+  var needle = text.toLowerCase();
+  try {
+    var body = document.body;
+    var haystack = body
+      ? String(body.innerText || body.textContent || "")
+      : "";
+    matched = haystack.toLowerCase().indexOf(needle) >= 0;
+  } catch (e) {
+    matched = false;
+  }
+} else if (urlContains) {
+  matched = url.toLowerCase().indexOf(urlContains.toLowerCase()) >= 0;
+} else if (titleContains) {
+  matched = title.toLowerCase().indexOf(titleContains.toLowerCase()) >= 0;
+}
+
+return {
+  url: url,
+  title: title,
+  readyState: readyState,
+  matched: matched
+};
+`;
+}
+
+export function coerceWaitProbe(value: unknown): WaitProbe | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<WaitProbe>;
+  if (typeof raw.url !== "string") return null;
+  return {
+    url: raw.url.slice(0, 8_000),
+    title: asString(raw.title, 1_000),
+    readyState: asString(raw.readyState, 40),
+    matched: raw.matched === true,
+  };
+}
+
+export interface PageSignature {
+  url: string;
+  title: string;
+  readyState: string;
+  textLength: number;
+  textHash: number;
+  elementCount: number;
+  valueHash: number;
+}
+
+export interface PageSignatureDiff {
+  changed: boolean;
+  urlChanged: boolean;
+  titleChanged: boolean;
+  domChanged: boolean;
+  valueChanged: boolean;
+}
+
+/**
+ * Fixed signature used to verify that a click or type changed anything. It
+ * hashes rendered text and form values instead of returning them.
+ */
+export function buildPageSignatureScript(): string {
+  return String.raw`
+const MAX_TEXT = 200000;
+
+function hashString(value) {
+  var hash = 2166136261;
+  var text = String(value == null ? "" : value);
+  for (var i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+var body = null;
+try {
+  body = document.body;
+} catch (e) {}
+var rawText = body ? String(body.textContent || "") : "";
+var values = [];
+try {
+  var controls = document.querySelectorAll("input, textarea, select");
+  for (var i = 0; i < controls.length && i < 200; i += 1) {
+    var control = controls[i];
+    var type = String(control.type || "").toLowerCase();
+    if (type === "password" || type === "file") continue;
+    values.push(
+      String(control.name || control.id || "") +
+        "=" +
+        String(control.value == null ? "" : control.value)
+    );
+  }
+} catch (e) {}
+
+return {
+  url: String(location.href || ""),
+  title: String(document.title || ""),
+  readyState: String(document.readyState || ""),
+  textLength: rawText.length,
+  textHash: hashString(rawText.slice(0, MAX_TEXT)),
+  elementCount: document.querySelectorAll("*").length,
+  valueHash: hashString(values.join("\u0001"))
+};
+`;
+}
+
+export function coercePageSignature(value: unknown): PageSignature | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<PageSignature>;
+  if (typeof raw.url !== "string") return null;
+  const number = (input: unknown): number =>
+    typeof input === "number" && Number.isFinite(input)
+      ? Math.max(0, Math.floor(input))
+      : Number(input) || 0;
+  return {
+    url: raw.url.slice(0, 8_000),
+    title: asString(raw.title, 1_000),
+    readyState: asString(raw.readyState, 40),
+    textLength: number(raw.textLength),
+    textHash: number(raw.textHash),
+    elementCount: number(raw.elementCount),
+    valueHash: number(raw.valueHash),
+  };
+}
+
+export function comparePageSignatures(
+  before: PageSignature,
+  after: PageSignature
+): PageSignatureDiff {
+  const urlChanged = before.url !== after.url;
+  const titleChanged = before.title !== after.title;
+  const valueChanged = before.valueHash !== after.valueHash;
+  const domChanged =
+    before.textLength !== after.textLength ||
+    before.textHash !== after.textHash ||
+    before.elementCount !== after.elementCount ||
+    before.readyState !== after.readyState;
+  return {
+    changed: urlChanged || titleChanged || domChanged || valueChanged,
+    urlChanged,
+    titleChanged,
+    domChanged,
+    valueChanged,
+  };
+}
+
 export function coercePageSnapshot(value: unknown): PageSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<PageSnapshot>;

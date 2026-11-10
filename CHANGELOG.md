@@ -26,6 +26,17 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `f0.1-e2`; `zen_click` and `zen_type` resolve those refs in the right frame.
   Frame URLs are checked against the domain allowlist, and off-list or
   non-`http(s)` frames are never listed, read, or driven.
+- `zen_wait_for` polls one tab or frame until exactly one condition holds: a
+  selector is present or absent, text appears, the URL contains a string, or
+  the title contains a string. Timeout and poll interval are configurable, a
+  timeout returns `matched: false` instead of an error, and the probe is a
+  fixed server script that never reads page text back. Read-only mode allows
+  it.
+- `zen_click` and `zen_type` results now include `effect`: a fixed signature
+  taken before the action and polled for up to 1.2 seconds afterwards reports
+  whether the URL, title, rendered text, element count, or non-password form
+  values changed. When the document cannot be signed, `probeFailed` is set
+  instead of failing the action.
 
 ## [0.4.0] - 2026-11-08
 

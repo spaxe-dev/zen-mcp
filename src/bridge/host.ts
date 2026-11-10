@@ -37,6 +37,7 @@ import type {
   ServerToBridge,
   TextSearchResult,
   TypeTextResult,
+  WaitForResult,
   UiActivity,
   UiActivityAction,
   UiBanner,
@@ -1082,6 +1083,25 @@ export class BridgeHub {
     }
     if (result.frameUrl) {
       this.#assertUrlAllowed(result.frameUrl, "Refusing to act in frame");
+    }
+    return result;
+  }
+
+  async waitFor(
+    params: BridgeMethodMap["tabs.waitFor"]["params"],
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<WaitForResult> {
+    const result = await this.request(
+      "tabs.waitFor",
+      { ...params, allowedDomains: this.#allowedDomains },
+      { windowId, timeoutMs: 40_000, signal: options.signal }
+    );
+    if (result.url) {
+      this.#assertUrlAllowed(result.url, "Refusing to wait on");
+    }
+    if (result.frameUrl) {
+      this.#assertUrlAllowed(result.frameUrl, "Refusing to wait in frame");
     }
     return result;
   }

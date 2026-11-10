@@ -61,6 +61,15 @@ The control cannot accept that action right now. A disabled control has to be en
 **An interactive read returns `elementsTruncated: true`**
 The scan stopped at 200 visible controls. Pass a `selector` that narrows the page area, or read a specific frame with `framePath`, then run the interactive read again.
 
+**`zen_wait_for` returns `matched: false`**
+The condition never held before the timeout, or the document could not be probed. Read `limitation`: a probe failure names the error, while a timeout means the selector, text, URL, or title did not appear. Check the condition spelling, allow more time up to 30000 ms, or read the page to see its current state. A timeout is a normal result, not a failed call.
+
+**`zen_wait_for` returns `invalid_args`**
+Pass exactly one of `selector`, `text`, `url_contains`, or `title_contains`. Two conditions at once, or none, are refused.
+
+**A click or type result has `effect.probeFailed: true` or `effect.changed: false`**
+The signature script could not run on both sides of the action, usually because a navigation replaced the document, or nothing in the URL, title, text, element count, or form values changed. That does not mean the action failed. Follow up with `zen_wait_for` on a state the action should produce, or read the page and compare.
+
 **A read or action returns `frame_not_found`, `frame_not_loaded`, `unsupported_frame`, or `invalid_frame`**
 `framePath` is a list of child indexes from the top document, such as `[0]` or `[0,1]`. `frame_not_found` means an index does not exist at that level; run a normal read to refresh the `frames` list first. `frame_not_loaded` means the frame has no document yet. `unsupported_frame` means the frame is not an `http(s)` page, and `invalid_frame` means the path has a non-integer, negative, or fourth-level entry. Frame refs follow the same path: `f0-e3` is the third control in the first child frame.
 
@@ -104,5 +113,6 @@ Resources return errors as JSON instead of failing the request. The message desc
 - The audit log redacts sensitive values and long strings, but a bounded preview of the summarized argument JSON can remain. Resource reads are logged as `resource:<uri>` entries without arguments.
 - Private-window exclusion is implemented but not covered by the automated live suite. Treat it as a best-effort boundary.
 - No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside closed shadow roots. Frames are reachable only through their prefixed refs or `framePath`, never with selector.
+- Wait probes and action effects observe the current document only. They cannot see iframes that are not reachable, closed shadow roots, canvas, or cross-origin state changes that do not alter the probed document. Text matching uses `innerText` with a `textContent` fallback and is not a substitute for reading the page.
 - No per-action approval cards. Approval is per server session, and Pause is the global stop switch. Use read-only mode and the domain allowlist for additional guardrails.
 - macOS and Linux builds pass CI but have not had a live Zen launch verified. Windows is the only live-tested platform.

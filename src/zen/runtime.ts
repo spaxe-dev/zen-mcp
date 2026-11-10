@@ -35,6 +35,7 @@ import type {
   TabInfo,
   TextSearchResult,
   TypeTextResult,
+  WaitForResult,
   UiConsent,
   UiOption,
   WatchInfo,
@@ -656,6 +657,47 @@ export class ZenRuntime {
         ...(options.ref ? { ref: options.ref } : {}),
         ...(options.selector ? { selector: options.selector } : {}),
         ...(options.clear === true ? { clear: true } : {}),
+      },
+      options.windowId,
+      { signal: options.signal }
+    );
+  }
+
+  /**
+   * Polls one tab until a selector, text, URL, or title condition holds, or
+   * until the timeout expires. This is fixed-bridge polling, never page script.
+   */
+  async waitFor(options: {
+    tabId: string;
+    selector?: string;
+    text?: string;
+    urlContains?: string;
+    titleContains?: string;
+    until?: "present" | "absent";
+    timeoutMs?: number;
+    pollMs?: number;
+    framePath?: number[];
+    windowId?: string;
+    signal?: AbortSignal;
+  }): Promise<WaitForResult> {
+    await this.connect();
+    const tabId = String(options.tabId ?? "").trim();
+    if (!tabId) throw new Error("tabId is required");
+    return this.hub.waitFor(
+      {
+        tabId,
+        ...(options.selector ? { selector: options.selector } : {}),
+        ...(options.text ? { text: options.text } : {}),
+        ...(options.urlContains ? { urlContains: options.urlContains } : {}),
+        ...(options.titleContains
+          ? { titleContains: options.titleContains }
+          : {}),
+        ...(options.until ? { until: options.until } : {}),
+        ...(options.timeoutMs !== undefined
+          ? { timeoutMs: options.timeoutMs }
+          : {}),
+        ...(options.pollMs !== undefined ? { pollMs: options.pollMs } : {}),
+        ...(options.framePath ? { framePath: options.framePath } : {}),
       },
       options.windowId,
       { signal: options.signal }

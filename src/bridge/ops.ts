@@ -37,6 +37,7 @@ import type {
   OpenTabsParams,
   OpenTabsResult,
   OpenedTab,
+  PageActionEffect,
   PageActionTargetInfo,
   PageElement,
   PageFrame,
@@ -65,13 +66,24 @@ import type {
   TypeTextResult,
   UnsplitParams,
   UnsplitResult,
+  WaitCondition,
+  WaitForParams,
+  WaitForResult,
 } from "../shared/protocol.js";
 import {
+  buildPageSignatureScript,
   buildReadScript,
   buildResolveTargetScript,
+  buildWaitProbeScript,
+  coercePageSignature,
   coercePageSnapshot,
+  coerceWaitProbe,
+  comparePageSignatures,
   MAX_PAGE_ELEMENTS,
   toPageReadResult,
+  type PageSignature,
+  type WaitProbe,
+  type WaitProbeOptions,
 } from "../shared/read-script.js";
 import {
   buildEvidenceClearScript,
@@ -130,6 +142,18 @@ const SPLIT_CLOSE_POLL_MS = 100;
 const MAX_FRAMES = 20;
 /** Frame reads merged into one interactive snapshot. */
 const MAX_FRAME_SCANS = 10;
+/** How long to watch a page after click or type before calling it unchanged. */
+const ACTION_SETTLE_MS = 1_200;
+const ACTION_PROBE_INTERVAL_MS = 120;
+const ACTION_PROBE_TIMEOUT_MS = 2_500;
+const SIGNATURE_BEFORE_TIMEOUT_MS = 1_500;
+const WAIT_TIMEOUT_MS = 5_000;
+const WAIT_POLL_MS = 250;
+const WAIT_MAX_TIMEOUT_MS = 30_000;
+const WAIT_MIN_POLL_MS = 100;
+const WAIT_MAX_POLL_MS = 2_000;
+const WAIT_PROBE_TIMEOUT_MS = 2_500;
+const WAIT_MIN_TIMEOUT_MS = 0;
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -1157,6 +1181,80 @@ export function createOps(win: ChromeWindow, windowId: string) {
     "moz:webdriverClick": true,
   };
 
+  const captureSignature = async (
+    actor: any,
+    timeoutMs: number
+  ): Promise<PageSignature | null> => {
+    try {
+      const raw = await actor.sendQuery(
+        "MarionetteCommandsParent:executeScript",
+        {
+          script: buildPageSignatureScript(),
+          args: [],
+          opts: { timeout: timeoutMs },
+        }
+      );
+      return coercePageSignature(raw);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Watches the acted-on document briefly so the result can say whether the
+   * click or typed text changed anything. A probe failure never fails the
+   * action itself.
+   */
+  const observeActionEffect = async (
+    tab: ChromeTab,
+    framePath: number[],
+    allowedDomains: string[] | undefined,
+    before: PageSignature | null
+  ): Promise<PageActionEffect> => {
+    const started = Date.now();
+    let after: PageSignature | null = null;
+    let waitedMs = 0;
+    if (!before) {
+      // Without a before signature there is nothing to compare; give a
+      // triggered navigation a moment to land, then report the limitation.
+      await sleep(ACTION_PROBE_INTERVAL_MS * 2);
+      waitedMs = Date.now() - started;
+    }
+    while (before && waitedMs < ACTION_SETTLE_MS) {
+      await sleep(Math.min(ACTION_PROBE_INTERVAL_MS, ACTION_SETTLE_MS - waitedMs));
+      try {
+        const actor = framePath.length
+          ? resolveFrame(tab, framePath, allowedDomains).actor
+          : pageActor(tab);
+        after = await captureSignature(actor, ACTION_PROBE_TIMEOUT_MS);
+      } catch {
+        after = null;
+      }
+      waitedMs = Date.now() - started;
+      if (before && after && comparePageSignatures(before, after).changed) break;
+    }
+    if (!before || !after) {
+      // A navigation can outlive the old actor. The tab URL is still worth
+      // comparing even when a full signature cannot be captured.
+      const currentUrl = framePath.length ? "" : tabUrl(tab);
+      const urlChanged =
+        !!before && !!currentUrl && currentUrl !== before.url;
+      return {
+        changed: urlChanged,
+        urlChanged,
+        titleChanged: false,
+        domChanged: false,
+        valueChanged: false,
+        waitedMs,
+        probeFailed: true,
+      };
+    }
+    return {
+      ...comparePageSignatures(before, after),
+      waitedMs,
+    };
+  };
+
   const typeCapabilities = {
     ...clickCapabilities,
     strictFileInteractability: false,
@@ -1722,6 +1820,10 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
 
+      const before = await captureSignature(
+        resolved.actor,
+        SIGNATURE_BEFORE_TIMEOUT_MS
+      );
       try {
         await resolved.actor.sendQuery("MarionetteCommandsParent:clickElement", {
           elem: target.element,
@@ -1735,7 +1837,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
           )}`
         );
       }
-      await sleep(120);
+      const effect = await observeActionEffect(
+        tab,
+        resolved.framePath,
+        params?.allowedDomains,
+        before
+      );
       const url = tabUrl(tab);
       return {
         clicked: true,
@@ -1743,6 +1850,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
         url: isHttpUrl(url) ? url : "",
         title: tabTitle(tab),
         target: actionTarget(target),
+        effect,
         ...(resolved.framePath.length
           ? {
               framePath: resolved.framePath,
@@ -1802,6 +1910,10 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
 
+      const before = await captureSignature(
+        resolved.actor,
+        SIGNATURE_BEFORE_TIMEOUT_MS
+      );
       try {
         if (clear) {
           await resolved.actor.sendQuery(
@@ -1827,7 +1939,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
           )}`
         );
       }
-      await sleep(50);
+      const effect = await observeActionEffect(
+        tab,
+        resolved.framePath,
+        params?.allowedDomains,
+        before
+      );
       const url = tabUrl(tab);
       return {
         typed: text.length,
@@ -1836,6 +1953,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
         url: isHttpUrl(url) ? url : "",
         title: tabTitle(tab),
         target: actionTarget(target),
+        effect,
         ...(resolved.framePath.length
           ? {
               framePath: resolved.framePath,
@@ -1852,6 +1970,137 @@ export function createOps(win: ChromeWindow, windowId: string) {
             }
           : {}),
       } satisfies TypeTextResult;
+    },
+
+    "tabs.waitFor": async (params: WaitForParams): Promise<WaitForResult> => {
+      const tabId = String(params?.tabId ?? "");
+      if (!tabId) {
+        throw new OpsError("no_tab", "Provide the tabId to wait in.");
+      }
+      const tab = requireActionTab(tabId, "wait in");
+      const framePath = requireFramePath(params?.framePath);
+      const allowedDomains = params?.allowedDomains;
+      assertActionUrlAllowed(tabUrl(tab), allowedDomains, "waiting in");
+
+      const value = (input: unknown): string =>
+        typeof input === "string" ? input.trim() : "";
+      const candidates = (
+        [
+          ["selector", value(params?.selector)],
+          ["text", value(params?.text)],
+          ["urlContains", value(params?.urlContains)],
+          ["titleContains", value(params?.titleContains)],
+        ] as Array<[WaitCondition, string]>
+      ).filter((entry) => !!entry[1]);
+      if (candidates.length !== 1) {
+        throw new OpsError(
+          "invalid_args",
+          "Provide exactly one of selector, text, urlContains, or " +
+            "titleContains."
+        );
+      }
+      const [condition, query] = candidates[0];
+      if (query.length > 2_000) {
+        throw new OpsError(
+          "invalid_args",
+          "The condition text must be 2,000 characters or fewer."
+        );
+      }
+      const until = params?.until === "absent" ? "absent" : "present";
+      const requestedTimeout = Number(params?.timeoutMs);
+      const timeoutMs = clamp(
+        Number.isFinite(requestedTimeout) && requestedTimeout > 0
+          ? requestedTimeout
+          : WAIT_TIMEOUT_MS,
+        0,
+        WAIT_MAX_TIMEOUT_MS
+      );
+      const requestedPoll = Number(params?.pollMs);
+      const pollMs = clamp(
+        Number.isFinite(requestedPoll) && requestedPoll > 0
+          ? requestedPoll
+          : WAIT_POLL_MS,
+        WAIT_MIN_POLL_MS,
+        WAIT_MAX_POLL_MS
+      );
+
+      const started = Date.now();
+      const probeOptions: WaitProbeOptions = {
+        [condition]: query,
+      };
+      let probe: WaitProbe | null = null;
+      let lastError = "";
+      let matched = false;
+      let waitedMs = 0;
+      for (;;) {
+        let actor: any = null;
+        try {
+          actor = framePath.length
+            ? resolveFrame(tab, framePath, allowedDomains).actor
+            : pageActor(tab);
+        } catch (error) {
+          if (
+            error instanceof OpsError &&
+            error.code === "domain_not_allowed"
+          ) {
+            throw error;
+          }
+          lastError = String((error as Error)?.message ?? error);
+        }
+        if (actor) {
+          try {
+            const raw = await actor.sendQuery(
+              "MarionetteCommandsParent:executeScript",
+              {
+                script: buildWaitProbeScript(probeOptions),
+                args: [],
+                opts: { timeout: WAIT_PROBE_TIMEOUT_MS },
+              }
+            );
+            probe = coerceWaitProbe(raw);
+            if (!probe) lastError = "the probe returned no document state";
+          } catch (error) {
+            probe = null;
+            lastError = String((error as Error)?.message ?? error);
+          }
+        }
+        matched = probe
+          ? until === "absent"
+            ? probe.matched === false
+            : probe.matched === true
+          : false;
+        waitedMs = Date.now() - started;
+        if (matched || waitedMs >= timeoutMs) break;
+        await sleep(Math.min(pollMs, timeoutMs - waitedMs));
+      }
+
+      const finalUrl = tabUrl(tab);
+      let limitation: string | undefined;
+      if (!matched) {
+        limitation = probe
+          ? `The condition did not hold within ${waitedMs} ms.`
+          : `The document could not be inspected after ${waitedMs} ms` +
+            (lastError ? `: ${lastError}` : ".");
+      }
+      return {
+        matched,
+        waitedMs,
+        condition,
+        until,
+        query,
+        tabId,
+        url: isHttpUrl(finalUrl) ? finalUrl : "",
+        title: tabTitle(tab),
+        ...(framePath.length
+          ? {
+              framePath,
+              frameUrl:
+                currentFrameUrl(tab, framePath) ??
+                (probe?.url ? probe.url : null),
+            }
+          : {}),
+        ...(limitation ? { limitation } : {}),
+      } satisfies WaitForResult;
     },
 
     "tabs.findText": async (

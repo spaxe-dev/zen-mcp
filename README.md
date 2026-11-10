@@ -25,7 +25,7 @@ Status: **0.4.x, pre-1.0.** Windows is the only platform with a live-tested Zen 
 - Saves window layouts as sessions and reusable space templates.
 - Enforces policy outside the model with read-only mode, a domain allowlist, an audit log, one-time consent, and an owned-browser boundary.
 
-There are 52 tools, 5 live resources, and 3 prompts. Tool arguments are structured, results are typed, and page content is treated as data, not instructions. The full surface is in [docs/tools.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/tools.md).
+There are 53 tools, 5 live resources, and 3 prompts. Tool arguments are structured, results are typed, and page content is treated as data, not instructions. The full surface is in [docs/tools.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/tools.md).
 
 ## Who it is for
 
@@ -42,7 +42,7 @@ It is not a general WebDriver replacement. Clicking and typing exist so an agent
 
 **Native Zen constructs.** Spaces, folders, pins, essentials, split view, and Glance use Zen's internal APIs, so the result behaves like something you did in the UI instead of a separate extension's bookkeeping.
 
-**Background first.** Reads, evidence checks, and page actions work on loaded tabs in any space, including spaces that are not currently rendered. `zen_read_page`, `zen_read_pages`, `zen_find_text`, and `zen_search_tabs` do not select, scroll, or highlight anything unless you ask for it. `zen_click` and `zen_type` act on the tab you name, not on whatever tab is in front.
+**Background first.** Reads, evidence checks, waits, and page actions work on loaded tabs in any space, including spaces that are not currently rendered. `zen_read_page`, `zen_read_pages`, `zen_find_text`, `zen_search_tabs`, and `zen_wait_for` do not select, scroll, or highlight anything unless you ask for it. `zen_click` and `zen_type` act on the tab you name, not on whatever tab is in front, and report whether the page visibly changed.
 
 **You stay in control.** One approval covers the server session. The persistent banner has a Pause button that blocks subsequent browser work. Read-only mode, the domain allowlist, and the audit log add policy the model cannot talk its way around. There are no per-action approval cards.
 
@@ -58,7 +58,7 @@ It is not a general WebDriver replacement. Clicking and typing exist so an agent
 | Coordination | Progress card with Stop, in-browser questions, notifications, tab watches, one event stream |
 | Repeatability | Session snapshots and reusable space templates, including folders |
 | Policy | Owned browser, one-time consent, global Pause, read-only mode, domain allowlist, JSONL audit log |
-| Interface | 52 tools, 5 resources, 3 prompts, structured results, progress notifications, cancellation |
+| Interface | 53 tools, 5 resources, 3 prompts, structured results, progress notifications, cancellation |
 
 ![The Research space with a Reading folder, an essential tab, and the agent progress card](https://raw.githubusercontent.com/spaxe-dev/zen-mcp/main/docs/screenshots/v0.2-space-overview.png)
 

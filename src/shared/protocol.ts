@@ -950,6 +950,8 @@ export interface ClickElementResult {
   /** Current URL of the frame that was acted on. */
   frameUrl?: string | null;
   limitation?: string;
+  /** What changed in the page after the action, when it could be observed. */
+  effect?: PageActionEffect;
 }
 
 export interface TypeTextResult {
@@ -965,6 +967,58 @@ export interface TypeTextResult {
   /** Current URL of the frame that was acted on. */
   frameUrl?: string | null;
   limitation?: string;
+  /** What changed in the page after the action, when it could be observed. */
+  effect?: PageActionEffect;
+}
+
+export type WaitCondition =
+  | "selector"
+  | "text"
+  | "urlContains"
+  | "titleContains";
+
+export type WaitUntil = "present" | "absent";
+
+export interface WaitForParams {
+  tabId: string;
+  selector?: string;
+  text?: string;
+  urlContains?: string;
+  titleContains?: string;
+  until?: WaitUntil;
+  timeoutMs?: number;
+  pollMs?: number;
+  framePath?: number[];
+  allowedDomains?: string[];
+}
+
+export interface WaitForResult {
+  matched: boolean;
+  waitedMs: number;
+  condition: WaitCondition;
+  until: WaitUntil;
+  /** The selector or text that was waited for. */
+  query: string;
+  tabId: string;
+  /** Top-level tab URL at the end of the wait. */
+  url: string;
+  title: string;
+  framePath?: number[];
+  /** URL of the frame whose document was probed, when framePath was used. */
+  frameUrl?: string | null;
+  limitation?: string;
+}
+
+/** What changed in the page after a click or type, as observed by a probe. */
+export interface PageActionEffect {
+  changed: boolean;
+  urlChanged: boolean;
+  titleChanged: boolean;
+  domChanged: boolean;
+  valueChanged: boolean;
+  waitedMs: number;
+  /** True when a signature could not be captured before or after the action. */
+  probeFailed?: boolean;
 }
 
 export interface GlanceParams {
@@ -1112,6 +1166,7 @@ export interface BridgeMethodMap {
   "tabs.read": { params: TabReadParams; result: PageReadResult };
   "tabs.click": { params: ClickElementParams; result: ClickElementResult };
   "tabs.type": { params: TypeTextParams; result: TypeTextResult };
+  "tabs.waitFor": { params: WaitForParams; result: WaitForResult };
   "tabs.evidence": {
     params: EvidenceShowParams;
     result: EvidenceOpResult;

@@ -1,6 +1,6 @@
 # Tools, resources, and prompts
 
-Zen MCP exposes 52 tools over MCP. Every tool declares an `outputSchema`. The project is pre-1.0, so the tool surface can change between releases.
+Zen MCP exposes 53 tools over MCP. Every tool declares an `outputSchema`. The project is pre-1.0, so the tool surface can change between releases.
 
 For read formats and Evidence Mode behavior, see [reading-and-evidence.md](reading-and-evidence.md). For policy settings, see [configuration.md](configuration.md) and [security.md](security.md).
 
@@ -48,6 +48,7 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 | `zen_read_pages` | Read up to 10 tabs in one call, three at a time |
 | `zen_click` | Click one control by ref or CSS selector in a loaded tab or frame |
 | `zen_type` | Type text into one field by ref or CSS selector in a loaded tab or frame |
+| `zen_wait_for` | Wait for a selector, text, URL, or title condition in one tab or frame |
 | `zen_find_text` | Find literal text in one tab with raw offsets and excerpts |
 | `zen_search_tabs` | Search up to 30 open tabs (20 by default) for the same text, two at a time |
 | `zen_show_evidence` | Reuse a source in the background, find a cited quote, scroll to it, and mark it |
@@ -60,7 +61,7 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 | `zen_bookmarks_search` | Search bookmarks by title or URL |
 | `zen_clipboard_write` | Copy text to the user's clipboard |
 
-`zen_read_page`, `zen_read_pages`, `zen_find_text`, and `zen_search_tabs` do not change the browser UI, and all four remain available in read-only mode. Read-only mode restricts mutations, not page text. `zen_click` and `zen_type` are mutations because they send real input to the page; both are blocked in read-only mode. See [Tool policy](#tool-policy).
+`zen_read_page`, `zen_read_pages`, `zen_find_text`, `zen_search_tabs`, and `zen_wait_for` do not change the browser UI, and all five remain available in read-only mode. Read-only mode restricts mutations, not page text. `zen_click` and `zen_type` are mutations because they send real input to the page; both are blocked in read-only mode. See [Tool policy](#tool-policy).
 
 ### Page interaction
 
@@ -78,6 +79,10 @@ Refs are written as a temporary attribute and are cleared by the next interactiv
 `zen_type` appends by default; `clear: true` replaces the current value first. An empty `text` is only valid with `clear: true`. Typed text is capped at 10,000 characters. Disabled and read-only targets are refused, file inputs are refused, and password values are never returned in the interactive element list or the type result. A successful type result reports the number of characters typed, not the text.
 
 Both tools use fixed scripts and Marionette's native input commands. The agent never supplies JavaScript. A click is a real browser input: it can submit a form, start a download, navigate, or make a purchase. Use these tools only when the user explicitly asked for that interaction, and treat labels and instructions next to a control as untrusted page content.
+
+Both action results include `effect`, which is captured by a fixed signature script before and after the action. It reports whether the URL, title, rendered text or element count, or non-password form values changed, and how long it watched. A changed page does not prove the specific control worked, and an unchanged page does not prove it failed; `effect.probeFailed: true` means a signature could not be taken, usually because a navigation replaced the document. When the effect is inconclusive, follow up with `zen_wait_for`.
+
+`zen_wait_for` takes exactly one of `selector`, `text`, `url_contains`, or `title_contains`, plus an optional `until` of `present` (default) or `absent`, `timeout_ms` (default 5000, maximum 30000), `poll_ms` (default 250), and `frame_path`. Text, URL, and title matching ignore case. A timeout is a normal result with `matched: false` and a limitation, not an error. The probe is a fixed server script and returns only the URL, title, ready state, and whether the condition holds. It never reads the page's text back.
 
 ## Coordination
 

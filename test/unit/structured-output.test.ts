@@ -10,7 +10,7 @@ import { TOOL_OUTPUT_SCHEMAS } from "../../src/mcp/output-schemas.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
 
-const TOOL_COUNT = 52;
+const TOOL_COUNT = 53;
 
 interface Harness {
   client: Client;

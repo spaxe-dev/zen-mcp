@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReadFormat } from "../../src/shared/protocol.js";
 import {
+  buildPageSignatureScript,
   buildReadScript,
   buildResolveTargetScript,
+  buildWaitProbeScript,
+  coercePageSignature,
   coercePageSnapshot,
+  coerceWaitProbe,
+  comparePageSignatures,
   toPageReadResult,
+  type PageSignature,
 } from "../../src/shared/read-script.js";
 
 const FORMATS: ReadFormat[] = [
@@ -673,5 +679,117 @@ describe("page read script", () => {
     assert.equal(result.nextOffset, null);
     assert.match(result.limitation ?? "", /ignored offset=25/);
     assert.equal(result.links?.length, 1);
+  });
+});
+
+describe("wait probes and action signatures", () => {
+  it("embeds only the requested wait condition", () => {
+    const script = buildWaitProbeScript({
+      selector: 'button[data-test="a"]',
+    });
+    assert.ok(script.includes(`const selector = "button[data-test=\\"a\\"]";`));
+    assert.ok(script.includes("const text = null;"));
+    assert.ok(script.includes("const urlContains = null;"));
+    assert.ok(script.includes("const titleContains = null;"));
+    assert.doesNotThrow(() => new Function(script));
+  });
+
+  it("keeps hostile condition text as data", () => {
+    const hostile = '"); location = "https://evil.example"; //';
+    const script = buildWaitProbeScript({ text: hostile });
+    assert.ok(script.includes(JSON.stringify(hostile)));
+    assert.doesNotThrow(() => new Function(script));
+  });
+
+  it("builds a probe with no condition when the options are empty", () => {
+    const script = buildWaitProbeScript();
+    assert.ok(script.includes("const selector = null;"));
+    assert.ok(script.includes("var matched = false;"));
+    assert.doesNotThrow(() => new Function(script));
+  });
+
+  it("rejects values that are not wait probes", () => {
+    assert.equal(coerceWaitProbe(null), null);
+    assert.equal(coerceWaitProbe("probe"), null);
+    assert.equal(coerceWaitProbe({ title: "no url" }), null);
+  });
+
+  it("normalizes wait probe fields", () => {
+    const probe = coerceWaitProbe({
+      url: "https://example.com/",
+      title: 42,
+      readyState: "complete",
+    });
+    assert.ok(probe);
+    assert.equal(probe.title, "42");
+    assert.equal(probe.readyState, "complete");
+    assert.equal(probe.matched, false);
+  });
+
+  it("builds a valid signature script that returns no page text", () => {
+    const script = buildPageSignatureScript();
+    assert.match(script, /function hashString/);
+    assert.doesNotThrow(() => new Function(script));
+    assert.ok(!script.includes("location ="));
+  });
+
+  it("rejects values that are not signatures", () => {
+    assert.equal(coercePageSignature(null), null);
+    assert.equal(coercePageSignature({ title: "no url" }), null);
+  });
+
+  it("clamps signature numbers to non-negative integers", () => {
+    const signature = coercePageSignature({
+      url: "https://example.com/",
+      textLength: -5,
+      textHash: 12.9,
+      elementCount: "7",
+      valueHash: Number.NaN,
+    });
+    assert.ok(signature);
+    assert.equal(signature.textLength, 0);
+    assert.equal(signature.textHash, 12);
+    assert.equal(signature.elementCount, 7);
+    assert.equal(signature.valueHash, 0);
+  });
+
+  const base: PageSignature = {
+    url: "https://example.com/",
+    title: "Example",
+    readyState: "complete",
+    textLength: 100,
+    textHash: 11,
+    elementCount: 20,
+    valueHash: 33,
+  };
+
+  it("reports no change for identical signatures", () => {
+    const diff = comparePageSignatures(base, { ...base });
+    assert.equal(diff.changed, false);
+    assert.equal(diff.domChanged, false);
+  });
+
+  it("detects URL, title, DOM, and value changes", () => {
+    assert.equal(
+      comparePageSignatures(base, { ...base, url: "https://example.com/next" })
+        .urlChanged,
+      true
+    );
+    assert.equal(
+      comparePageSignatures(base, { ...base, title: "Done" }).titleChanged,
+      true
+    );
+    assert.equal(
+      comparePageSignatures(base, { ...base, textHash: 12 }).domChanged,
+      true
+    );
+    assert.equal(
+      comparePageSignatures(base, { ...base, elementCount: 21 }).changed,
+      true
+    );
+    assert.equal(
+      comparePageSignatures(base, { ...base, valueHash: 34 }).valueChanged,
+      true
+    );
   });
 });
