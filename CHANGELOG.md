@@ -37,6 +37,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whether the URL, title, rendered text, element count, or non-password form
   values changed. When the document cannot be signed, `probeFailed` is set
   instead of failing the action.
+- `zen-mcp update` checks the npm registry, compares the latest release with
+  the installed version, and, when a newer one exists, runs the matching
+  global install command for npm, pnpm, yarn, or bun. `--check` reports the
+  versions without installing, and `--manager` overrides detection. `doctor`
+  prints the same status as an advisory `Update` line.
 
 ## [0.4.0] - 2026-11-08
 

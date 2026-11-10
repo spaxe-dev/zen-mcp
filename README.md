@@ -88,6 +88,11 @@ npm install -g @spaxe-dev/zen-mcp
 zen-mcp setup
 ```
 
+To upgrade later, run `zen-mcp update`. It checks npm, compares the latest
+release with the installed version, and runs the matching global install
+command (`npm`, `pnpm`, `yarn`, or `bun`). `zen-mcp update --check` only
+reports the versions, and `zen-mcp doctor` includes the same update status.
+
 Or run setup without a global install:
 
 ```sh
@@ -120,6 +125,7 @@ zen-mcp setup      # detects Zen, writes a config, prints an MCP snippet
 zen-mcp onboard    # pick MCP clients and add Zen MCP to their config
 zen-mcp doctor     # config, executable, Marionette, bridge, profile, policy
 zen-mcp status     # config, profile mode, and port state
+zen-mcp update     # check npm and install the latest release
 ```
 
 `setup` writes `%APPDATA%\zen-mcp\config.json` on Windows. On macOS and Linux it writes `$XDG_CONFIG_HOME/zen-mcp/config.json` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/zen-mcp/config.json`. Override the path with `ZEN_MCP_CONFIG`. The data directory defaults to `data` beside the config file.

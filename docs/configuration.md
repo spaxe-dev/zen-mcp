@@ -9,6 +9,9 @@ zen-mcp [serve]                 Run the MCP server over stdio
 zen-mcp launch                  Launch Zen once, verify ownership, then quit it
 zen-mcp status                  Print config, profile mode, and port state
 zen-mcp doctor                  Check config, executable, bridge, profile, port, policy
+zen-mcp update                  Check npm and install the latest release
+zen-mcp update --check          Report installed and latest versions only
+zen-mcp update --manager npm    Prefer a package manager (npm, pnpm, yarn, bun)
 zen-mcp setup                   Detect Zen, write config, print an MCP snippet
 zen-mcp onboard                 Pick MCP clients and add Zen MCP to their config
 zen-mcp setup --use-default-profile
@@ -18,6 +21,8 @@ zen-mcp config set <key> <value>
 ```
 
 `launch` is a one-shot self-check: it starts an owned browser, proves the nonce and lockdown work, then quits the browser before exiting. It does not keep a browser open for later use.
+
+`update` reads the latest version of `@spaxe-dev/zen-mcp` from the npm registry and compares it with the running version. When a newer release exists it runs the matching global install command: `npm install -g`, `pnpm add -g`, `yarn global add`, or `bun add -g`. The package manager is detected from the environment; `--manager` overrides it. `--check` prints the versions and exits without installing. `doctor` prints the same status as an advisory `Update` line; a failed registry lookup is reported but never fails the command.
 
 `setup` options:
 
@@ -148,7 +153,7 @@ Unknown keys are rejected with the list of valid keys.
 
 ## Doctor
 
-`zen-mcp doctor` checks the config, Zen executable, profile lock, Marionette port, and bridge, and prints a **Policy** line. That line warns when consent, read-only mode, the domain allowlist, or the audit log is weakened, when extra launch arguments are set, or when `ZEN_MCP_BRIDGE_SCRIPT` replaces the bundled bridge. It does not fail the command; it tells you which protections are off.
+`zen-mcp doctor` checks the config, Zen executable, profile lock, Marionette port, and bridge, prints a **Policy** line, and adds an advisory **Update** line with the latest npm release. The Policy line warns when consent, read-only mode, the domain allowlist, or the audit log is weakened, when extra launch arguments are set, or when `ZEN_MCP_BRIDGE_SCRIPT` replaces the bundled bridge. It does not fail the command; it tells you which protections are off.
 
 ## Audit log
 

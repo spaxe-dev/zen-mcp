@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { Command, InvalidArgumentError } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -25,6 +26,16 @@ import { createTheme } from "./onboard/theme.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
 import { createLogger } from "./utils/logger.js";
 import { runDoctor, type DoctorReport } from "./zen/doctor.js";
+import {
+  checkForUpdate,
+  detectPackageManager,
+  isPackageManager,
+  PACKAGE_MANAGERS,
+  PACKAGE_NAME,
+  updateCommand,
+  type PackageManager,
+  type UpdateInfo,
+} from "./zen/updates.js";
 import {
   findZenExecutable,
   isPortOpen,
@@ -87,6 +98,13 @@ program
   .command("doctor")
   .description("Check the Zen install, config, profile, and Marionette port.")
   .action(() => doctor());
+
+program
+  .command("update")
+  .description("Check npm for a newer Zen MCP and install it.")
+  .option("--check", "Report the installed and latest versions without installing.")
+  .option("--manager <name>", "Package manager: npm, pnpm, yarn, or bun.")
+  .action((options) => update(options));
 
 program
   .command("setup")
@@ -284,8 +302,76 @@ async function status(): Promise<void> {
 
 async function doctor(): Promise<void> {
   const report = await runDoctor(loadConfig());
-  printReport(report);
+  const update = await checkForUpdate({ timeoutMs: 1_500 });
+  printReport(report, update);
   if (!report.ok) process.exitCode = 1;
+}
+
+async function update(options: {
+  check?: boolean;
+  manager?: string;
+}): Promise<void> {
+  console.log(`${BRAND} ${SERVER_VERSION}: checking npm for the latest release...`);
+  const info = await checkForUpdate({ timeoutMs: 5_000 });
+  if (!info.latestVersion) {
+    console.error(`Could not check for updates: ${info.error}.`);
+    console.error(`Install manually: npm install -g ${PACKAGE_NAME}@latest`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!info.updateAvailable) {
+    console.log(`Up to date: ${info.latestVersion} is the latest release.`);
+    return;
+  }
+  console.log(
+    `Update available: ${info.currentVersion} -> ${info.latestVersion}`
+  );
+  if (options.check) {
+    console.log("Run `zen-mcp update` to install it.");
+    return;
+  }
+
+  const requested = options.manager?.trim().toLowerCase();
+  let manager: PackageManager;
+  if (requested) {
+    if (!isPackageManager(requested)) {
+      console.error(`Unknown package manager "${options.manager}".`);
+      console.error(`Use one of: ${PACKAGE_MANAGERS.join(", ")}.`);
+      process.exitCode = 1;
+      return;
+    }
+    manager = requested;
+  } else {
+    manager = detectPackageManager();
+  }
+  const { command, args } = updateCommand(manager);
+  console.log(`Running: ${command} ${args.join(" ")}`);
+  const code = await runInstaller(command, args);
+  if (code !== 0) {
+    console.error(`Installer exited with code ${code}.`);
+    console.error(`Install manually: ${command} ${args.join(" ")}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(
+    "Installed. Restart any MCP client that runs `zen-mcp serve` to load " +
+      "the new version."
+  );
+}
+
+function runInstaller(command: string, args: string[]): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      // npm and pnpm are .cmd shims on Windows.
+      shell: process.platform === "win32",
+    });
+    child.on("error", (error) => {
+      console.error(`Could not run ${command}: ${error.message}`);
+      resolve(1);
+    });
+    child.on("close", (code) => resolve(code ?? 1));
+  });
 }
 
 async function setup(options: {
@@ -622,12 +708,27 @@ function configSet(key: string, rawValue: string): void {
   console.log(`Saved ${name} = ${JSON.stringify(parsed)} in ${path}`);
 }
 
-function printReport(report: DoctorReport): void {
+function printReport(report: DoctorReport, update?: UpdateInfo): void {
   for (const check of report.checks) {
     const mark =
       check.status === "ok" ? "[ ok ]" : check.status === "warn" ? "[warn]" : "[FAIL]";
     console.log(`${mark} ${check.name}: ${check.detail}`);
     if (check.hint) console.log(`       ${check.hint}`);
+  }
+  if (update) {
+    if (!update.latestVersion) {
+      console.log(`[warn] Update: could not check npm (${update.error}).`);
+    } else if (update.updateAvailable) {
+      console.log(
+        `[warn] Update: ${update.latestVersion} is available ` +
+          `(installed ${update.currentVersion}).`
+      );
+      console.log("       Run `zen-mcp update` to install it.");
+    } else {
+      console.log(
+        `[ ok ] Update: ${update.currentVersion} is the latest release.`
+      );
+    }
   }
   console.log("");
   console.log(
