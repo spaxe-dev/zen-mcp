@@ -1149,9 +1149,10 @@ function collectInteractive(root) {
     }
     eligible += 1;
     if (elements.length >= MAX_ELEMENTS) continue;
-    var ref = refPrefix + "e" + (elements.length + 1);
+    var localRef = "e" + (elements.length + 1);
+    var ref = refPrefix + localRef;
     try {
-      el.setAttribute(REF_ATTR, ref);
+      el.setAttribute(REF_ATTR, localRef);
     } catch (e) {
       continue;
     }

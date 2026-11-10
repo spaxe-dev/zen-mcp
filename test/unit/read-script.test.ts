@@ -110,7 +110,11 @@ describe("page read script", () => {
     assert.match(script, /\[contenteditable='true'\]/);
     assert.match(script, /\[role='textbox'\]/);
     assert.match(script, /shadowRoot/);
-    assert.match(script, /var ref = refPrefix \+ "e"/);
+    assert.match(script, /var localRef = "e" \+ \(elements\.length \+ 1\);/);
+    assert.match(script, /var ref = refPrefix \+ localRef;/);
+    // The frame-local ref is what resolution searches for; the prefix is a
+    // reporting and routing namespace, not part of the stored attribute.
+    assert.match(script, /el\.setAttribute\(REF_ATTR, localRef\);/);
   });
 
   it("embeds a frame ref prefix and ignores malformed ones", () => {
@@ -791,5 +795,153 @@ describe("wait probes and action signatures", () => {
       comparePageSignatures(base, { ...base, valueHash: 34 }).valueChanged,
       true
     );
+  });
+});
+
+describe("fixed page scripts behavior", () => {
+  interface FakePage {
+    href?: string;
+    title?: string;
+    text?: string;
+    textContent?: string;
+    matches?: (selector: string) => boolean;
+    controls?: Array<Record<string, unknown>>;
+    elementCount?: number;
+    queryThrows?: boolean;
+  }
+
+  const run = (script: string, page: FakePage = {}): any => {
+    const body: Record<string, unknown> = {
+      textContent: page.textContent ?? page.text ?? "",
+    };
+    if (page.text !== undefined) body.innerText = page.text;
+    const document = {
+      title: page.title ?? "",
+      readyState: "complete",
+      body,
+      querySelector: (selector: string) => {
+        if (page.queryThrows) throw new Error("bad selector");
+        return page.matches?.(selector) ? {} : null;
+      },
+      querySelectorAll: (selector: string) =>
+        selector === "*"
+          ? { length: page.elementCount ?? 0 }
+          : page.controls ?? [],
+    };
+    return new Function("document", "location", script)(
+      document,
+      { href: page.href ?? "" }
+    );
+  };
+
+  it("matches a selector condition", () => {
+    const script = buildWaitProbeScript({ selector: "#ready" });
+    assert.equal(run(script, { matches: (sel) => sel === "#ready" }).matched, true);
+    assert.equal(run(script, { matches: () => false }).matched, false);
+  });
+
+  it("matches text case-insensitively", () => {
+    const script = buildWaitProbeScript({ text: "saved" });
+    assert.equal(
+      run(script, { text: "All changes were SAVED." }).matched,
+      true
+    );
+    assert.equal(run(script, { text: "Still loading" }).matched, false);
+  });
+
+  it("falls back to textContent when innerText is absent", () => {
+    const script = buildWaitProbeScript({ text: "needle" });
+    assert.equal(
+      run(script, { textContent: "a needle in the haystack" }).matched,
+      true
+    );
+  });
+
+  it("matches URL and title conditions case-insensitively", () => {
+    const url = buildWaitProbeScript({ urlContains: "STEP=2" });
+    assert.equal(
+      run(url, { href: "https://example.com/checkout?step=2" }).matched,
+      true
+    );
+    assert.equal(run(url, { href: "https://example.com/cart" }).matched, false);
+
+    const title = buildWaitProbeScript({ titleContains: "receipt" });
+    assert.equal(run(title, { title: "Your Receipt" }).matched, true);
+    assert.equal(run(title, { title: "Your cart" }).matched, false);
+  });
+
+  it("treats an invalid selector as unmatched instead of throwing", () => {
+    const script = buildWaitProbeScript({ selector: ":::" });
+    assert.equal(run(script, { queryThrows: true }).matched, false);
+  });
+
+  it("produces a stable signature for an unchanged page", () => {
+    const page: FakePage = {
+      href: "https://example.com/",
+      title: "Example",
+      text: "unchanged",
+      controls: [{ type: "text", name: "q", value: "hello" }],
+      elementCount: 12,
+    };
+    const first = coercePageSignature(run(buildPageSignatureScript(), page));
+    const second = coercePageSignature(run(buildPageSignatureScript(), page));
+    assert.ok(first && second);
+    assert.equal(comparePageSignatures(first, second).changed, false);
+  });
+
+  it("detects changed form values and ignores password values", () => {
+    const base: FakePage = {
+      href: "https://example.com/",
+      title: "Example",
+      text: "form",
+      controls: [{ type: "text", name: "q", value: "hello" }],
+      elementCount: 12,
+    };
+    const before = coercePageSignature(run(buildPageSignatureScript(), base));
+    const after = coercePageSignature(
+      run(buildPageSignatureScript(), {
+        ...base,
+        controls: [{ type: "text", name: "q", value: "hello world" }],
+      })
+    );
+    assert.ok(before && after);
+    const diff = comparePageSignatures(before, after);
+    assert.equal(diff.valueChanged, true);
+    assert.equal(diff.domChanged, false);
+
+    const passwordBefore = coercePageSignature(
+      run(buildPageSignatureScript(), {
+        ...base,
+        controls: [{ type: "password", name: "pw", value: "old" }],
+      })
+    );
+    const passwordAfter = coercePageSignature(
+      run(buildPageSignatureScript(), {
+        ...base,
+        controls: [{ type: "password", name: "pw", value: "new" }],
+      })
+    );
+    assert.ok(passwordBefore && passwordAfter);
+    assert.equal(
+      comparePageSignatures(passwordBefore, passwordAfter).changed,
+      false
+    );
+  });
+
+  it("detects DOM changes without returning page text", () => {
+    const base: FakePage = {
+      href: "https://example.com/",
+      title: "Example",
+      text: "before",
+      elementCount: 12,
+    };
+    const before = coercePageSignature(run(buildPageSignatureScript(), base));
+    const after = coercePageSignature(
+      run(buildPageSignatureScript(), { ...base, text: "after", elementCount: 13 })
+    );
+    assert.ok(before && after);
+    const diff = comparePageSignatures(before, after);
+    assert.equal(diff.domChanged, true);
+    assert.equal(typeof after.textHash, "number");
   });
 });

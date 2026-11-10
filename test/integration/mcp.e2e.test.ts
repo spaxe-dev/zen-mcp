@@ -24,6 +24,7 @@ const EXPECTED_TOOLS = [
   "zen_audit_tail",
   "zen_bookmarks_search",
   "zen_clear_evidence",
+  "zen_click",
   "zen_clipboard_write",
   "zen_config",
   "zen_containers_list",
@@ -66,6 +67,8 @@ const EXPECTED_TOOLS = [
   "zen_template_apply",
   "zen_template_delete",
   "zen_template_save",
+  "zen_type",
+  "zen_wait_for",
   "zen_watch_add",
   "zen_watch_list",
   "zen_watch_remove",
@@ -75,6 +78,22 @@ const MARKER = "mcp-marker-7";
 const EVIDENCE_QUOTE = "The lighthouse keeper checked the lamp at dawn.";
 const REPEATED_QUOTE = "The shared lighthouse sentence appears in two places.";
 const SCROLL_FILLER = "Spacer text for evidence scrolling. ".repeat(60);
+
+let FRAME_URL = "";
+
+/** A same-machine, cross-origin page loaded in an iframe by PAGE. */
+const FRAME_PAGE = (): string => `<!doctype html><html><head>
+<title>Frame Test Page</title>
+</head><body>
+<p id="frame-text">FRAME TEXT</p>
+<input id="frame-input" name="frame-input" value="frame">
+<button id="frame-button" type="button">Frame button</button>
+<script>
+document.querySelector("#frame-button").addEventListener("click", () => {
+  document.querySelector("#frame-text").textContent = "FRAME CLICKED";
+});
+</script>
+</body></html>`;
 
 /**
  * The tick is updated in-page every second, so a change watch always sees new
@@ -98,6 +117,15 @@ const PAGE = (): string => `<!doctype html><html><head><title>MCP Test Page</tit
 <section id="omega"><h2>Omega context</h2><p>${REPEATED_QUOTE}</p></section>
 <p id="evidence-target">${EVIDENCE_QUOTE}</p>
 <p id="page-owned-mark" data-zen-mcp-evidence="mark">Page-owned lookalike marker.</p>
+<form id="form">
+<label for="name">Name</label>
+<input id="name" name="name" value="initial">
+<button id="save" type="submit">Save</button>
+</form>
+<p id="result">idle</p>
+<button id="plain" type="button">Plain</button>
+<p id="clicked">not clicked</p>
+<p><iframe id="inner" src="${FRAME_URL}/frame" title="inner frame"></iframe></p>
 <div class="tick">tick 0</div>
 <script>
 let ticks = 0;
@@ -106,6 +134,14 @@ setInterval(() => {
   const node = document.querySelector(".tick");
   if (node) node.textContent = "tick " + ticks;
 }, 1000);
+document.querySelector("#form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  document.querySelector("#result").textContent =
+    "saved " + document.querySelector("#name").value;
+});
+document.querySelector("#plain").addEventListener("click", () => {
+  document.querySelector("#clicked").textContent = "clicked once";
+});
 </script>
 </main></body></html>`;
 
@@ -115,6 +151,7 @@ describe(
   () => {
     let client: Client | null = null;
     let page: PageServer;
+    let framePage: PageServer;
     let spaceId = "";
     let tabId = "";
     let secondTabId = "";
@@ -134,6 +171,8 @@ describe(
     };
 
     before(async () => {
+      framePage = await startPageServer(FRAME_PAGE);
+      FRAME_URL = framePage.url.replace(/\/page$/, "");
       page = await startPageServer(PAGE);
 
       const transport = new StdioClientTransport({
@@ -170,6 +209,7 @@ describe(
         terminateZenProcess(browserPid ?? undefined);
       }
       await page?.close();
+      await framePage?.close();
       removeTestProfile(testProfilePath());
     });
 
@@ -291,6 +331,153 @@ describe(
       assert.equal(batch.pages[1].ok, true);
       assert.equal(batch.pages[2].ok, false);
       assert.match(batch.pages[2].error, /tab|match/i);
+    });
+
+    it("waits for page conditions and times out cleanly", async () => {
+      const present = await call("zen_wait_for", {
+        tabId,
+        selector: "#evidence-target",
+        timeout_ms: 5_000,
+      });
+      assert.equal(present.matched, true);
+      assert.equal(present.condition, "selector");
+      assert.equal(present.until, "present");
+      assert.equal(present.query, "#evidence-target");
+
+      const found = await call("zen_wait_for", {
+        tabId,
+        text: "Agent harness end to end",
+        timeout_ms: 5_000,
+      });
+      assert.equal(found.matched, true);
+
+      const title = await call("zen_wait_for", {
+        tabId,
+        title_contains: "mcp test",
+        timeout_ms: 5_000,
+      });
+      assert.equal(title.matched, true);
+
+      const absent = await call("zen_wait_for", {
+        tabId,
+        selector: "#never-here",
+        until: "absent",
+        timeout_ms: 1_000,
+      });
+      assert.equal(absent.matched, true);
+      assert.equal(absent.until, "absent");
+
+      const missing = await call("zen_wait_for", {
+        tabId,
+        selector: "#never-here",
+        timeout_ms: 300,
+        poll_ms: 100,
+      });
+      assert.equal(missing.matched, false);
+      assert.match(missing.limitation, /did not hold/);
+
+      await assert.rejects(
+        call("zen_wait_for", { tabId, selector: "#a", text: "b" }),
+        /exactly one/
+      );
+    });
+
+    it("clicks and types with a visible effect", async () => {
+      const interactive = await call("zen_read_page", {
+        tabId,
+        format: "interactive",
+      });
+      const name = interactive.elements.find(
+        (element: any) => element.tag === "input" && element.value === "initial"
+      );
+      assert.ok(name?.ref, "the name input should have a ref");
+
+      const typed = await call("zen_type", {
+        tabId,
+        ref: name.ref,
+        text: "Ada",
+        clear: true,
+      });
+      assert.equal(typed.typed, 3);
+      assert.equal(typed.cleared, true);
+      assert.equal(typed.effect?.valueChanged, true);
+
+      const save = interactive.elements.find(
+        (element: any) =>
+          element.tag === "button" && /save/i.test(element.label)
+      );
+      assert.ok(save?.ref, "the save button should have a ref");
+
+      const clicked = await call("zen_click", { tabId, ref: save.ref });
+      assert.equal(clicked.clicked, true);
+      assert.equal(clicked.effect?.changed, true);
+
+      const saved = await call("zen_wait_for", {
+        tabId,
+        text: "saved Ada",
+        timeout_ms: 5_000,
+      });
+      assert.equal(saved.matched, true);
+
+      const read = await call("zen_read_page", { tabId });
+      assert.match(read.text, /saved Ada/);
+    });
+
+    it("reads, waits in, and drives a cross-origin frame", async () => {
+      const frameWait = await call("zen_wait_for", {
+        tabId,
+        frame_path: [0],
+        selector: "#frame-input",
+        timeout_ms: 10_000,
+      });
+      assert.equal(frameWait.matched, true);
+      assert.deepEqual(frameWait.framePath, [0]);
+      assert.match(frameWait.frameUrl, /\/frame$/);
+
+      const frameRead = await call("zen_read_page", {
+        tabId,
+        framePath: [0],
+      });
+      assert.match(frameRead.text, /FRAME TEXT/);
+      assert.deepEqual(frameRead.framePath, [0]);
+      assert.ok(frameRead.frames.some((frame: any) => frame.path[0] === 0));
+
+      const interactive = await call("zen_read_page", {
+        tabId,
+        format: "interactive",
+      });
+      const frameInput = interactive.elements.find(
+        (element: any) =>
+          element.framePath?.[0] === 0 && element.tag === "input"
+      );
+      assert.ok(frameInput?.ref?.startsWith("f0-"));
+
+      const typed = await call("zen_type", {
+        tabId,
+        ref: frameInput.ref,
+        text: "in frame",
+        clear: true,
+      });
+      assert.deepEqual(typed.framePath, [0]);
+      assert.equal(typed.effect?.valueChanged, true);
+
+      const frameButton = interactive.elements.find(
+        (element: any) =>
+          element.framePath?.[0] === 0 && element.tag === "button"
+      );
+      assert.ok(frameButton?.ref?.startsWith("f0-"));
+
+      const clicked = await call("zen_click", {
+        tabId,
+        ref: frameButton.ref,
+      });
+      assert.deepEqual(clicked.framePath, [0]);
+
+      const after = await call("zen_read_page", {
+        tabId,
+        framePath: [0],
+      });
+      assert.match(after.text, /FRAME CLICKED/);
     });
 
     it("pins tabs, lists containers and writes the clipboard", async () => {
