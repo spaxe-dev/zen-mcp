@@ -18,6 +18,7 @@ import type {
   BridgeMethod,
   BridgeMethodMap,
   BridgeStatus,
+  ClickElementResult,
   EvidenceBatchOptions,
   EvidenceBatchResult,
   EvidenceCitation,
@@ -33,6 +34,7 @@ import type {
   SearchTabsResult,
   TabInfo,
   TextSearchResult,
+  TypeTextResult,
   UiConsent,
   UiOption,
   WatchInfo,
@@ -609,6 +611,54 @@ export class ZenRuntime {
       this.#assertUrlAllowed(page.url, "Refusing to return content from");
     }
     return page;
+  }
+
+  /** Clicks one element resolved by an interactive-read ref or CSS selector. */
+  async clickElement(options: {
+    tabId: string;
+    ref?: string;
+    selector?: string;
+    windowId?: string;
+    signal?: AbortSignal;
+  }): Promise<ClickElementResult> {
+    await this.connect();
+    const tabId = String(options.tabId ?? "").trim();
+    if (!tabId) throw new Error("tabId is required");
+    return this.hub.clickElement(
+      {
+        tabId,
+        ...(options.ref ? { ref: options.ref } : {}),
+        ...(options.selector ? { selector: options.selector } : {}),
+      },
+      options.windowId,
+      { signal: options.signal }
+    );
+  }
+
+  /** Types into one element resolved by an interactive-read ref or selector. */
+  async typeText(options: {
+    tabId: string;
+    text: string;
+    ref?: string;
+    selector?: string;
+    clear?: boolean;
+    windowId?: string;
+    signal?: AbortSignal;
+  }): Promise<TypeTextResult> {
+    await this.connect();
+    const tabId = String(options.tabId ?? "").trim();
+    if (!tabId) throw new Error("tabId is required");
+    return this.hub.typeText(
+      {
+        tabId,
+        text: String(options.text ?? ""),
+        ...(options.ref ? { ref: options.ref } : {}),
+        ...(options.selector ? { selector: options.selector } : {}),
+        ...(options.clear === true ? { clear: true } : {}),
+      },
+      options.windowId,
+      { signal: options.signal }
+    );
   }
 
   /**

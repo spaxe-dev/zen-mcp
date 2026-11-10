@@ -25,6 +25,7 @@ const readFormatSchema = z.enum([
   "tables",
   "metadata",
   "outline",
+  "interactive",
 ]);
 
 const uiOptionSchema = z.looseObject({
@@ -160,6 +161,30 @@ const pageMetadataSchema = z.looseObject({
   twitter: z.record(z.string(), z.string()),
 });
 
+const pageElementSchema = z.looseObject({
+  ref: z.string(),
+  tag: z.string(),
+  role: z.string(),
+  type: z.string().nullable(),
+  label: z.string(),
+  value: z.string().nullable(),
+  placeholder: z.string().nullable(),
+  href: z.string().nullable(),
+  disabled: z.boolean(),
+  checked: z.boolean().nullable(),
+  readOnly: z.boolean(),
+  sensitive: z.boolean(),
+  editable: z.boolean(),
+});
+
+const pageActionTargetSchema = z.looseObject({
+  tag: z.string(),
+  role: z.string(),
+  label: z.string(),
+  type: z.string().nullable(),
+  sensitive: z.boolean(),
+});
+
 const pageReadShape = {
   title: z.string(),
   url: z.string(),
@@ -179,6 +204,8 @@ const pageReadShape = {
   tables: z.array(pageTableSchema).optional(),
   metadata: pageMetadataSchema.optional(),
   outline: z.array(pageHeadingSchema).optional(),
+  elements: z.array(pageElementSchema).optional(),
+  elementsTruncated: z.boolean().optional(),
 };
 
 const pageReadSchema = z.looseObject(pageReadShape);
@@ -482,6 +509,23 @@ export const TOOL_OUTPUT_SCHEMAS = {
     ),
   },
   zen_find_text: textSearchShape,
+  zen_click: {
+    clicked: z.boolean(),
+    tabId: z.string(),
+    url: z.string(),
+    title: z.string(),
+    target: pageActionTargetSchema,
+    limitation: z.string().optional(),
+  },
+  zen_type: {
+    typed: z.number(),
+    cleared: z.boolean(),
+    tabId: z.string(),
+    url: z.string(),
+    title: z.string(),
+    target: pageActionTargetSchema,
+    limitation: z.string().optional(),
+  },
   zen_search_tabs: {
     query: z.string(),
     tabsSearched: z.number(),

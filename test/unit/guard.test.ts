@@ -124,6 +124,8 @@ describe("MUTATING_TOOLS", () => {
       "zen_template_delete",
       "zen_template_apply",
       "zen_tabs_group",
+      "zen_click",
+      "zen_type",
       "zen_show_evidence",
       "zen_show_evidence_batch",
       "zen_clear_evidence",

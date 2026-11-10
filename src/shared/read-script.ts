@@ -1,4 +1,5 @@
 import type {
+  PageElement,
   PageHeading,
   PageLink,
   PageMetadata,
@@ -34,6 +35,8 @@ export interface PageSnapshot {
   tables?: PageTable[];
   metadata?: PageMetadata;
   outline?: PageHeading[];
+  elements?: PageElement[];
+  elementsTruncated?: boolean;
 }
 
 const READ_FORMATS: ReadFormat[] = [
@@ -43,6 +46,7 @@ const READ_FORMATS: ReadFormat[] = [
   "tables",
   "metadata",
   "outline",
+  "interactive",
 ];
 
 const MAX_TEXT = 200_000;
@@ -53,6 +57,7 @@ const MAX_TABLE_ROWS = 100;
 const MAX_TABLE_COLUMNS = 12;
 const MAX_CELL = 300;
 const MAX_HEADINGS = 200;
+const MAX_ELEMENTS = 200;
 
 function normalizeFormat(value: unknown): ReadFormat {
   return typeof value === "string" &&
@@ -143,6 +148,34 @@ function coerceHeadings(value: unknown): PageHeading[] {
   return headings;
 }
 
+function coerceElements(value: unknown): PageElement[] {
+  if (!Array.isArray(value)) return [];
+  const elements: PageElement[] = [];
+  for (const entry of value.slice(0, MAX_ELEMENTS)) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Partial<PageElement>;
+    const ref = asString(raw.ref, 16);
+    const tag = asString(raw.tag, 40);
+    if (!ref || !tag) continue;
+    elements.push({
+      ref,
+      tag,
+      role: asString(raw.role, 40) || "generic",
+      type: asNullableString(raw.type, 40),
+      label: asString(raw.label, 300),
+      value: asNullableString(raw.value, 300),
+      placeholder: asNullableString(raw.placeholder, 300),
+      href: asNullableString(raw.href, 8_000),
+      disabled: asBoolean(raw.disabled, false),
+      checked: typeof raw.checked === "boolean" ? raw.checked : null,
+      readOnly: asBoolean(raw.readOnly, false),
+      sensitive: asBoolean(raw.sensitive, false),
+      editable: asBoolean(raw.editable, false),
+    });
+  }
+  return elements;
+}
+
 function coerceRecord(value: unknown): Record<string, string> {
   const record: Record<string, string> = {};
   if (!value || typeof value !== "object") return record;
@@ -212,6 +245,8 @@ const maxChars = ${JSON.stringify(maxChars)};
 const offset = ${JSON.stringify(offset)};
 const format = ${JSON.stringify(format)};
 const selector = ${JSON.stringify(selector)};
+const REF_ATTR = "data-zen-mcp-ref";
+const MAX_ELEMENTS = ${MAX_ELEMENTS};
 const FENCE = String.fromCharCode(96, 96, 96);
 const SENTINEL = "\u0000";
 
@@ -842,12 +877,268 @@ function safeCall(fn, fallback) {
   }
 }
 
+function elementText(el) {
+  var text = "";
+  try {
+    text = el.innerText || el.textContent || "";
+  } catch (e) {}
+  return normalizeText(text).replace(/\n+/g, " ").slice(0, 200);
+}
+
+function elementLabel(el, tag, type) {
+  var label = "";
+  try {
+    label = String(el.getAttribute("aria-label") || "");
+    if (!label) {
+      var ids = String(el.getAttribute("aria-labelledby") || "").split(/\s+/);
+      var root = el.getRootNode ? el.getRootNode() : document;
+      for (var i = 0; i < ids.length && i < 4; i += 1) {
+        if (!ids[i]) continue;
+        var peer = null;
+        try {
+          peer = root.getElementById ? root.getElementById(ids[i]) : null;
+        } catch (e) {}
+        if (!peer) {
+          try {
+            peer = document.getElementById(ids[i]);
+          } catch (e2) {}
+        }
+        if (peer) label += " " + String(peer.innerText || peer.textContent || "");
+      }
+    }
+  } catch (e) {}
+  label = normalizeText(label);
+  if (!label) {
+    try {
+      if (el.labels && el.labels.length) {
+        var parts = [];
+        for (var l = 0; l < el.labels.length && l < 3; l += 1) {
+          parts.push(String(el.labels[l].innerText || el.labels[l].textContent || ""));
+        }
+        label = normalizeText(parts.join(" "));
+      }
+    } catch (e) {}
+  }
+  if (!label) {
+    if (tag === "input" && /^(submit|button|reset)$/.test(type || "")) {
+      label = String(el.value || "");
+    } else if (tag === "button" || tag === "a" || tag === "summary") {
+      label = elementText(el);
+    }
+  }
+  if (!label) {
+    label =
+      String(el.getAttribute("placeholder") || "") ||
+      String(el.getAttribute("title") || "") ||
+      String(el.getAttribute("alt") || "") ||
+      String(el.getAttribute("name") || "");
+  }
+  return normalizeText(label).replace(/\n+/g, " ").slice(0, 200);
+}
+
+function elementRole(el, tag, type) {
+  var explicit = "";
+  try {
+    explicit = String(el.getAttribute("role") || "").trim().toLowerCase();
+  } catch (e) {}
+  if (explicit) return explicit;
+  if (tag === "a" && el.hasAttribute("href")) return "link";
+  if (tag === "button" || tag === "summary") return "button";
+  if (tag === "textarea") return "textbox";
+  if (tag === "select") return el.multiple ? "listbox" : "combobox";
+  if (tag === "input") {
+    if (type === "checkbox") return "checkbox";
+    if (type === "radio") return "radio";
+    if (type === "range") return "slider";
+    if (
+      type === "submit" ||
+      type === "button" ||
+      type === "reset" ||
+      type === "image"
+    ) {
+      return "button";
+    }
+    if (type === "search") return "searchbox";
+    if (type === "number") return "spinbutton";
+    return "textbox";
+  }
+  if (el.isContentEditable) return "textbox";
+  return "generic";
+}
+
+function isElementVisible(el) {
+  try {
+    var view = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!view) return true;
+    var style = view.getComputedStyle(el);
+    if (
+      style &&
+      (style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse")
+    ) {
+      return false;
+    }
+    var rect = el.getBoundingClientRect();
+    if (rect && rect.width <= 0 && rect.height <= 0) return false;
+  } catch (e) {}
+  return true;
+}
+
+function elementHref(el) {
+  try {
+    var raw = el.getAttribute("href");
+    if (!raw) return null;
+    var url = new URL(raw, location.href);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
+  } catch (e) {}
+  return null;
+}
+
+function describeElement(el, ref) {
+  var tag = String(el.tagName || "").toLowerCase();
+  var type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
+  var sensitive = tag === "input" && type === "password";
+  var editable = false;
+  if (tag === "textarea") {
+    editable = true;
+  } else if (tag === "input") {
+    editable = !/^(button|submit|reset|checkbox|radio|range|file|image|color|hidden)$/.test(
+      type || ""
+    );
+  } else if (el.isContentEditable) {
+    editable = true;
+  }
+
+  var value = null;
+  if (!sensitive) {
+    try {
+      if (tag === "select") {
+        var option = el.options && el.options[el.selectedIndex];
+        if (option) value = String(option.text || option.value || "").slice(0, 200);
+      } else if (tag === "input" && type !== "file") {
+        value = String(el.value || "").slice(0, 200);
+      }
+    } catch (e) {}
+  }
+
+  return {
+    ref: ref,
+    tag: tag,
+    role: elementRole(el, tag, type),
+    type: type,
+    label: elementLabel(el, tag, type),
+    value: value,
+    placeholder: safeCall(function () {
+      return el.getAttribute("placeholder") || null;
+    }, null),
+    href: elementHref(el),
+    disabled: !!el.disabled || el.getAttribute("aria-disabled") === "true",
+    checked: type === "checkbox" || type === "radio" ? !!el.checked : null,
+    readOnly: !!(el.readOnly || el.getAttribute("aria-readonly") === "true"),
+    sensitive: sensitive,
+    editable: editable
+  };
+}
+
+var INTERACTIVE_SELECTOR = [
+  "a[href]",
+  "button",
+  "input:not([type='hidden'])",
+  "textarea",
+  "select",
+  "summary",
+  "[contenteditable='']",
+  "[contenteditable='true']",
+  "[tabindex]:not([tabindex='-1'])",
+  "[role='button']",
+  "[role='link']",
+  "[role='checkbox']",
+  "[role='radio']",
+  "[role='switch']",
+  "[role='tab']",
+  "[role='menuitem']",
+  "[role='menuitemcheckbox']",
+  "[role='menuitemradio']",
+  "[role='option']",
+  "[role='combobox']",
+  "[role='textbox']",
+  "[role='searchbox']"
+].join(",");
+
+function findCandidates(root, out) {
+  if (!root || !root.querySelectorAll) return;
+  var found = [];
+  try {
+    found = root.querySelectorAll(INTERACTIVE_SELECTOR);
+  } catch (e) {}
+  for (var i = 0; i < found.length; i += 1) {
+    out.push(found[i]);
+  }
+  var all = [];
+  try {
+    all = root.querySelectorAll("*");
+  } catch (e) {}
+  for (var n = 0; n < all.length; n += 1) {
+    if (all[n].shadowRoot) findCandidates(all[n].shadowRoot, out);
+  }
+}
+
+function clearElementRefs(root) {
+  if (!root || !root.querySelectorAll) return;
+  var tagged = [];
+  try {
+    tagged = root.querySelectorAll("[" + REF_ATTR + "]");
+  } catch (e) {}
+  for (var i = 0; i < tagged.length; i += 1) {
+    try {
+      tagged[i].removeAttribute(REF_ATTR);
+    } catch (e) {}
+  }
+  var all = [];
+  try {
+    all = root.querySelectorAll("*");
+  } catch (e) {}
+  for (var n = 0; n < all.length; n += 1) {
+    if (all[n].shadowRoot) clearElementRefs(all[n].shadowRoot);
+  }
+}
+
+function collectInteractive(root) {
+  clearElementRefs(document);
+  var candidates = [];
+  findCandidates(root || document.body, candidates);
+  var elements = [];
+  var eligible = 0;
+  for (var i = 0; i < candidates.length; i += 1) {
+    var el = candidates[i];
+    if (!el || !el.isConnected) continue;
+    if (!isElementVisible(el)) continue;
+    var tag = String(el.tagName || "").toLowerCase();
+    if (tag === "input" && String(el.type || "").toLowerCase() === "hidden") {
+      continue;
+    }
+    eligible += 1;
+    if (elements.length >= MAX_ELEMENTS) continue;
+    var ref = "e" + (elements.length + 1);
+    try {
+      el.setAttribute(REF_ATTR, ref);
+    } catch (e) {
+      continue;
+    }
+    elements.push(describeElement(el, ref));
+  }
+  return { elements: elements, truncated: eligible > elements.length };
+}
+
 var selectorMatched = true;
 var root = null;
 try {
   if (selector) {
     root = document.querySelector(selector);
     if (!root) selectorMatched = false;
+  } else if (format === "interactive") {
+    root = document.body;
   } else {
     root = document.querySelector("article, main, [role='main']");
   }
@@ -894,6 +1185,9 @@ var visibleText = text.slice(appliedOffset, appliedOffset + maxChars);
 if (format === "markdown") {
   markdown = primarySource.slice(appliedOffset, appliedOffset + maxChars);
 }
+if (format === "interactive") {
+  visibleText = "";
+}
 
 var selectedText = "";
 try {
@@ -914,8 +1208,8 @@ var out = {
   url: String(location.href || ""),
   selectedText: selectedText,
   text: visibleText,
-  fullLength: primaryLength,
-  offset: appliedOffset,
+  fullLength: format === "interactive" ? 0 : primaryLength,
+  offset: format === "interactive" ? 0 : appliedOffset,
   readyState: String(document.readyState || ""),
   description: description || null,
   format: format,
@@ -949,9 +1243,208 @@ if (format === "markdown") {
     return buildOutline(root);
   }, []);
   if (outline) out.outline = outline;
+} else if (format === "interactive") {
+  var interactive = safeCall(function () {
+    return collectInteractive(root);
+  }, null);
+  if (interactive) {
+    out.elements = interactive.elements;
+    out.elementsTruncated = interactive.truncated;
+  }
 }
 
 return out;
+`;
+}
+
+export interface ResolveTargetOptions {
+  ref?: string;
+  selector?: string;
+}
+
+/**
+ * Resolves an interactive-read ref, including refs inside open shadow roots, or
+ * a CSS selector in the light DOM. It returns the element itself so the caller
+ * can hand it back to Marionette's click and sendKeys commands, plus a summary
+ * that is safe to return to the agent.
+ */
+export function buildResolveTargetScript(options: ResolveTargetOptions = {}): string {
+  const ref =
+    typeof options.ref === "string" && options.ref.trim()
+      ? options.ref.trim()
+      : null;
+  const selector =
+    typeof options.selector === "string" && options.selector.trim()
+      ? options.selector.trim()
+      : null;
+
+  return String.raw`
+const REF_ATTR = "data-zen-mcp-ref";
+const ref = ${JSON.stringify(ref)};
+const selector = ${JSON.stringify(selector)};
+
+function normalizeText(value) {
+  return String(value == null ? "" : value)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findByRef(root) {
+  var match = null;
+  try {
+    match = root.querySelector("[" + REF_ATTR + "='" + ref + "']");
+  } catch (e) {}
+  if (match) return match;
+  var all = [];
+  try {
+    all = root.querySelectorAll("*");
+  } catch (e) {}
+  for (var i = 0; i < all.length; i += 1) {
+    var shadow = all[i].shadowRoot;
+    if (!shadow) continue;
+    var nested = findByRef(shadow);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function elementText(el) {
+  var text = "";
+  try {
+    text = el.innerText || el.textContent || "";
+  } catch (e) {}
+  return normalizeText(text).slice(0, 200);
+}
+
+function elementLabel(el, tag, type) {
+  var label = "";
+  try {
+    label = String(el.getAttribute("aria-label") || "");
+    if (!label) {
+      var ids = String(el.getAttribute("aria-labelledby") || "").split(/\s+/);
+      var root = el.getRootNode ? el.getRootNode() : document;
+      for (var i = 0; i < ids.length && i < 4; i += 1) {
+        if (!ids[i]) continue;
+        var peer = null;
+        try {
+          peer = root.getElementById ? root.getElementById(ids[i]) : null;
+        } catch (e) {}
+        if (!peer) {
+          try {
+            peer = document.getElementById(ids[i]);
+          } catch (e2) {}
+        }
+        if (peer) label += " " + String(peer.innerText || peer.textContent || "");
+      }
+    }
+  } catch (e) {}
+  label = normalizeText(label);
+  if (!label) {
+    try {
+      if (el.labels && el.labels.length) {
+        var parts = [];
+        for (var l = 0; l < el.labels.length && l < 3; l += 1) {
+          parts.push(String(el.labels[l].innerText || el.labels[l].textContent || ""));
+        }
+        label = normalizeText(parts.join(" "));
+      }
+    } catch (e) {}
+  }
+  if (!label) {
+    if (tag === "input" && /^(submit|button|reset)$/.test(type || "")) {
+      label = String(el.value || "");
+    } else if (tag === "button" || tag === "a" || tag === "summary") {
+      label = elementText(el);
+    }
+  }
+  if (!label) {
+    label =
+      String(el.getAttribute("placeholder") || "") ||
+      String(el.getAttribute("title") || "") ||
+      String(el.getAttribute("alt") || "") ||
+      String(el.getAttribute("name") || "");
+  }
+  return normalizeText(label).slice(0, 200);
+}
+
+function elementRole(el, tag, type) {
+  var explicit = "";
+  try {
+    explicit = String(el.getAttribute("role") || "").trim().toLowerCase();
+  } catch (e) {}
+  if (explicit) return explicit;
+  if (tag === "a" && el.hasAttribute("href")) return "link";
+  if (tag === "button" || tag === "summary") return "button";
+  if (tag === "textarea") return "textbox";
+  if (tag === "select") return el.multiple ? "listbox" : "combobox";
+  if (tag === "input") {
+    if (type === "checkbox") return "checkbox";
+    if (type === "radio") return "radio";
+    if (type === "range") return "slider";
+    if (
+      type === "submit" ||
+      type === "button" ||
+      type === "reset" ||
+      type === "image"
+    ) {
+      return "button";
+    }
+    if (type === "search") return "searchbox";
+    if (type === "number") return "spinbutton";
+    return "textbox";
+  }
+  if (el.isContentEditable) return "textbox";
+  return "generic";
+}
+
+function elementHref(el) {
+  try {
+    var raw = el.getAttribute("href");
+    if (!raw) return null;
+    var url = new URL(raw, location.href);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
+  } catch (e) {}
+  return null;
+}
+
+var found = null;
+try {
+  found = ref ? findByRef(document) : selector ? document.querySelector(selector) : null;
+} catch (e) {
+  found = null;
+}
+if (!found) {
+  return { found: false };
+}
+
+var tag = String(found.tagName || "").toLowerCase();
+var type = tag === "input" ? String(found.type || "text").toLowerCase() : null;
+var editable = false;
+if (tag === "textarea") {
+  editable = true;
+} else if (tag === "input") {
+  editable = !/^(button|submit|reset|checkbox|radio|range|file|image|color|hidden)$/.test(
+    type || ""
+  );
+} else if (found.isContentEditable) {
+  editable = true;
+}
+
+return {
+  found: true,
+  element: found,
+  tag: tag,
+  role: elementRole(found, tag, type),
+  type: type,
+  label: elementLabel(found, tag, type),
+  href: elementHref(found),
+  disabled: !!found.disabled || found.getAttribute("aria-disabled") === "true",
+  readOnly: !!(
+    found.readOnly || found.getAttribute("aria-readonly") === "true"
+  ),
+  sensitive: tag === "input" && type === "password",
+  editable: editable
+};
 `;
 }
 
@@ -1018,8 +1511,19 @@ export function coercePageSnapshot(value: unknown): PageSnapshot | null {
   if (Array.isArray(raw.outline)) {
     snapshot.outline = coerceHeadings(raw.outline);
   }
+  if (Array.isArray(raw.elements)) {
+    snapshot.elements = coerceElements(raw.elements);
+    snapshot.elementsTruncated = raw.elementsTruncated === true;
+  }
 
   return snapshot;
+}
+
+function joinLimitations(
+  existing: string | undefined,
+  addition: string
+): string {
+  return existing ? `${existing} ${addition}` : addition;
 }
 
 export function toPageReadResult(
@@ -1063,11 +1567,12 @@ export function toPageReadResult(
     !structured && primary > 0 && appliedOffset + primary < fullLength
       ? appliedOffset + primary
       : null;
-  const truncated = structured
-    ? maxChars !== null
-      ? fullLength > maxChars
-      : fullLength > primary
-    : nextOffset !== null;
+  const truncated =
+    (structured
+      ? maxChars !== null
+        ? fullLength > maxChars
+        : fullLength > primary
+      : nextOffset !== null) || page?.elementsTruncated === true;
   const requestedOffset = Math.max(
     0,
     Math.floor(Number(options?.offset) || 0)
@@ -1129,12 +1634,40 @@ export function toPageReadResult(
       text: String(heading?.text ?? ""),
     }));
   }
+  if (Array.isArray(page?.elements)) {
+    result.elements = page.elements.map((element) => ({
+      ref: String(element?.ref ?? ""),
+      tag: String(element?.tag ?? ""),
+      role: String(element?.role ?? "generic"),
+      type: element?.type ?? null,
+      label: String(element?.label ?? ""),
+      value: element?.value ?? null,
+      placeholder: element?.placeholder ?? null,
+      href: element?.href ?? null,
+      disabled: element?.disabled === true,
+      checked:
+        typeof element?.checked === "boolean" ? element.checked : null,
+      readOnly: element?.readOnly === true,
+      sensitive: element?.sensitive === true,
+      editable: element?.editable === true,
+    }));
+    if (page.elementsTruncated === true) {
+      result.elementsTruncated = true;
+      result.limitation = joinLimitations(
+        result.limitation,
+        "The interactive scan reached its element cap. Narrow it with " +
+          "selector to see the rest."
+      );
+    }
+  }
 
   if (structured && requestedOffset > 0) {
-    result.limitation =
+    result.limitation = joinLimitations(
+      result.limitation,
       `offset is only supported for text and markdown reads. This ${format} ` +
-      `read ignored offset=${requestedOffset} and returned the complete ` +
-      `${format} data.`;
+        `read ignored offset=${requestedOffset} and returned the complete ` +
+        `${format} data.`
+    );
   }
 
   return result;

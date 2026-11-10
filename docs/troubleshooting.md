@@ -52,6 +52,15 @@ Only normal windows get the bridge. Open a normal window for the agent.
 **A PDF reports `pdf_unreadable`**
 Zen's PDF viewer may not be initialized for a hidden tab. Open the PDF, then read the active tab. PDF reads outside the active tab are not covered by the automated live suite.
 
+**`zen_click` or `zen_type` returns `element_not_found`**
+The ref came from an older interactive read, the page navigated, or the selector matched nothing. Run `zen_read_page { format: "interactive" }` for that tab and use a fresh ref instead of retrying the stale one.
+
+**`zen_click` or `zen_type` returns `element_disabled`, `element_readonly`, or `unsupported_target`**
+The control cannot accept that action right now. A disabled control has to be enabled by the page first; a read-only field cannot be typed into; file inputs are refused by design. Pick a different control or ask the user to complete that step.
+
+**An interactive read returns `elementsTruncated: true`**
+The scan stopped at 200 visible controls. Pass a `selector` that narrows the page area, then run the interactive read again.
+
 **`zen_show_evidence` returns `QUOTE_NOT_FOUND`, `AMBIGUOUS_MATCH`, or `LOW_MATCH_CONFIDENCE`**
 No highlight was added and the quote should not be presented as support. Copy the passage from the page, shorten it, or add surrounding `context`. PDFs and privileged pages cannot be inspected at all.
 
@@ -91,6 +100,6 @@ Resources return errors as JSON instead of failing the request. The message desc
 - The domain allowlist is checked before an action and again immediately after `zen_tabs_open`, but a redirect that happens later can move a tab outside the list. Reads recheck the tab URL.
 - The audit log redacts sensitive values and long strings, but a bounded preview of the summarized argument JSON can remain. Resource reads are logged as `resource:<uri>` entries without arguments.
 - Private-window exclusion is implemented but not covered by the automated live suite. Treat it as a best-effort boundary.
-- No screenshot or click automation inside pages. This harness controls Zen and the agent conversation, not arbitrary web apps.
+- No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside iframes or closed shadow roots.
 - No per-action approval cards. Approval is per server session, and Pause is the global stop switch. Use read-only mode and the domain allowlist for additional guardrails.
 - macOS and Linux builds pass CI but have not had a live Zen launch verified. Windows is the only live-tested platform.

@@ -485,7 +485,8 @@ export type ReadFormat =
   | "links"
   | "tables"
   | "metadata"
-  | "outline";
+  | "outline"
+  | "interactive";
 
 export interface PageLink {
   text: string;
@@ -501,6 +502,29 @@ export interface PageTable {
 export interface PageHeading {
   level: number;
   text: string;
+}
+
+/**
+ * One control found by an interactive read. `ref` is a short server-assigned
+ * handle used by `zen_click` and `zen_type`; it expires after the next
+ * interactive read or a navigation.
+ */
+export interface PageElement {
+  ref: string;
+  tag: string;
+  role: string;
+  type: string | null;
+  label: string;
+  /** Current value, omitted for password fields and file inputs. */
+  value: string | null;
+  placeholder: string | null;
+  href: string | null;
+  disabled: boolean;
+  checked: boolean | null;
+  readOnly: boolean;
+  /** True for password fields, so agents never echo the value. */
+  sensitive: boolean;
+  editable: boolean;
 }
 
 export interface PageMetadata {
@@ -541,6 +565,10 @@ export interface PageReadResult {
   tables?: PageTable[];
   metadata?: PageMetadata;
   outline?: PageHeading[];
+  /** Present for interactive reads, in document order. */
+  elements?: PageElement[];
+  /** True when the interactive scan hit its element cap. */
+  elementsTruncated?: boolean;
 }
 
 export type EvidenceErrorCode =
@@ -858,6 +886,56 @@ export interface TabReadParams {
   selector?: string;
 }
 
+/** Target of a page action. Exactly one of ref or selector is required. */
+export interface PageActionTarget {
+  /** Ref from an interactive read, such as "e12". */
+  ref?: string;
+  /** CSS selector, evaluated in the page's light DOM. */
+  selector?: string;
+}
+
+export interface ClickElementParams extends PageActionTarget {
+  tabId: string;
+  /** Host-enforced allowlist, used to reject a link before it is clicked. */
+  allowedDomains?: string[];
+}
+
+export interface TypeTextParams extends PageActionTarget {
+  tabId: string;
+  text: string;
+  /** Replace the current value before typing. Defaults to false. */
+  clear?: boolean;
+  allowedDomains?: string[];
+}
+
+export interface PageActionTargetInfo {
+  tag: string;
+  role: string;
+  label: string;
+  type: string | null;
+  sensitive: boolean;
+}
+
+export interface ClickElementResult {
+  clicked: boolean;
+  tabId: string;
+  url: string;
+  title: string;
+  target: PageActionTargetInfo;
+  limitation?: string;
+}
+
+export interface TypeTextResult {
+  /** Number of characters sent, never the text itself. */
+  typed: number;
+  cleared: boolean;
+  tabId: string;
+  url: string;
+  title: string;
+  target: PageActionTargetInfo;
+  limitation?: string;
+}
+
 export interface GlanceParams {
   /** URL to preview. Ignored when tabId is given. */
   url?: string;
@@ -1001,6 +1079,8 @@ export interface BridgeMethodMap {
   "tabs.select": { params: SelectTabParams; result: SelectTabResult };
   "tabs.pin": { params: PinTabsParams; result: PinTabsResult };
   "tabs.read": { params: TabReadParams; result: PageReadResult };
+  "tabs.click": { params: ClickElementParams; result: ClickElementResult };
+  "tabs.type": { params: TypeTextParams; result: TypeTextResult };
   "tabs.evidence": {
     params: EvidenceShowParams;
     result: EvidenceOpResult;

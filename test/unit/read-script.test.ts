@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type { ReadFormat } from "../../src/shared/protocol.js";
 import {
   buildReadScript,
+  buildResolveTargetScript,
   coercePageSnapshot,
   toPageReadResult,
 } from "../../src/shared/read-script.js";
@@ -14,6 +15,7 @@ const FORMATS: ReadFormat[] = [
   "tables",
   "metadata",
   "outline",
+  "interactive",
 ];
 
 describe("page read script", () => {
@@ -90,6 +92,147 @@ describe("page read script", () => {
     assert.match(script, /function metaRecord/);
     assert.match(script, /document\.contentType/);
     assert.match(script, /selectorMatched/);
+  });
+
+  it("contains the interactive scan and excludes hidden inputs", () => {
+    const script = buildReadScript({ maxChars: 500, format: "interactive" });
+    assert.match(script, /const REF_ATTR = "data-zen-mcp-ref";/);
+    assert.match(script, /const MAX_ELEMENTS = 200;/);
+    assert.match(script, /function collectInteractive/);
+    assert.match(script, /function describeElement/);
+    assert.match(script, /input:not\(\[type='hidden'\]\)/);
+    assert.match(script, /\[contenteditable='true'\]/);
+    assert.match(script, /\[role='textbox'\]/);
+    assert.match(script, /shadowRoot/);
+  });
+
+  it("coerces interactive elements and clamps the list", () => {
+    const many = Array.from({ length: 205 }, (_, index) => ({
+      ref: `e${index + 1}`,
+      tag: "button",
+      role: "button",
+      type: null,
+      label: `Button ${index}`,
+      value: null,
+      placeholder: null,
+      href: null,
+      disabled: false,
+      checked: null,
+      readOnly: false,
+      sensitive: false,
+      editable: false,
+    }));
+
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [
+        ...many,
+        { ref: "bad", tag: "" },
+        { tag: "input", label: "no ref" },
+        "not an element",
+      ],
+      elementsTruncated: true,
+    });
+    assert.ok(page);
+    assert.equal(page.format, "interactive");
+    assert.equal(page.elements?.length, 200);
+    assert.equal(page.elements?.[0].ref, "e1");
+    assert.equal(page.elements?.[0].role, "button");
+    assert.equal(page.elementsTruncated, true);
+  });
+
+  it("fills missing interactive element fields with safe defaults", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [{ ref: "e1", tag: "input", sensitive: true }],
+    });
+    assert.ok(page);
+    assert.deepEqual(page.elements, [
+      {
+        ref: "e1",
+        tag: "input",
+        role: "generic",
+        type: null,
+        label: "",
+        value: null,
+        placeholder: null,
+        href: null,
+        disabled: false,
+        checked: null,
+        readOnly: false,
+        sensitive: true,
+        editable: false,
+      },
+    ]);
+    assert.equal(page.elementsTruncated, false);
+  });
+
+  it("copies interactive elements into the read result", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [
+        {
+          ref: "e2",
+          tag: "button",
+          role: "button",
+          label: "Save",
+        },
+      ],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { maxChars: 4_000 });
+    assert.equal(result.format, "interactive");
+    assert.equal(result.text, "");
+    assert.equal(result.length, 0);
+    assert.equal(result.truncated, false);
+    assert.equal(result.elements?.length, 1);
+    assert.equal(result.elements?.[0].label, "Save");
+  });
+
+  it("marks a capped interactive scan and explains it", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [
+        {
+          ref: "e1",
+          tag: "button",
+          role: "button",
+          label: "Save",
+        },
+      ],
+      elementsTruncated: true,
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.truncated, true);
+    assert.equal(result.elementsTruncated, true);
+    assert.match(result.limitation ?? "", /element cap/);
+  });
+
+  it("builds a target resolver with only the requested target", () => {
+    const byRef = buildResolveTargetScript({ ref: "e12" });
+    assert.ok(byRef.includes(`const ref = "e12";`));
+    assert.ok(byRef.includes("const selector = null;"));
+    assert.match(byRef, /function findByRef/);
+    assert.match(byRef, /return \{ found: false \};/);
+
+    const bySelector = buildResolveTargetScript({
+      selector: 'button[data-test="a"]',
+    });
+    assert.ok(bySelector.includes(`const ref = null;`));
+    assert.ok(
+      bySelector.includes(
+        `const selector = ${JSON.stringify('button[data-test="a"]')};`
+      )
+    );
+    assert.doesNotThrow(() => new Function(byRef));
+    assert.doesNotThrow(() => new Function(bySelector));
   });
 
   it("rejects values that are not page snapshots", () => {

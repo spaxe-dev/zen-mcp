@@ -4,6 +4,22 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `zen_read_page` accepts `format: "interactive"`. It returns up to 200 visible
+  controls with short refs, including labels, roles, input types, current
+  values, and state flags. The scan covers form controls, common ARIA controls,
+  contenteditable regions, and controls inside open shadow roots.
+- `zen_click` clicks one control by interactive ref or CSS selector, and
+  `zen_type` types into one field, optionally replacing the current value.
+  Both resolve the target with fixed server scripts and use Marionette's native
+  input commands, so the agent still cannot supply JavaScript. Read-only mode
+  blocks both tools, the domain allowlist checks the tab URL and link target,
+  password values are never read back, file inputs are refused, and refs expire
+  after another interactive read or a navigation.
+
 ## [0.4.0] - 2026-11-08
 
 ### Added

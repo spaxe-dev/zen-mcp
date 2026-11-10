@@ -6,6 +6,8 @@ import type {
   BridgeMethod,
   BridgeMethodMap,
   BridgeStatus,
+  ClickElementParams,
+  ClickElementResult,
   ClipboardWriteParams,
   ClipboardWriteResult,
   CloseTabsParams,
@@ -35,6 +37,7 @@ import type {
   OpenTabsParams,
   OpenTabsResult,
   OpenedTab,
+  PageActionTargetInfo,
   PageReadResult,
   PinTabsParams,
   PinTabsResult,
@@ -56,11 +59,14 @@ import type {
   TabsResult,
   TextSearchParams,
   TextSearchResult,
+  TypeTextParams,
+  TypeTextResult,
   UnsplitParams,
   UnsplitResult,
 } from "../shared/protocol.js";
 import {
   buildReadScript,
+  buildResolveTargetScript,
   coercePageSnapshot,
   toPageReadResult,
 } from "../shared/read-script.js";
@@ -233,6 +239,20 @@ class OpsError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+interface ResolvedPageTarget {
+  found?: boolean;
+  element?: unknown;
+  tag?: string;
+  role?: string;
+  type?: string | null;
+  label?: string;
+  href?: string | null;
+  disabled?: boolean;
+  readOnly?: boolean;
+  sensitive?: boolean;
+  editable?: boolean;
 }
 
 /**
@@ -816,6 +836,148 @@ export function createOps(win: ChromeWindow, windowId: string) {
     }
   };
 
+  /** The MarionetteCommands actor for a loaded tab, reachable in any space. */
+  const pageActor = (tab: ChromeTab): any => {
+    const global = tab.linkedBrowser?.browsingContext?.currentWindowGlobal;
+    if (!global) {
+      throw new OpsError(
+        "tab_not_loaded",
+        `The tab "${tabTitle(tab)}" has no loaded page yet. Wait for it to ` +
+          "finish loading, then try again."
+      );
+    }
+    const actor =
+      typeof global.getActor === "function"
+        ? global.getActor("MarionetteCommands")
+        : null;
+    if (!actor) {
+      throw new OpsError(
+        "actor_unavailable",
+        "Zen MCP's Marionette session does not expose page interaction in " +
+          "this window. Restart Zen with zen_launch."
+      );
+    }
+    return actor;
+  };
+
+  const requireActionTab = (tabId: string, action: string): ChromeTab => {
+    if (!tabId) {
+      throw new OpsError("no_tab", `Provide the tabId to ${action}.`);
+    }
+    const [tab] = resolveTabs([tabId]);
+    const url = tabUrl(tab);
+    if (!isHttpUrl(url)) {
+      throw new OpsError(
+        isPrivilegedUrl(url) ? "privileged_page" : "unsupported_page",
+        "Zen MCP only interacts with http(s) pages. Browser-internal and " +
+          "local-file pages are never driven."
+      );
+    }
+    if (isPdfTab(tab)) {
+      throw new OpsError(
+        "unsupported_page",
+        "Zen MCP cannot click or type inside the PDF viewer. Open the page " +
+          "as HTML instead."
+      );
+    }
+    return tab;
+  };
+
+  const assertActionUrlAllowed = (
+    url: string,
+    allowedDomains: string[] | undefined,
+    action: string
+  ): void => {
+    if (!url || !allowedDomains?.length) return;
+    if (isUrlAllowed(url, allowedDomains)) return;
+    throw new OpsError(
+      "domain_not_allowed",
+      `Blocked by domain allowlist: ${action} ${url} is outside the ` +
+        "configured domains."
+    );
+  };
+
+  const resolvePageTarget = async (
+    tab: ChromeTab,
+    params: { ref?: string; selector?: string }
+  ): Promise<ResolvedPageTarget> => {
+    const ref =
+      typeof params?.ref === "string" ? params.ref.trim() : "";
+    const selector =
+      typeof params?.selector === "string" ? params.selector.trim() : "";
+    if (!ref === !selector) {
+      throw new OpsError(
+        "invalid_target",
+        "Provide exactly one of ref or selector."
+      );
+    }
+    if (ref && !/^e[0-9]{1,4}$/.test(ref)) {
+      throw new OpsError(
+        "invalid_target",
+        `"${ref}" is not an interactive-read ref. Use a value such as "e1".`
+      );
+    }
+    if (selector.length > 500) {
+      throw new OpsError(
+        "invalid_target",
+        "selector must be 500 characters or fewer."
+      );
+    }
+
+    const actor = pageActor(tab);
+    let raw: unknown;
+    try {
+      raw = await actor.sendQuery("MarionetteCommandsParent:executeScript", {
+        script: buildResolveTargetScript({
+          ...(ref ? { ref } : {}),
+          ...(selector ? { selector } : {}),
+        }),
+        args: [],
+        opts: { timeout: 10_000 },
+      });
+    } catch (error) {
+      throw new OpsError(
+        "element_not_found",
+        `Could not resolve the target: ${String(
+          (error as Error)?.message ?? error
+        )}`
+      );
+    }
+
+    const target = raw as ResolvedPageTarget | null;
+    if (!target || target.found !== true || !target.element) {
+      throw new OpsError(
+        "element_not_found",
+        ref
+          ? `No element has ref "${ref}". Call zen_read_page with ` +
+              'format="interactive" again; refs expire after another ' +
+              "interactive read or a navigation."
+          : `No element matches selector "${selector}".`
+      );
+    }
+    return target;
+  };
+
+  const actionTarget = (
+    target: ResolvedPageTarget
+  ): PageActionTargetInfo => ({
+    tag: String(target.tag ?? ""),
+    role: String(target.role ?? "generic"),
+    label: String(target.label ?? ""),
+    type: typeof target.type === "string" ? target.type : null,
+    sensitive: target.sensitive === true,
+  });
+
+  const clickCapabilities = {
+    "moz:accessibilityChecks": false,
+    "moz:webdriverClick": true,
+  };
+
+  const typeCapabilities = {
+    ...clickCapabilities,
+    strictFileInteractability: false,
+  };
+
   const ops: {
     [K in BridgeMethod]: (params: BridgeMethodMap[K]["params"]) => Promise<BridgeMethodMap[K]["result"]> | BridgeMethodMap[K]["result"];
   } = {
@@ -1163,6 +1325,14 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const format = params?.format;
       const selector = params?.selector ? String(params.selector).trim() : undefined;
 
+      if (format === "interactive" && isPdfTab(tab)) {
+        throw new OpsError(
+          "unsupported_page",
+          "Zen MCP cannot build an interactive snapshot of the PDF viewer. " +
+            "Open the page as HTML instead."
+        );
+      }
+
       // PDFs render in the pdf.js viewer, which the page read script cannot
       // see. Their text comes straight from the viewer instead.
       if (isPdfTab(tab)) {
@@ -1174,25 +1344,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
       // inactive space cannot be reached that way. The driver's content actor
       // executes the same script inside any loaded browsing context, which is
       // what makes non-disruptive background research possible.
-      const global = tab.linkedBrowser?.browsingContext?.currentWindowGlobal;
-      if (!global) {
-        throw new OpsError(
-          "tab_not_loaded",
-          `The tab "${tabTitle(tab)}" has no loaded page to read yet. ` +
-            "Wait a moment for it to finish loading, then try again."
-        );
-      }
-      const actor =
-        typeof global.getActor === "function"
-          ? global.getActor("MarionetteCommands")
-          : null;
-      if (!actor) {
-        throw new OpsError(
-          "actor_unavailable",
-          "Zen MCP's Marionette session does not expose background page " +
-            "access in this window. Restart Zen with zen_launch."
-        );
-      }
+      const actor = pageActor(tab);
 
       let raw: unknown;
       try {
@@ -1233,11 +1385,145 @@ export function createOps(win: ChromeWindow, windowId: string) {
           `No element matches selector "${selector}"`
         );
       }
+      // A background tab can hide contentDocument from chrome scope, so omit
+      // the override and let the read script's contentType through instead.
       return toPageReadResult(page, {
         maxChars,
-        contentType,
+        ...(contentType !== null ? { contentType } : {}),
         offset,
       }) satisfies PageReadResult;
+    },
+
+    "tabs.click": async (
+      params: ClickElementParams
+    ): Promise<ClickElementResult> => {
+      const tabId = String(params?.tabId ?? "");
+      const tab = requireActionTab(tabId, "click");
+      assertActionUrlAllowed(
+        tabUrl(tab),
+        params?.allowedDomains,
+        "clicking in"
+      );
+      const target = await resolvePageTarget(tab, params ?? {});
+      if (target.disabled) {
+        throw new OpsError(
+          "element_disabled",
+          `The target "${target.label || target.tag}" is disabled.`
+        );
+      }
+      if (target.href) {
+        assertActionUrlAllowed(
+          target.href,
+          params?.allowedDomains,
+          "following a link to"
+        );
+      }
+
+      const actor = pageActor(tab);
+      try {
+        await actor.sendQuery("MarionetteCommandsParent:clickElement", {
+          elem: target.element,
+          capabilities: clickCapabilities,
+        });
+      } catch (error) {
+        throw new OpsError(
+          "click_failed",
+          `Could not click "${target.label || target.tag}": ${String(
+            (error as Error)?.message ?? error
+          )}`
+        );
+      }
+      await sleep(120);
+      const url = tabUrl(tab);
+      return {
+        clicked: true,
+        tabId,
+        url: isHttpUrl(url) ? url : "",
+        title: tabTitle(tab),
+        target: actionTarget(target),
+      } satisfies ClickElementResult;
+    },
+
+    "tabs.type": async (params: TypeTextParams): Promise<TypeTextResult> => {
+      const tabId = String(params?.tabId ?? "");
+      const tab = requireActionTab(tabId, "type into");
+      const text = String(params?.text ?? "");
+      const clear = params?.clear === true;
+      if (!text && !clear) {
+        throw new OpsError(
+          "invalid_args",
+          "Provide text to type, or set clear=true to empty the field."
+        );
+      }
+      if (text.length > 10_000) {
+        throw new OpsError(
+          "invalid_args",
+          "text must be 10,000 characters or fewer."
+        );
+      }
+      assertActionUrlAllowed(
+        tabUrl(tab),
+        params?.allowedDomains,
+        "typing into"
+      );
+      const target = await resolvePageTarget(tab, params ?? {});
+      if (target.disabled) {
+        throw new OpsError(
+          "element_disabled",
+          `The target "${target.label || target.tag}" is disabled.`
+        );
+      }
+      if (target.readOnly) {
+        throw new OpsError(
+          "element_readonly",
+          `The target "${target.label || target.tag}" is read-only.`
+        );
+      }
+      if (target.tag === "input" && target.type === "file") {
+        throw new OpsError(
+          "unsupported_target",
+          "Zen MCP does not attach files. Ask the user to choose the file " +
+            "in Zen."
+        );
+      }
+
+      const actor = pageActor(tab);
+      try {
+        if (clear) {
+          await actor.sendQuery("MarionetteCommandsParent:clearElement", {
+            elem: target.element,
+          });
+        }
+        await actor.sendQuery("MarionetteCommandsParent:sendKeysToElement", {
+          elem: target.element,
+          text,
+          capabilities: typeCapabilities,
+        });
+      } catch (error) {
+        throw new OpsError(
+          "type_failed",
+          `Could not type into "${target.label || target.tag}": ${String(
+            (error as Error)?.message ?? error
+          )}`
+        );
+      }
+      await sleep(50);
+      const url = tabUrl(tab);
+      return {
+        typed: text.length,
+        cleared: clear,
+        tabId,
+        url: isHttpUrl(url) ? url : "",
+        title: tabTitle(tab),
+        target: actionTarget(target),
+        ...(target.sensitive
+          ? {
+              limitation:
+                "This is a password field. The text is not echoed or stored " +
+                "in the result.",
+            }
+          : {}),
+      } satisfies TypeTextResult;
     },
 
     "tabs.findText": async (

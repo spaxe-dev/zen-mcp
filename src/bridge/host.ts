@@ -26,6 +26,7 @@ import type {
   BridgeResponse,
   BridgeStatus,
   BridgeToServer,
+  ClickElementResult,
   ContainerInfo,
   CreateSpaceResult,
   EventsResult,
@@ -35,6 +36,7 @@ import type {
   PageReadResult,
   ServerToBridge,
   TextSearchResult,
+  TypeTextResult,
   UiActivity,
   UiActivityAction,
   UiBanner,
@@ -1032,6 +1034,38 @@ export class BridgeHub {
       this.#assertUrlAllowed(page.url, "Refusing to return content from");
     }
     return page;
+  }
+
+  async clickElement(
+    params: BridgeMethodMap["tabs.click"]["params"],
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<ClickElementResult> {
+    const result = await this.request(
+      "tabs.click",
+      { ...params, allowedDomains: this.#allowedDomains },
+      { windowId, timeoutMs: 30_000, signal: options.signal }
+    );
+    if (result.url) {
+      this.#assertUrlAllowed(result.url, "Refusing to act on");
+    }
+    return result;
+  }
+
+  async typeText(
+    params: BridgeMethodMap["tabs.type"]["params"],
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<TypeTextResult> {
+    const result = await this.request(
+      "tabs.type",
+      { ...params, allowedDomains: this.#allowedDomains },
+      { windowId, timeoutMs: 30_000, signal: options.signal }
+    );
+    if (result.url) {
+      this.#assertUrlAllowed(result.url, "Refusing to act on");
+    }
+    return result;
   }
 
   async showEvidence(

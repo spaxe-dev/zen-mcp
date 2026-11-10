@@ -18,13 +18,14 @@ Status: **0.4.x, pre-1.0.** Windows is the only platform with a live-tested Zen 
 ## What it does
 
 - Opens tabs in the background, reads them, and searches them without changing the active tab or taking over your screen.
+- Clicks one control or types into one field when you explicitly ask the agent to operate a page, using named refs from an interactive read instead of agent-supplied JavaScript.
 - Creates and organizes native Zen spaces, folders, pinned tabs, essentials, split views, and Glance previews.
 - Shows progress cards with a real **Stop** button, asks questions in Zen chrome, and supports a global **Pause** switch.
 - Verifies citations with Evidence Mode: it reuses or opens the source, finds the quoted passage, marks it with a temporary overlay, and records the match method and confidence.
 - Saves window layouts as sessions and reusable space templates.
 - Enforces policy outside the model with read-only mode, a domain allowlist, an audit log, one-time consent, and an owned-browser boundary.
 
-There are 50 tools, 5 live resources, and 3 prompts. Tool arguments are structured, results are typed, and page content is treated as data, not instructions. The full surface is in [docs/tools.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/tools.md).
+There are 52 tools, 5 live resources, and 3 prompts. Tool arguments are structured, results are typed, and page content is treated as data, not instructions. The full surface is in [docs/tools.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/tools.md).
 
 ## Who it is for
 
@@ -33,7 +34,7 @@ There are 50 tools, 5 live resources, and 3 prompts. Tool arguments are structur
 - **People using an MCP client** such as Claude Code, Cursor, or another client that can launch a stdio server.
 - **Users who want browser automation with explicit boundaries**: the agent controls only a browser Zen MCP started, and you can pause it or make it read-only.
 
-It is not a WebDriver replacement. It does not click inside pages, take page screenshots, fill forms, or drive unattended bots.
+It is not a general WebDriver replacement. Clicking and typing exist so an agent can complete a specific step you asked for; there is no page screenshot, file upload, download handling, or unattended bot loop, and both tools are blocked in read-only mode.
 
 ## What makes it different
 
@@ -41,7 +42,7 @@ It is not a WebDriver replacement. It does not click inside pages, take page scr
 
 **Native Zen constructs.** Spaces, folders, pins, essentials, split view, and Glance use Zen's internal APIs, so the result behaves like something you did in the UI instead of a separate extension's bookkeeping.
 
-**Background first.** Reads and evidence checks work on loaded tabs in any space, including spaces that are not currently rendered. `zen_read_page`, `zen_read_pages`, `zen_find_text`, and `zen_search_tabs` do not select, scroll, or highlight anything unless you ask for it.
+**Background first.** Reads, evidence checks, and page actions work on loaded tabs in any space, including spaces that are not currently rendered. `zen_read_page`, `zen_read_pages`, `zen_find_text`, and `zen_search_tabs` do not select, scroll, or highlight anything unless you ask for it. `zen_click` and `zen_type` act on the tab you name, not on whatever tab is in front.
 
 **You stay in control.** One approval covers the server session. The persistent banner has a Pause button that blocks subsequent browser work. Read-only mode, the domain allowlist, and the audit log add policy the model cannot talk its way around. There are no per-action approval cards.
 
@@ -51,13 +52,13 @@ It is not a WebDriver replacement. It does not click inside pages, take page scr
 
 | Area | What you get |
 | --- | --- |
-| Research | Background page reads in text, Markdown, links, tables, metadata, outline, or a CSS-selected element; literal search across tabs; Evidence Mode for single or batched citations |
+| Research | Background page reads in text, Markdown, links, tables, metadata, outline, an interactive element list, or a CSS-selected element; literal search across tabs; Evidence Mode for single or batched citations |
 | Organization | Spaces, folders, tabs, pins, essentials, split view, Glance, Firefox containers |
 | Awareness | History search, recently closed tabs, bookmarks, duplicate and stale tab audit, domain grouping |
 | Coordination | Progress card with Stop, in-browser questions, notifications, tab watches, one event stream |
 | Repeatability | Session snapshots and reusable space templates, including folders |
 | Policy | Owned browser, one-time consent, global Pause, read-only mode, domain allowlist, JSONL audit log |
-| Interface | 50 tools, 5 resources, 3 prompts, structured results, progress notifications, cancellation |
+| Interface | 52 tools, 5 resources, 3 prompts, structured results, progress notifications, cancellation |
 
 ![The Research space with a Reading folder, an essential tab, and the agent progress card](https://raw.githubusercontent.com/spaxe-dev/zen-mcp/main/docs/screenshots/v0.2-space-overview.png)
 
@@ -205,8 +206,9 @@ Do not point `profilePath` at your normal profile unless that is the tradeoff yo
 | Browser ownership | Always on | Launches its own Zen, proves identity with a nonce and `moz:processID`, then closes the Marionette listener to every other client | A local process can race for the port before lockdown; the race is detected, not eliminated |
 | Consent | On | Shows one approval card per server process before the first read or change; decline closes the owned browser | After a decline, restart the server to ask again; a timeout leaves the card open |
 | Pause | Available in the banner | Blocks browser tools with `paused`, hides the progress card, defers questions, and skips watch polls until Resume | A command already running in Zen may finish; its result is discarded. Pause is not persisted, and existing evidence overlays are not removed |
-| Read-only mode | Off | Blocks all 30 tools in the mutating set, including `zen_launch`, a read-only server's auto-launch, and on-screen progress, question, and notification cards | Reads, lists, events, collected answers, and the audit log still work; session and template listings still show stored URLs |
+| Read-only mode | Off | Blocks all 32 tools in the mutating set, including `zen_launch`, page clicks and typing, a read-only server's auto-launch, and on-screen progress, question, and notification cards | Reads, lists, events, collected answers, and the audit log still work; session and template listings still show stored URLs |
 | Domain allowlist | Empty | Matches an exact host or a subdomain on a label boundary before opening, previewing, verifying, watching, restoring a session, or applying a template | It is rechecked immediately after opening, but slow, script, or meta redirects can land elsewhere afterwards; reads recheck the tab URL |
+| Page actions | Read-only blocks them | An interactive read tags controls with refs; click and type resolve one ref or CSS selector through a fixed script and use Marionette's native input commands | A click is a real input that can submit a form, start a download, navigate, or purchase. The allowlist checks the tab URL and link target, not what an in-page script does afterwards. Refs expire after another interactive read or a navigation. Typed text is capped at 10,000 characters; password values are never returned and file inputs are refused |
 | Private windows | Excluded | The bridge is not injected into private windows and an existing bridge is destroyed | This path is not covered by the automated live suite; treat it as a best-effort boundary |
 | Audit log | On | Appends one JSON line per tool call, including blocked calls, with URLs reduced to scheme, host, and path | Argument summaries are bounded; sensitive values are digested, but a preview of the summarized arguments can remain |
 | Data storage | Local only | Sessions, templates, audit log, and the default agent profile live in the data directory; files are owner-only where the platform supports POSIX modes | Any process running as your user can read them; contents are not encrypted at rest |
@@ -227,7 +229,9 @@ Zen MCP is usable but pre-1.0. The tool surface and configuration keys have chan
 
 - Marionette is fixed at 2828 in current Zen builds. Two Zen MCP servers cannot run at once.
 - A lost Marionette session cannot be re-attached, because the listener stays shut. Quit the browser and start a new one.
-- Reads and evidence search the current rendered DOM only. Iframes, shadow roots, canvas, images, SVG, and form controls are not read.
+- Reads and evidence search the current rendered DOM only. Iframes, canvas, images, SVG, and closed shadow roots are not read. Text reads also skip open shadow roots and form controls; use an interactive read for form controls, which includes controls in open shadow roots.
+- Page actions use fixed scripts. They cannot reach iframes, closed shadow roots, or canvas content, and a ref from an older interactive read is rejected after another interactive read or a navigation.
+- A click or typed key is a real browser input. It can submit a form, start a download, navigate, or make a purchase; the domain allowlist is checked before and after, but it cannot prevent an in-page script from acting on its own.
 - Hidden and unloaded tabs behave differently: a loaded tab in a background space can be read, but a tab that has not loaded returns `tab_not_loaded`.
 - PDF reads depend on Zen's PDF viewer and are unreliable for hidden tabs. Open the PDF and retry if you get `pdf_unreadable`.
 - Fuzzy evidence matches are reported with `verified: false`. A batch is `ok` only when every citation matched and every match was verified.
