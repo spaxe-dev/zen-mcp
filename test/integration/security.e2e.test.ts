@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BridgeRequestError } from "../../src/bridge/host.js";
@@ -6,6 +8,7 @@ import type { ZenMcpConfig } from "../../src/config.js";
 import { isPortOpen, waitForProcessExit } from "../../src/zen/launcher.js";
 import { MarionetteClient } from "../../src/zen/marionette.js";
 import { ZenAccessError, ZenRuntime } from "../../src/zen/runtime.js";
+import type { UpdateInfo } from "../../src/zen/updates.js";
 import { e2eEnabled, removeTestProfile, testConfig, testProfilePath } from "./helpers.js";
 
 const BRIDGE_SCRIPT = join(process.cwd(), "dist", "bridge.js");
@@ -54,7 +57,11 @@ async function waitFor(
 }
 
 async function startRuntime(
-  overrides: Partial<ZenMcpConfig> = {}
+  overrides: Partial<ZenMcpConfig> = {},
+  options: {
+    checkUpdate?: () => Promise<UpdateInfo>;
+    installUpdate?: () => Promise<{ ok: boolean; message?: string }>;
+  } = {}
 ): Promise<ZenRuntime> {
   const runtime = new ZenRuntime({
     config: {
@@ -64,6 +71,7 @@ async function startRuntime(
       ...overrides,
     },
     bridgeScriptPath: BRIDGE_SCRIPT,
+    ...options,
   });
   await runtime.start();
   return runtime;
@@ -273,7 +281,12 @@ describe(
          return { ok: true };`,
         10_000
       );
-      assert.equal(denied.ok, true, `deny click: ${denied.why}`);
+      // Denying closes the browser, so the click can outrun the reply. The
+      // denial result and the process exit below are the authoritative checks.
+      assert.ok(
+        denied.ok || /not connected|not reach/i.test(String(denied.why)),
+        `deny click: ${denied.why}`
+      );
 
       const result = await pending;
       assert.equal(result.ok, false);
@@ -342,6 +355,209 @@ describe(
         second.ok ? "" : String((second as any).error?.message)
       );
       assert.equal(runtime.sessionInfo().consent, "granted");
+    });
+  }
+);
+
+describe(
+  "Zen MCP update bar",
+  { skip: e2eEnabled() ? false : "set ZEN_MCP_E2E=1 to run" },
+  () => {
+    let runtime: ZenRuntime;
+    let stateDir: string;
+    let statePath: string;
+    let installResult: { ok: boolean; message?: string } = { ok: true };
+
+    before(async () => {
+      const base = process.platform === "win32" ? "D:\\tmp" : tmpdir();
+      mkdirSync(base, { recursive: true });
+      stateDir = mkdtempSync(join(base, "zen-mcp-update-e2e-"));
+      statePath = join(stateDir, "update.json");
+      runtime = await startRuntime(
+        { requireConsent: false },
+        {
+          checkUpdate: async () => ({
+            packageName: "@spaxe-dev/zen-mcp",
+            currentVersion: "0.4.0",
+            latestVersion: "0.6.0",
+            updateAvailable: true,
+            checkedAt: Date.now(),
+            registry: "https://registry.npmjs.org/test",
+          }),
+          installUpdate: async () => installResult,
+        }
+      );
+      await runtime.connect({ allowLaunch: true });
+    });
+
+    after(async () => {
+      await runtime?.shutdown().catch(() => undefined);
+      removeTestProfile(testProfilePath());
+      if (stateDir) rmSync(stateDir, { recursive: true, force: true });
+    });
+
+    it("prompts once, collapses to an icon, and installs from the bar", async () => {
+      await runtime.checkForUpdates({ statePath });
+      assert.equal(runtime.hub.updateNotice?.state, "prompt");
+
+      const prompt = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const update = card.querySelector(".banner-update");
+         const row = card.querySelector(".banner-update-prompt");
+         const label = card.querySelector(".update-label");
+         const apply = card.querySelector(".update-apply");
+         const dismiss = card.querySelector(".banner-dismiss");
+         return {
+           ok: !update.hidden && !row.hidden && !apply.hidden && !dismiss.hidden &&
+             label.textContent === "v0.6.0" && apply.textContent === "Update",
+           why: "label=" + label.textContent + " apply=" + apply.textContent,
+         };`
+      );
+      assert.equal(prompt.ok, true, `prompt: ${prompt.why}`);
+      assert.equal(
+        JSON.parse(readFileSync(statePath, "utf8")).promptedVersion,
+        "0.6.0"
+      );
+
+      const dismissed = await pollUi(
+        runtime,
+        ".sk-banner",
+        `card.querySelector(".banner-dismiss").click();
+         return { ok: true };`
+      );
+      assert.equal(dismissed.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice?.state === "icon"),
+        true,
+        "dismiss collapses the prompt to an icon"
+      );
+      const icon = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const icon = card.querySelector(".banner-update-icon");
+         const row = card.querySelector(".banner-update-prompt");
+         return { ok: !icon.hidden && row.hidden, why: "icon hidden or row shown" };`
+      );
+      assert.equal(icon.ok, true, icon.why);
+
+      const expanded = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const icon = card.querySelector(".banner-update-icon");
+         if (!icon || icon.hidden) return { ok: false, why: "no icon" };
+         icon.click();
+         return { ok: true };`
+      );
+      assert.equal(expanded.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice?.state === "prompt"),
+        true,
+        "the icon reopens the prompt"
+      );
+
+      const clicked = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const apply = card.querySelector(".update-apply");
+         if (!apply || apply.hidden) return { ok: false, why: "no update button" };
+         apply.click();
+         return { ok: true };`
+      );
+      assert.equal(clicked.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice?.state === "installed", 10_000),
+        true,
+        "the installer result reaches the bar"
+      );
+      const installed = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const label = card.querySelector(".update-label");
+         const apply = card.querySelector(".update-apply");
+         return {
+           ok: label.textContent === "Updated. Restart client." && apply.hidden,
+           why: "label=" + label.textContent,
+         };`
+      );
+      assert.equal(installed.ok, true, installed.why);
+
+      const cleared = await pollUi(
+        runtime,
+        ".sk-banner",
+        `card.querySelector(".banner-dismiss").click();
+         return { ok: true };`
+      );
+      assert.equal(cleared.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice === null),
+        true,
+        "dismissing the installed notice clears it"
+      );
+      const hidden = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const update = card.querySelector(".banner-update");
+         return { ok: update.hidden, why: "update row still visible" };`
+      );
+      assert.equal(hidden.ok, true, hidden.why);
+
+      await runtime.checkForUpdates({ statePath });
+      assert.equal(
+        runtime.hub.updateNotice?.state,
+        "icon",
+        "the release was prompted before, so only the icon returns"
+      );
+    });
+
+    it("surfaces an installer failure and offers a retry", async () => {
+      installResult = { ok: false, message: "registry unavailable" };
+      runtime.hub.setUpdateNotice({
+        state: "prompt",
+        currentVersion: "0.4.0",
+        latestVersion: "0.7.0",
+      });
+      const clicked = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const apply = card.querySelector(".update-apply");
+         if (!apply || apply.hidden) return { ok: false, why: "no update button" };
+         apply.click();
+         return { ok: true };`
+      );
+      assert.equal(clicked.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice?.state === "failed", 10_000),
+        true,
+        "the failure reaches the bar"
+      );
+      const failed = await pollUi(
+        runtime,
+        ".sk-banner",
+        `const label = card.querySelector(".update-label");
+         const apply = card.querySelector(".update-apply");
+         return {
+           ok: label.textContent === "Update failed" &&
+             !apply.hidden && apply.textContent === "Retry" &&
+             label.title.includes("registry unavailable"),
+           why: "label=" + label.textContent + " apply=" + apply.textContent +
+             " title=" + label.title,
+         };`
+      );
+      assert.equal(failed.ok, true, failed.why);
+
+      const dismissed = await pollUi(
+        runtime,
+        ".sk-banner",
+        `card.querySelector(".banner-dismiss").click();
+         return { ok: true };`
+      );
+      assert.equal(dismissed.ok, true);
+      assert.equal(
+        await waitFor(() => runtime.hub.updateNotice?.state === "icon"),
+        true,
+        "a failure collapses to the icon too"
+      );
     });
   }
 );

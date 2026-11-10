@@ -42,6 +42,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   global install command for npm, pnpm, yarn, or bun. `--check` reports the
   versions without installing, and `--manager` overrides detection. `doctor`
   prints the same status as an advisory `Update` line.
+- The MCP server checks npm once at startup and offers a newer release in the
+  browser banner. The first discovery prompts with **Update** and dismiss;
+  dismissing leaves a small icon that reopens the prompt, and the prompt is
+  remembered per release so later sessions only show the icon. **Update** runs
+  the global install from the authenticated banner and reports the result
+  there. No MCP tool can install software, and `ZEN_MCP_NO_UPDATE_CHECK`
+  disables the check.
 
 ## [0.4.0] - 2026-11-08
 

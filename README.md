@@ -92,6 +92,9 @@ To upgrade later, run `zen-mcp update`. It checks npm, compares the latest
 release with the installed version, and runs the matching global install
 command (`npm`, `pnpm`, `yarn`, or `bun`). `zen-mcp update --check` only
 reports the versions, and `zen-mcp doctor` includes the same update status.
+The running server also checks once at startup and offers a newer release in
+the browser banner: **Update** installs it, and dismissing leaves a small
+icon that reopens the offer.
 
 Or run setup without a global install:
 

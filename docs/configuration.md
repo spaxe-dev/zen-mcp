@@ -24,6 +24,8 @@ zen-mcp config set <key> <value>
 
 `update` reads the latest version of `@spaxe-dev/zen-mcp` from the npm registry and compares it with the running version. When a newer release exists it runs the matching global install command: `npm install -g`, `pnpm add -g`, `yarn global add`, or `bun add -g`. The package manager is detected from the environment; `--manager` overrides it. `--check` prints the versions and exits without installing. `doctor` prints the same status as an advisory `Update` line; a failed registry lookup is reported but never fails the command.
 
+The MCP server also checks npm once at startup. When a newer release exists, the browser banner offers it: the first discovery shows the version with **Update** and dismiss buttons, dismissing collapses it to a small download icon, and clicking that icon reopens the prompt. **Update** runs the same global install and reports the result in the bar. Only a click in the authenticated banner can start it; no MCP tool can install software. The first-discovery prompt is remembered per release in `update.json` in the data directory, so later sessions only show the icon. Set `ZEN_MCP_NO_UPDATE_CHECK` to skip the check and the banner notice entirely.
+
 `setup` options:
 
 | Option | Effect |
@@ -113,7 +115,7 @@ Environment variables override the file for that process. They are never written
 | Variable | Effect |
 | --- | --- |
 | `ZEN_MCP_CONFIG` | Config file path |
-| `ZEN_MCP_DATA_DIR` | Sessions, templates, audit log, and the default agent profile directory |
+| `ZEN_MCP_DATA_DIR` | Sessions, templates, audit log, update prompt memory, and the default agent profile directory |
 | `ZEN_MCP_ZEN_PATH` | Zen executable |
 | `ZEN_MCP_PROFILE` | Custom agent profile directory |
 | `ZEN_MCP_USE_DEFAULT_PROFILE` | `1`, `true`, `yes`, or `on` uses Zen's normal profile instead of the dedicated one |
@@ -125,6 +127,7 @@ Environment variables override the file for that process. They are never written
 | `ZEN_MCP_ALLOWED_DOMAINS` | Comma-separated domain allowlist |
 | `ZEN_MCP_AUDIT_LOG` | `1`, `true`, `yes`, or `on` enables the audit log |
 | `ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS` | Lower bound for watch polling |
+| `ZEN_MCP_NO_UPDATE_CHECK` | `1`, `true`, `yes`, or `on` skips the npm release check and the banner notice |
 | `ZEN_MCP_LOG` | `debug`, `info`, `warn`, or `error` |
 | `ZEN_MCP_BRIDGE_SCRIPT` | Override the bundled `bridge.js` path; `doctor` warns when set |
 

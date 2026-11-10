@@ -1,12 +1,14 @@
 import type {
   ActivityTone,
   AnswerStatus,
+  BannerState,
   UiActivity,
   UiActivityAction,
   UiBanner,
   UiConsent,
   UiProgress,
   UiQuestion,
+  UiUpdateNotice,
 } from "../shared/protocol.js";
 
 export interface QuestionAnswer {
@@ -36,6 +38,8 @@ export interface ProgressHandlers {
   onConsent?(id: string, granted: boolean): boolean;
   /** Returns false when the pause or resume request could not be delivered. */
   onBannerAction?(action: "pause" | "resume"): boolean;
+  /** Returns false when the update action could not be delivered. */
+  onUpdateAction?(action: "install" | "dismiss" | "expand"): boolean;
 }
 
 interface StoredQuestion {
@@ -157,7 +161,8 @@ const STYLE = `
   color: var(--sk-muted);
   overflow-wrap: anywhere;
 }
-.banner-button {
+.banner-button,
+.update-apply {
   flex: none;
   padding: 5px 9px;
   border-radius: 7px;
@@ -170,8 +175,10 @@ const STYLE = `
   cursor: pointer;
   white-space: nowrap;
 }
-.banner-button:hover { background: var(--sk-hover); }
-.banner-button:focus-visible {
+.banner-button:hover,
+.update-apply:hover { background: var(--sk-hover); }
+.banner-button:focus-visible,
+.update-apply:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--sk-accent) 65%, transparent);
   outline-offset: 1px;
 }
@@ -179,6 +186,66 @@ const STYLE = `
   border-color: color-mix(in srgb, var(--sk-success) 42%, transparent);
   background: color-mix(in srgb, var(--sk-success) 12%, transparent);
   color: var(--sk-success);
+}
+.banner-update,
+.banner-update-prompt {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.banner-update[hidden],
+.banner-update-icon[hidden],
+.banner-update-prompt[hidden],
+.banner-dismiss[hidden],
+.update-apply[hidden] { display: none; }
+.banner-update-icon {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: var(--sk-faint);
+  color: var(--sk-accent);
+  cursor: pointer;
+}
+.banner-update-icon:hover { background: var(--sk-hover); }
+.banner-update-icon:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-accent) 65%, transparent);
+  outline-offset: 1px;
+}
+.banner-update-icon svg { width: 12px; height: 12px; display: block; }
+.update-label {
+  max-width: 112px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--sk-accent);
+  overflow-wrap: anywhere;
+}
+.update-label.muted { color: var(--sk-muted); font-weight: 550; }
+.banner-dismiss {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--sk-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.banner-dismiss:hover { color: var(--sk-fg); background: var(--sk-faint); }
+.banner-dismiss:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-accent) 65%, transparent);
+  outline-offset: 1px;
 }
 .consent { padding: 14px 15px 13px; }
 .consent-title {
@@ -575,6 +642,12 @@ export class ZenMcpUi {
   readonly #bannerTitle: HTMLElement;
   readonly #bannerDetail: HTMLElement;
   readonly #bannerButton: HTMLButtonElement;
+  readonly #bannerUpdate: HTMLElement;
+  readonly #updateIcon: HTMLButtonElement;
+  readonly #updatePrompt: HTMLElement;
+  readonly #updateLabel: HTMLElement;
+  readonly #updateApply: HTMLButtonElement;
+  readonly #updateDismiss: HTMLButtonElement;
   readonly #consentEl: HTMLElement;
   readonly #questionsEl: HTMLElement;
   readonly #progressEl: HTMLElement;
@@ -625,7 +698,55 @@ export class ZenMcpUi {
       const action = this.#bannerState === "paused" ? "resume" : "pause";
       this.#handlers.onBannerAction?.(action);
     });
-    this.#bannerEl.append(bannerDot, bannerText, this.#bannerButton);
+
+    this.#bannerUpdate = doc.createElement("span");
+    this.#bannerUpdate.className = "banner-update";
+    this.#bannerUpdate.hidden = true;
+    this.#updateIcon = doc.createElement("button");
+    this.#updateIcon.type = "button";
+    this.#updateIcon.className = "banner-update-icon";
+    this.#updateIcon.title = "Update available";
+    this.#updateIcon.setAttribute("aria-label", "Update available");
+    this.#updateIcon.appendChild(createDownloadIcon(doc));
+    this.#updateIcon.addEventListener("click", () => {
+      this.#handlers.onUpdateAction?.("expand");
+    });
+    this.#updatePrompt = doc.createElement("span");
+    this.#updatePrompt.className = "banner-update-prompt";
+    this.#updatePrompt.hidden = true;
+    this.#updatePrompt.setAttribute("role", "group");
+    this.#updatePrompt.setAttribute("aria-label", "Zen MCP update available");
+    this.#updateLabel = doc.createElement("span");
+    this.#updateLabel.className = "update-label";
+    this.#updateApply = doc.createElement("button");
+    this.#updateApply.type = "button";
+    this.#updateApply.className = "update-apply";
+    this.#updateApply.textContent = "Update";
+    this.#updateApply.setAttribute("aria-label", "Install the update");
+    this.#updateApply.addEventListener("click", () => {
+      this.#handlers.onUpdateAction?.("install");
+    });
+    this.#updateDismiss = doc.createElement("button");
+    this.#updateDismiss.type = "button";
+    this.#updateDismiss.className = "banner-dismiss";
+    this.#updateDismiss.textContent = "\u00d7";
+    this.#updateDismiss.title = "Dismiss";
+    this.#updateDismiss.setAttribute("aria-label", "Dismiss update notice");
+    this.#updateDismiss.addEventListener("click", () => {
+      this.#handlers.onUpdateAction?.("dismiss");
+    });
+    this.#updatePrompt.append(
+      this.#updateLabel,
+      this.#updateApply,
+      this.#updateDismiss
+    );
+    this.#bannerUpdate.append(this.#updateIcon, this.#updatePrompt);
+    this.#bannerEl.append(
+      bannerDot,
+      bannerText,
+      this.#bannerUpdate,
+      this.#bannerButton
+    );
 
     this.#consentEl = doc.createElement("div");
     this.#consentEl.className = "sk-consent-stack";
@@ -689,6 +810,7 @@ export class ZenMcpUi {
     this.#bannerEl.hidden = false;
     this.#bannerTitle.textContent = banner.text;
     setOptionalText(this.#bannerDetail, banner.detail);
+    this.#renderUpdate(banner.update, banner.state);
     this.#bannerButton.hidden = banner.state === "pending";
     this.#bannerButton.textContent =
       banner.state === "paused" ? "Resume" : "Pause";
@@ -696,6 +818,67 @@ export class ZenMcpUi {
       "aria-label",
       banner.state === "paused" ? "Resume agent access" : "Pause agent access"
     );
+  }
+
+  #renderUpdate(
+    update: UiUpdateNotice | null | undefined,
+    state: BannerState
+  ): void {
+    const notice = update ?? null;
+    // The consent and paused messages must stay unambiguous; the update is
+    // only offered while agent access is active.
+    const visible = !!notice && state === "active";
+    this.#bannerUpdate.hidden = !visible;
+    if (!notice || !visible) return;
+
+    const version = `v${notice.latestVersion}`;
+    this.#updateIcon.hidden = notice.state !== "icon";
+    this.#updateIcon.title = `Update ${version} available`;
+    this.#updateIcon.setAttribute(
+      "aria-label",
+      `Update ${version} available. Installed version ${notice.currentVersion}.`
+    );
+
+    this.#updatePrompt.hidden = notice.state === "icon";
+    if (notice.state === "icon") return;
+
+    this.#updateLabel.classList.remove("muted");
+    this.#updateLabel.title = "";
+    this.#updateApply.hidden = true;
+    this.#updateDismiss.hidden = false;
+
+    switch (notice.state) {
+      case "installing":
+        this.#updateLabel.textContent = `Updating to ${version}\u2026`;
+        this.#updateDismiss.hidden = true;
+        return;
+      case "installed":
+        this.#updateLabel.textContent = "Updated. Restart client.";
+        this.#updateLabel.title = `Zen MCP ${notice.latestVersion} is installed. Restart the MCP client to load it.`;
+        this.#updateLabel.classList.add("muted");
+        return;
+      case "failed":
+        this.#updateLabel.textContent = "Update failed";
+        this.#updateLabel.title =
+          notice.message ?? "Run `zen-mcp update` in a terminal.";
+        this.#updateApply.hidden = false;
+        this.#updateApply.textContent = "Retry";
+        this.#updateApply.setAttribute(
+          "aria-label",
+          `Retry installing Zen MCP ${version}`
+        );
+        return;
+      default:
+        this.#updateLabel.textContent = version;
+        this.#updateLabel.title = `Installed version ${notice.currentVersion}`;
+        this.#updateApply.hidden = false;
+        this.#updateApply.textContent = "Update";
+        this.#updateApply.setAttribute(
+          "aria-label",
+          `Install Zen MCP ${version}`
+        );
+        return;
+    }
   }
 
   showConsent(consent: UiConsent): void {
@@ -1395,6 +1578,22 @@ function setOptionalText(element: HTMLElement, value: string | undefined): void 
 
 function normalizeTone(tone: ActivityTone | undefined): ActivityTone {
   return tone === "success" || tone === "warning" ? tone : "info";
+}
+
+function createDownloadIcon(doc: Document): SVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = doc.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = doc.createElementNS(ns, "path");
+  path.setAttribute("d", "M8 2.5v7m0 0 2.75-2.75M8 9.5 5.25 6.75M3 12.5h10");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.6");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(path);
+  return svg;
 }
 
 function relativeLuminance(color: string): number {

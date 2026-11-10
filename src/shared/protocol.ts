@@ -94,11 +94,38 @@ export interface UiConsent {
 
 export type BannerState = "pending" | "active" | "paused";
 
+/** How the browser banner presents an available release. */
+export type UpdateNoticeState =
+  | "prompt"
+  | "icon"
+  | "installing"
+  | "installed"
+  | "failed";
+
+/**
+ * An npm release newer than the running server. The banner prompts once for a
+ * version, then keeps a small icon until the user installs or dismisses it.
+ */
+export interface UiUpdateNotice {
+  state: UpdateNoticeState;
+  currentVersion: string;
+  latestVersion: string;
+  /** Installer failure text, when state is "failed". */
+  message?: string;
+}
+
 /** Persistent, compact status strip in the browser window. */
 export interface UiBanner {
   state: BannerState;
   text: string;
   detail?: string;
+  update?: UiUpdateNotice | null;
+}
+
+export interface UiUpdateAction {
+  type: "ui.updateAction";
+  action: "install" | "dismiss" | "expand";
+  ts: number;
 }
 
 export interface UiConsentResult {
@@ -168,6 +195,7 @@ export type BridgeToServer =
   | UiStop
   | UiConsentResult
   | UiBannerAction
+  | UiUpdateAction
   | BridgeResponse
   | { type: "bridge.error"; message: string };
 

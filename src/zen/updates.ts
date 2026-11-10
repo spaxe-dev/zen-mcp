@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { SERVER_VERSION } from "../shared/brand.js";
 
 export const PACKAGE_NAME = "@spaxe-dev/zen-mcp";
@@ -177,4 +180,64 @@ export function updateCommand(
     default:
       return { command: "npm", args: ["install", "-g", spec] };
   }
+}
+
+/**
+ * Runs the global install. npm and pnpm are `.cmd` shims on Windows, so those
+ * need a shell; the command and arguments are fixed by updateCommand.
+ */
+export function runInstaller(
+  command: string,
+  args: string[],
+  options: { stdio?: "inherit" | "ignore" } = {}
+): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      stdio: options.stdio ?? "inherit",
+      shell: process.platform === "win32",
+    });
+    child.on("error", () => resolve(1));
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+}
+
+export interface UpdatePromptState {
+  /** The newest release the user has already been prompted about. */
+  promptedVersion?: string;
+}
+
+/**
+ * The prompt is shown once per release; after that the banner keeps only the
+ * small icon. A missing or unreadable state file counts as "not prompted".
+ */
+export function readUpdatePromptState(path: string): UpdatePromptState {
+  try {
+    const body = JSON.parse(readFileSync(path, "utf8")) as {
+      promptedVersion?: unknown;
+    };
+    return typeof body?.promptedVersion === "string"
+      ? { promptedVersion: body.promptedVersion }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeUpdatePromptState(
+  path: string,
+  state: UpdatePromptState
+): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(state), "utf8");
+  } catch {
+    // Losing this hint only means the prompt may show again next session.
+  }
+}
+
+export function shouldPromptUpdate(
+  promptedVersion: string | undefined,
+  latestVersion: string
+): boolean {
+  return promptedVersion !== latestVersion;
 }

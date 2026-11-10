@@ -133,6 +133,8 @@ import { ZenMcpUi } from "./ui.js";
       send({ type: "ui.consentResult", id, granted }),
     onBannerAction: (action) =>
       send({ type: "ui.bannerAction", action, ts: Date.now() }),
+    onUpdateAction: (action) =>
+      send({ type: "ui.updateAction", action, ts: Date.now() }),
   });
   const ops = createOps(win, windowId);
   // Last successful evidence request per tab, so "Show source" can re-run the

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   checkForUpdate,
@@ -6,8 +9,12 @@ import {
   detectPackageManager,
   isNewerVersion,
   PACKAGE_NAME,
+  readUpdatePromptState,
   REGISTRY_URL,
+  runInstaller,
+  shouldPromptUpdate,
   updateCommand,
+  writeUpdatePromptState,
 } from "../../src/zen/updates.js";
 
 const respond = (body: unknown, status = 200): any => ({
@@ -161,5 +168,38 @@ describe("package manager detection", () => {
       command: "bun",
       args: ["add", "-g", `${PACKAGE_NAME}@latest`],
     });
+  });
+
+  it("reports a non-zero code when the installer cannot run", async () => {
+    const code = await runInstaller(
+      "zen-mcp-no-such-installer-for-tests",
+      ["--version"],
+      { stdio: "ignore" }
+    );
+    assert.notEqual(code, 0);
+  });
+});
+
+describe("update prompt memory", () => {
+  it("prompts only the first time a release is seen", () => {
+    assert.equal(shouldPromptUpdate(undefined, "0.5.0"), true);
+    assert.equal(shouldPromptUpdate("0.4.0", "0.5.0"), true);
+    assert.equal(shouldPromptUpdate("0.5.0", "0.5.0"), false);
+  });
+
+  it("round-trips and tolerates missing or broken state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zen-mcp-update-test-"));
+    const file = join(dir, "update.json");
+    try {
+      assert.deepEqual(readUpdatePromptState(file), {});
+      writeUpdatePromptState(file, { promptedVersion: "0.5.0" });
+      assert.deepEqual(readUpdatePromptState(file), {
+        promptedVersion: "0.5.0",
+      });
+      writeFileSync(file, "{not json");
+      assert.deepEqual(readUpdatePromptState(file), {});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

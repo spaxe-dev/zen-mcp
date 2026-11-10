@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
 import {
   BridgeHub,
   BridgeRequestError,
@@ -9,7 +10,7 @@ import {
   type ProgressOptions,
   type ProgressResult,
 } from "../bridge/host.js";
-import type { ZenMcpConfig } from "../config.js";
+import { dataDirPath, type ZenMcpConfig } from "../config.js";
 import type {
   AnswersResult,
   AskResult,
@@ -53,6 +54,17 @@ import {
 } from "./launcher.js";
 import { MarionetteClient } from "./marionette.js";
 import { readActivePage, readTabPage } from "./page.js";
+import {
+  checkForUpdate,
+  detectPackageManager,
+  PACKAGE_NAME,
+  readUpdatePromptState,
+  runInstaller,
+  shouldPromptUpdate,
+  updateCommand,
+  writeUpdatePromptState,
+  type UpdateInfo,
+} from "./updates.js";
 
 const MAX_WATCH_SAMPLE_CHARS = 60_000;
 const MAX_WATCHES = 50;
@@ -76,6 +88,10 @@ export interface ZenRuntimeOptions {
   config: ZenMcpConfig;
   bridgeScriptPath?: string;
   logger?: Logger;
+  /** Test seam: checks a release without contacting the npm registry. */
+  checkUpdate?: () => Promise<UpdateInfo>;
+  /** Test seam: replaces the global installer behind the browser bar. */
+  installUpdate?: () => Promise<{ ok: boolean; message?: string }>;
 }
 
 export class ZenAccessError extends Error {
@@ -163,6 +179,7 @@ export class ZenRuntime {
   readonly marionette: MarionetteClient;
   readonly hub: BridgeHub;
   readonly #logger: Logger;
+  readonly #checkUpdate: () => Promise<UpdateInfo>;
 
   #ensurePromise: Promise<ConnectResult> | null = null;
   #closed = false;
@@ -182,12 +199,68 @@ export class ZenRuntime {
       port: options.config.marionettePort,
       logger: this.#logger,
     });
+    this.#checkUpdate =
+      options.checkUpdate ?? (() => checkForUpdate({ timeoutMs: 2_500 }));
     this.hub = new BridgeHub({
       marionette: this.marionette,
       bridgeScriptPath: options.bridgeScriptPath,
       logger: this.#logger,
       allowedDomains: options.config.allowedDomains,
+      installUpdate: options.installUpdate ?? (() => this.installUpdate()),
     });
+  }
+
+  /**
+   * Checks npm once per server start. A newer release is offered in the
+   * browser banner; the first discovery prompts, later ones only show an icon.
+   * Failures and older releases leave the banner untouched.
+   */
+  async checkForUpdates(options: { statePath?: string } = {}): Promise<void> {
+    if (process.env.ZEN_MCP_NO_UPDATE_CHECK === "1") return;
+    let info: UpdateInfo;
+    try {
+      info = await this.#checkUpdate();
+    } catch (error) {
+      this.#logger.debug(
+        `update check failed: ${String((error as Error)?.message ?? error)}`
+      );
+      return;
+    }
+    if (!info.updateAvailable || !info.latestVersion) return;
+    const statePath = options.statePath ?? join(dataDirPath(), "update.json");
+    const prompt = shouldPromptUpdate(
+      readUpdatePromptState(statePath).promptedVersion,
+      info.latestVersion
+    );
+    if (prompt) {
+      writeUpdatePromptState(statePath, { promptedVersion: info.latestVersion });
+    }
+    this.hub.setUpdateNotice({
+      state: prompt ? "prompt" : "icon",
+      currentVersion: info.currentVersion,
+      latestVersion: info.latestVersion,
+    });
+  }
+
+  /**
+   * Runs the global install behind the banner's Update button. This is only
+   * reachable from an authenticated user click in the browser; no MCP tool
+   * can call it.
+   */
+  async installUpdate(): Promise<{ ok: boolean; message?: string }> {
+    const manager = detectPackageManager();
+    const { command, args } = updateCommand(manager);
+    this.#logger.info(
+      `installing ${PACKAGE_NAME}@latest with ${manager} from the browser bar`
+    );
+    const code = await runInstaller(command, args, { stdio: "ignore" });
+    if (code !== 0) {
+      return {
+        ok: false,
+        message: `${command} ${args.join(" ")} exited with code ${code}.`,
+      };
+    }
+    return { ok: true };
   }
 
   async start(): Promise<void> {

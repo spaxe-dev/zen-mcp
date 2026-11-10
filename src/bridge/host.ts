@@ -45,6 +45,7 @@ import type {
   UiOption,
   UiProgress,
   UiQuestion,
+  UiUpdateNotice,
 } from "../shared/protocol.js";
 import {
   hostOf,
@@ -82,6 +83,11 @@ export interface BridgeHubOptions {
   serverVersion?: string;
   /** Hostname allowlist applied to navigation and page content. */
   allowedDomains?: string[];
+  /**
+   * Runs the one-click update. Only reachable from the authenticated banner;
+   * no MCP tool can call it.
+   */
+  installUpdate?: () => Promise<{ ok: boolean; message?: string }>;
 }
 
 interface BridgeConnection {
@@ -214,6 +220,9 @@ export class BridgeHub {
   #consent: PendingConsent | null = null;
   readonly #consentWaiters = new Set<(outcome: ConsentOutcome) => void>();
   #banner: UiBanner | null = null;
+  #update: UiUpdateNotice | null = null;
+  #installingUpdate = false;
+  #updateInstaller?: () => Promise<{ ok: boolean; message?: string }>;
   #activeBanner: UiBanner = {
     state: "active",
     text: "Zen MCP is controlling this window",
@@ -236,6 +245,7 @@ export class BridgeHub {
     this.#bridgeDir = dirname(this.#bridgeScriptPath);
     this.#bridgeFile = basename(this.#bridgeScriptPath);
     this.#allowedDomains = [...(options.allowedDomains ?? [])];
+    this.#updateInstaller = options.installUpdate;
   }
 
   get port(): number {
@@ -270,7 +280,7 @@ export class BridgeHub {
   }
 
   get banner(): UiBanner | null {
-    return this.#banner;
+    return this.#composeBanner(this.#banner);
   }
 
   get primaryWindowId(): string | null {
@@ -449,8 +459,9 @@ export class BridgeHub {
           serverVersion: this.#serverVersion,
         });
         this.#resendPendingQuestions(connection);
-        if (this.#banner) {
-          this.#send(connection, { type: "ui.banner", banner: this.#banner });
+        const banner = this.banner;
+        if (banner) {
+          this.#send(connection, { type: "ui.banner", banner });
         }
         if (this.#consent?.state === "pending") {
           this.#send(connection, {
@@ -509,6 +520,10 @@ export class BridgeHub {
           } else if (message.action === "resume") {
             this.resume();
           }
+          return;
+        }
+        case "ui.updateAction": {
+          this.#onUpdateAction(message.action);
           return;
         }
         case "res": {
@@ -639,7 +654,82 @@ export class BridgeHub {
 
   #setBanner(banner: UiBanner | null): void {
     this.#banner = banner;
-    this.#broadcast({ type: "ui.banner", banner });
+    this.#broadcast({ type: "ui.banner", banner: this.banner });
+  }
+
+  /**
+   * Stores an available release and refreshes the bar. A prompt is only
+   * attached to the active banner, so the consent and paused messages stay
+   * unambiguous; the notice is still kept for when access resumes.
+   */
+  setUpdateNotice(notice: UiUpdateNotice | null): void {
+    this.#update = notice;
+    if (this.#banner) {
+      this.#broadcast({ type: "ui.banner", banner: this.banner });
+    }
+  }
+
+  get updateNotice(): UiUpdateNotice | null {
+    return this.#update;
+  }
+
+  #composeBanner(banner: UiBanner | null): UiBanner | null {
+    if (!banner) return null;
+    if (!this.#update || banner.state !== "active") return { ...banner };
+    return { ...banner, update: this.#update };
+  }
+
+  #onUpdateAction(action: "install" | "dismiss" | "expand"): void {
+    const update = this.#update;
+    if (!update) return;
+    if (action === "dismiss") {
+      if (update.state === "icon" || update.state === "installing") return;
+      if (update.state === "installed") {
+        this.setUpdateNotice(null);
+        return;
+      }
+      this.setUpdateNotice({ ...update, state: "icon", message: undefined });
+      return;
+    }
+    if (action === "expand") {
+      if (update.state !== "icon") return;
+      this.setUpdateNotice({ ...update, state: "prompt" });
+      return;
+    }
+    if (this.#installingUpdate) return;
+    if (update.state !== "prompt" && update.state !== "failed") return;
+    void this.#applyUpdate(update);
+  }
+
+  async #applyUpdate(update: UiUpdateNotice): Promise<void> {
+    if (!this.#updateInstaller) {
+      this.setUpdateNotice({
+        ...update,
+        state: "failed",
+        message: "No installer is available in this session.",
+      });
+      return;
+    }
+    this.#installingUpdate = true;
+    this.setUpdateNotice({ ...update, state: "installing", message: undefined });
+    let result: { ok: boolean; message?: string };
+    try {
+      result = await this.#updateInstaller();
+    } catch (error) {
+      result = { ok: false, message: String((error as Error)?.message ?? error) };
+    } finally {
+      this.#installingUpdate = false;
+    }
+    this.setUpdateNotice({
+      ...update,
+      state: result.ok ? "installed" : "failed",
+      message: result.ok ? undefined : result.message ?? "The installer failed.",
+    });
+    this.#logger.info(
+      result.ok
+        ? `installed ${update.latestVersion} from the browser bar`
+        : `update install failed: ${result.message ?? "unknown error"}`
+    );
   }
 
   /** Sets the wording of the banner shown while access is granted. */

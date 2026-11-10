@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { Command, InvalidArgumentError } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -32,6 +31,7 @@ import {
   isPackageManager,
   PACKAGE_MANAGERS,
   PACKAGE_NAME,
+  runInstaller,
   updateCommand,
   type PackageManager,
   type UpdateInfo,
@@ -196,6 +196,7 @@ async function serve(): Promise<void> {
   transport.onclose = () => void stop("stdio closed");
 
   await server.connect(transport);
+  void runtime.checkForUpdates();
   logger.info(`${BRAND} ${SERVER_VERSION} ready on stdio`);
 }
 
@@ -357,21 +358,6 @@ async function update(options: {
     "Installed. Restart any MCP client that runs `zen-mcp serve` to load " +
       "the new version."
   );
-}
-
-function runInstaller(command: string, args: string[]): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      stdio: "inherit",
-      // npm and pnpm are .cmd shims on Windows.
-      shell: process.platform === "win32",
-    });
-    child.on("error", (error) => {
-      console.error(`Could not run ${command}: ${error.message}`);
-      resolve(1);
-    });
-    child.on("close", (code) => resolve(code ?? 1));
-  });
 }
 
 async function setup(options: {
