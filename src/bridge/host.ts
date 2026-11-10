@@ -1024,14 +1024,26 @@ export class BridgeHub {
     windowId?: string,
     options: { signal?: AbortSignal } = {}
   ): Promise<PageReadResult> {
-    const page = await this.request("tabs.read", params, {
-      windowId,
-      // PDF extraction waits for the viewer, and rich formats do more work.
-      timeoutMs: 40_000,
-      signal: options.signal,
-    });
+    const page = await this.request(
+      "tabs.read",
+      { ...params, allowedDomains: this.#allowedDomains },
+      {
+        windowId,
+        // PDF extraction waits for the viewer, and rich formats do more work.
+        timeoutMs: 40_000,
+        signal: options.signal,
+      }
+    );
     if (page.url) {
       this.#assertUrlAllowed(page.url, "Refusing to return content from");
+    }
+    for (const frame of page.frames ?? []) {
+      if (frame.url) {
+        this.#assertUrlAllowed(
+          frame.url,
+          "Refusing to return content from frame"
+        );
+      }
     }
     return page;
   }
@@ -1049,6 +1061,9 @@ export class BridgeHub {
     if (result.url) {
       this.#assertUrlAllowed(result.url, "Refusing to act on");
     }
+    if (result.frameUrl) {
+      this.#assertUrlAllowed(result.frameUrl, "Refusing to act in frame");
+    }
     return result;
   }
 
@@ -1064,6 +1079,9 @@ export class BridgeHub {
     );
     if (result.url) {
       this.#assertUrlAllowed(result.url, "Refusing to act on");
+    }
+    if (result.frameUrl) {
+      this.#assertUrlAllowed(result.frameUrl, "Refusing to act in frame");
     }
     return result;
   }

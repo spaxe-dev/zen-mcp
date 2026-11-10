@@ -38,6 +38,8 @@ import type {
   OpenTabsResult,
   OpenedTab,
   PageActionTargetInfo,
+  PageElement,
+  PageFrame,
   PageReadResult,
   PinTabsParams,
   PinTabsResult,
@@ -68,6 +70,7 @@ import {
   buildReadScript,
   buildResolveTargetScript,
   coercePageSnapshot,
+  MAX_PAGE_ELEMENTS,
   toPageReadResult,
 } from "../shared/read-script.js";
 import {
@@ -82,6 +85,12 @@ import {
   createEvidenceMarker,
 } from "../shared/evidence-script.js";
 import { findEvidenceQuote } from "../shared/evidence.js";
+import {
+  frameRefPrefix,
+  MAX_FRAME_DEPTH,
+  normalizeFramePath,
+  parseFrameRef,
+} from "../shared/frame-path.js";
 import { findLiteralMatches } from "../shared/search.js";
 import { isUrlAllowed, normalizeWebUrl } from "../shared/url-policy.js";
 import { activateTab, type TabActivationOutcome } from "./tab-activation.js";
@@ -117,6 +126,10 @@ const LAYOUT_SETTLE_MS = 120;
 /** How long a closed split view may take to clear before it counts as failed. */
 const SPLIT_CLOSE_TIMEOUT_MS = 1_000;
 const SPLIT_CLOSE_POLL_MS = 100;
+/** Frames listed or scanned for one read. */
+const MAX_FRAMES = 20;
+/** Frame reads merged into one interactive snapshot. */
+const MAX_FRAME_SCANS = 10;
 
 function isHttpUrl(url: string): boolean {
   try {
@@ -253,6 +266,14 @@ interface ResolvedPageTarget {
   readOnly?: boolean;
   sensitive?: boolean;
   editable?: boolean;
+}
+
+/** A frame's actor plus the path and URL used to reach it. */
+interface ResolvedFrame {
+  actor: any;
+  path: number[];
+  url: string;
+  name: string;
 }
 
 /**
@@ -860,6 +881,153 @@ export function createOps(win: ChromeWindow, windowId: string) {
     return actor;
   };
 
+  /** The process actor for one browsing context, if it is loaded. */
+  const actorForContext = (context: any): any => {
+    const global = context?.currentWindowGlobal;
+    if (!global) return null;
+    return typeof global.getActor === "function"
+      ? global.getActor("MarionetteCommands")
+      : null;
+  };
+
+  const childFrameContexts = (context: any): any[] => {
+    try {
+      return Array.from(context?.children ?? []);
+    } catch {
+      return [];
+    }
+  };
+
+  const frameUrlOfContext = (context: any): string => {
+    try {
+      const spec = context?.currentWindowGlobal?.documentURI?.spec;
+      if (typeof spec === "string") return spec;
+    } catch {
+      // The frame may be navigating or already gone.
+    }
+    return "";
+  };
+
+  const frameNameOfContext = (context: any): string => {
+    try {
+      return String(context?.name ?? "");
+    } catch {
+      return "";
+    }
+  };
+
+  const frameIsVisible = (
+    url: string,
+    allowedDomains: string[] | undefined
+  ): boolean => {
+    if (!isHttpUrl(url)) return false;
+    return !allowedDomains?.length || isUrlAllowed(url, allowedDomains);
+  };
+
+  const requireFramePath = (raw: unknown): number[] => {
+    const path = normalizeFramePath(raw);
+    if (!path) {
+      throw new OpsError(
+        "invalid_frame",
+        `framePath must be an array of at most ${MAX_FRAME_DEPTH} non-negative ` +
+          "child frame indexes, such as [0] or [0,1]."
+      );
+    }
+    return path;
+  };
+
+  /** Lists reachable http(s) frames depth-first, filtered by the allowlist. */
+  const listFrames = (
+    tab: ChromeTab,
+    allowedDomains: string[] | undefined
+  ): { frames: PageFrame[]; skipped: number; truncated: boolean } => {
+    const frames: PageFrame[] = [];
+    let skipped = 0;
+    let truncated = false;
+    const root = tab.linkedBrowser?.browsingContext;
+    const walk = (context: any, prefix: number[]): void => {
+      for (const [index, child] of childFrameContexts(context).entries()) {
+        if (frames.length >= MAX_FRAMES) {
+          truncated = true;
+          return;
+        }
+        const path = [...prefix, index];
+        const url = frameUrlOfContext(child);
+        if (!frameIsVisible(url, allowedDomains)) {
+          skipped += 1;
+          continue;
+        }
+        frames.push({ path, url, name: frameNameOfContext(child) });
+        if (path.length < MAX_FRAME_DEPTH) walk(child, path);
+      }
+    };
+    if (root) walk(root, []);
+    return { frames, skipped, truncated };
+  };
+
+  const resolveFrame = (
+    tab: ChromeTab,
+    path: number[],
+    allowedDomains: string[] | undefined
+  ): ResolvedFrame => {
+    let context = tab.linkedBrowser?.browsingContext;
+    if (!context) {
+      throw new OpsError(
+        "tab_not_loaded",
+        `The tab "${tabTitle(tab)}" has no loaded page yet.`
+      );
+    }
+    for (let depth = 0; depth < path.length; depth += 1) {
+      const index = path[depth];
+      const children = childFrameContexts(context);
+      if (index >= children.length) {
+        throw new OpsError(
+          "frame_not_found",
+          `Frame path [${path.join(", ")}] does not exist: the document at ` +
+            `level ${depth} has ${children.length} child frame(s).`
+        );
+      }
+      context = children[index];
+    }
+    const url = frameUrlOfContext(context);
+    if (!url) {
+      throw new OpsError(
+        "frame_not_loaded",
+        `The frame at [${path.join(", ")}] has not loaded a page yet.`
+      );
+    }
+    if (!isHttpUrl(url)) {
+      throw new OpsError(
+        "unsupported_frame",
+        "Zen MCP only reads and drives http(s) frames. This frame is " +
+          `${isPrivilegedUrl(url) ? "browser-internal" : "not a web page"}.`
+      );
+    }
+    assertActionUrlAllowed(url, allowedDomains, "reading frame");
+    const actor = actorForContext(context);
+    if (!actor) {
+      throw new OpsError(
+        "actor_unavailable",
+        "Zen MCP's Marionette session does not expose page interaction in " +
+          "this frame. Restart Zen with zen_launch."
+      );
+    }
+    return { actor, path: [...path], url, name: frameNameOfContext(context) };
+  };
+
+  /** Best-effort frame URL, used to report where an action landed. */
+  const currentFrameUrl = (
+    tab: ChromeTab,
+    path: number[]
+  ): string | null => {
+    let context = tab.linkedBrowser?.browsingContext;
+    for (const index of path) {
+      if (!context) return null;
+      context = childFrameContexts(context)[index];
+    }
+    return frameUrlOfContext(context) || null;
+  };
+
   const requireActionTab = (tabId: string, action: string): ChromeTab => {
     if (!tabId) {
       throw new OpsError("no_tab", `Provide the tabId to ${action}.`);
@@ -899,8 +1067,14 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
   const resolvePageTarget = async (
     tab: ChromeTab,
-    params: { ref?: string; selector?: string }
-  ): Promise<ResolvedPageTarget> => {
+    params: { ref?: string; selector?: string },
+    allowedDomains?: string[]
+  ): Promise<{
+    target: ResolvedPageTarget;
+    actor: any;
+    framePath: number[];
+    frameUrl: string | null;
+  }> => {
     const ref =
       typeof params?.ref === "string" ? params.ref.trim() : "";
     const selector =
@@ -911,10 +1085,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
         "Provide exactly one of ref or selector."
       );
     }
-    if (ref && !/^e[0-9]{1,4}$/.test(ref)) {
+    const parsed = ref ? parseFrameRef(ref) : null;
+    if (ref && !parsed) {
       throw new OpsError(
         "invalid_target",
-        `"${ref}" is not an interactive-read ref. Use a value such as "e1".`
+        `"${ref}" is not an interactive-read ref. Use a value such as ` +
+          '"e1", "f0-e3" for a child frame, or "f0.1-e2" for a nested frame.'
       );
     }
     if (selector.length > 500) {
@@ -924,12 +1100,15 @@ export function createOps(win: ChromeWindow, windowId: string) {
       );
     }
 
-    const actor = pageActor(tab);
+    const frame = parsed?.path.length
+      ? resolveFrame(tab, parsed.path, allowedDomains)
+      : null;
+    const actor = frame?.actor ?? pageActor(tab);
     let raw: unknown;
     try {
       raw = await actor.sendQuery("MarionetteCommandsParent:executeScript", {
         script: buildResolveTargetScript({
-          ...(ref ? { ref } : {}),
+          ...(parsed ? { ref: parsed.ref } : {}),
           ...(selector ? { selector } : {}),
         }),
         args: [],
@@ -955,7 +1134,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
           : `No element matches selector "${selector}".`
       );
     }
-    return target;
+    return {
+      target,
+      actor,
+      framePath: frame?.path ?? [],
+      frameUrl: frame?.url ?? null,
+    };
   };
 
   const actionTarget = (
@@ -1324,6 +1508,8 @@ export function createOps(win: ChromeWindow, windowId: string) {
         : 0;
       const format = params?.format;
       const selector = params?.selector ? String(params.selector).trim() : undefined;
+      const framePath = requireFramePath(params?.framePath);
+      const allowedDomains = params?.allowedDomains;
 
       if (format === "interactive" && isPdfTab(tab)) {
         throw new OpsError(
@@ -1336,30 +1522,45 @@ export function createOps(win: ChromeWindow, windowId: string) {
       // PDFs render in the pdf.js viewer, which the page read script cannot
       // see. Their text comes straight from the viewer instead.
       if (isPdfTab(tab)) {
+        if (framePath.length) {
+          throw new OpsError(
+            "unsupported_frame",
+            "PDF text is only read from the tab's top-level document."
+          );
+        }
         return readPdfTab(tab, maxChars, offset);
       }
-      const contentType = contentTypeOf(tab);
+
+      const frame = framePath.length
+        ? resolveFrame(tab, framePath, allowedDomains)
+        : null;
+      const contentType = frame ? null : contentTypeOf(tab);
 
       // Marionette's content context only sees tabs in gBrowser, so tabs in an
       // inactive space cannot be reached that way. The driver's content actor
       // executes the same script inside any loaded browsing context, which is
       // what makes non-disruptive background research possible.
-      const actor = pageActor(tab);
+      const runRead = (
+        actor: any,
+        refPrefix: string
+      ): Promise<unknown> =>
+        actor.sendQuery("MarionetteCommandsParent:executeScript", {
+          script: buildReadScript({
+            maxChars,
+            offset,
+            ...(format ? { format } : {}),
+            ...(selector ? { selector } : {}),
+            ...(refPrefix ? { refPrefix } : {}),
+          }),
+          args: [],
+          opts: { timeout: 15_000 },
+        });
 
       let raw: unknown;
       try {
-        raw = await actor.sendQuery(
-          "MarionetteCommandsParent:executeScript",
-          {
-            script: buildReadScript({
-              maxChars,
-              offset,
-              ...(format ? { format } : {}),
-              ...(selector ? { selector } : {}),
-            }),
-            args: [],
-            opts: { timeout: 15_000 },
-          }
+        raw = await runRead(
+          frame?.actor ?? pageActor(tab),
+          frameRefPrefix(framePath)
         );
       } catch (error) {
         throw new OpsError(
@@ -1385,13 +1586,110 @@ export function createOps(win: ChromeWindow, windowId: string) {
           `No element matches selector "${selector}"`
         );
       }
+
+      const listed = listFrames(tab, allowedDomains);
+      const notes: string[] = [];
+      if (listed.skipped > 0) {
+        notes.push(
+          `${listed.skipped} frame(s) were skipped because they are not ` +
+            "http(s) pages or are outside the domain allowlist."
+        );
+      }
+      if (listed.truncated) {
+        notes.push(
+          `Only the first ${MAX_FRAMES} frames are listed; deeper frames were ` +
+            "not inspected."
+        );
+      }
+
+      if (format === "interactive" && !selector) {
+        const descendants = listed.frames.filter(
+          (candidate) =>
+            candidate.path.length > framePath.length &&
+            framePath.every(
+              (index, position) => candidate.path[position] === index
+            )
+        );
+        const scanned = descendants.slice(0, MAX_FRAME_SCANS);
+        if (descendants.length > scanned.length) {
+          notes.push(
+            `Only the first ${MAX_FRAME_SCANS} frames were scanned for ` +
+              "controls."
+          );
+        }
+
+        const merged: PageElement[] = (page.elements ?? []).map((element) =>
+          framePath.length
+            ? {
+                ...element,
+                framePath: [...framePath],
+                frameUrl: frame?.url ?? null,
+              }
+            : element
+        );
+        let truncated = page.elementsTruncated === true;
+        const pending = scanned.map(async (candidate) => {
+          try {
+            const context = resolveFrame(tab, candidate.path, allowedDomains);
+            const frameRaw = await runRead(
+              context.actor,
+              frameRefPrefix(candidate.path)
+            );
+            return {
+              frame: candidate,
+              page: coercePageSnapshot(frameRaw),
+            };
+          } catch {
+            return { frame: candidate, page: null };
+          }
+        });
+        const outcomes = await Promise.all(pending);
+        let failed = 0;
+        for (const outcome of outcomes) {
+          if (!outcome.page) {
+            failed += 1;
+            continue;
+          }
+          if (outcome.page.elementsTruncated === true) truncated = true;
+          for (const element of outcome.page.elements ?? []) {
+            if (merged.length >= MAX_PAGE_ELEMENTS) {
+              truncated = true;
+              break;
+            }
+            merged.push({
+              ...element,
+              framePath: [...outcome.frame.path],
+              frameUrl: outcome.frame.url,
+            });
+          }
+        }
+        if (failed > 0) {
+          notes.push(`${failed} frame(s) could not be read.`);
+        }
+        page.elements = merged;
+        page.elementsTruncated = truncated;
+      } else if (format === "interactive" && listed.frames.length) {
+        notes.push(
+          "Frame controls are not included because selector was used."
+        );
+      }
+
       // A background tab can hide contentDocument from chrome scope, so omit
       // the override and let the read script's contentType through instead.
-      return toPageReadResult(page, {
+      const result = toPageReadResult(page, {
         maxChars,
         ...(contentType !== null ? { contentType } : {}),
         offset,
       }) satisfies PageReadResult;
+      result.frames = listed.frames;
+      if (framePath.length) result.framePath = framePath;
+      if (notes.length) {
+        const note = notes.join(" ");
+        result.limitation = result.limitation
+          ? `${result.limitation} ${note}`
+          : note;
+      }
+      return result;
     },
 
     "tabs.click": async (
@@ -1404,7 +1702,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
         params?.allowedDomains,
         "clicking in"
       );
-      const target = await resolvePageTarget(tab, params ?? {});
+      const resolved = await resolvePageTarget(
+        tab,
+        params ?? {},
+        params?.allowedDomains
+      );
+      const target = resolved.target;
       if (target.disabled) {
         throw new OpsError(
           "element_disabled",
@@ -1419,9 +1722,8 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
 
-      const actor = pageActor(tab);
       try {
-        await actor.sendQuery("MarionetteCommandsParent:clickElement", {
+        await resolved.actor.sendQuery("MarionetteCommandsParent:clickElement", {
           elem: target.element,
           capabilities: clickCapabilities,
         });
@@ -1441,6 +1743,14 @@ export function createOps(win: ChromeWindow, windowId: string) {
         url: isHttpUrl(url) ? url : "",
         title: tabTitle(tab),
         target: actionTarget(target),
+        ...(resolved.framePath.length
+          ? {
+              framePath: resolved.framePath,
+              frameUrl:
+                currentFrameUrl(tab, resolved.framePath) ??
+                resolved.frameUrl,
+            }
+          : {}),
       } satisfies ClickElementResult;
     },
 
@@ -1466,7 +1776,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
         params?.allowedDomains,
         "typing into"
       );
-      const target = await resolvePageTarget(tab, params ?? {});
+      const resolved = await resolvePageTarget(
+        tab,
+        params ?? {},
+        params?.allowedDomains
+      );
+      const target = resolved.target;
       if (target.disabled) {
         throw new OpsError(
           "element_disabled",
@@ -1487,18 +1802,23 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
 
-      const actor = pageActor(tab);
       try {
         if (clear) {
-          await actor.sendQuery("MarionetteCommandsParent:clearElement", {
-            elem: target.element,
-          });
+          await resolved.actor.sendQuery(
+            "MarionetteCommandsParent:clearElement",
+            {
+              elem: target.element,
+            }
+          );
         }
-        await actor.sendQuery("MarionetteCommandsParent:sendKeysToElement", {
-          elem: target.element,
-          text,
-          capabilities: typeCapabilities,
-        });
+        await resolved.actor.sendQuery(
+          "MarionetteCommandsParent:sendKeysToElement",
+          {
+            elem: target.element,
+            text,
+            capabilities: typeCapabilities,
+          }
+        );
       } catch (error) {
         throw new OpsError(
           "type_failed",
@@ -1516,6 +1836,14 @@ export function createOps(win: ChromeWindow, windowId: string) {
         url: isHttpUrl(url) ? url : "",
         title: tabTitle(tab),
         target: actionTarget(target),
+        ...(resolved.framePath.length
+          ? {
+              framePath: resolved.framePath,
+              frameUrl:
+                currentFrameUrl(tab, resolved.framePath) ??
+                resolved.frameUrl,
+            }
+          : {}),
         ...(target.sensitive
           ? {
               limitation:

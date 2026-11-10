@@ -14,6 +14,8 @@ export interface PageReadOptions {
   tabId?: string;
   format?: ReadFormat;
   selector?: string;
+  /** Child-frame indexes to read instead of the top document. */
+  framePath?: number[];
   /** Client cancellation for the underlying bridge request. */
   signal?: AbortSignal;
 }
@@ -46,6 +48,7 @@ export async function readActivePage(
       offset: options.offset,
       format: options.format,
       selector: options.selector,
+      framePath: options.framePath,
     },
     options.windowId,
     { signal: options.signal }
@@ -70,6 +73,7 @@ export async function readTabPage(
       offset: options.offset,
       format: options.format,
       selector: options.selector,
+      framePath: options.framePath,
     },
     options.windowId,
     { signal: options.signal }

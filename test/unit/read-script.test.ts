@@ -104,6 +104,50 @@ describe("page read script", () => {
     assert.match(script, /\[contenteditable='true'\]/);
     assert.match(script, /\[role='textbox'\]/);
     assert.match(script, /shadowRoot/);
+    assert.match(script, /var ref = refPrefix \+ "e"/);
+  });
+
+  it("embeds a frame ref prefix and ignores malformed ones", () => {
+    const framed = buildReadScript({
+      maxChars: 500,
+      format: "interactive",
+      refPrefix: "f0.1-",
+    });
+    assert.ok(framed.includes('const refPrefix = "f0.1-";'));
+
+    for (const invalid of ["f0", "f0.1", "x-", "f0.1.2.3-"]) {
+      const script = buildReadScript({
+        maxChars: 500,
+        format: "interactive",
+        refPrefix: invalid,
+      });
+      assert.ok(script.includes('const refPrefix = "";'), invalid);
+    }
+  });
+
+  it("copies frame metadata on interactive elements", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [
+        {
+          ref: "f0.1-e2",
+          tag: "button",
+          label: "Pay",
+          framePath: [0, 1],
+          frameUrl: "https://frame.example/checkout",
+        },
+      ],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.elements?.[0].ref, "f0.1-e2");
+    assert.deepEqual(result.elements?.[0].framePath, [0, 1]);
+    assert.equal(
+      result.elements?.[0].frameUrl,
+      "https://frame.example/checkout"
+    );
   });
 
   it("coerces interactive elements and clamps the list", () => {

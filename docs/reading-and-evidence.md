@@ -16,7 +16,9 @@ Formats:
 - `outline`: the heading tree.
 - `interactive`: visible controls with stable refs, for `zen_click` and `zen_type`.
 
-A separate `selector` option limits any format to one CSS-selected element. When `selector` is supplied and the element is missing, the read returns `selector_not_found` instead of falling back to the whole page. Text, Markdown, and the structured list formats read the rendered light DOM. Iframes (same-origin and cross-origin), shadow roots, canvas, images, SVG, and form controls are not included in those formats. `interactive` is the exception: it scans form controls and controls inside open shadow roots.
+A separate `selector` option limits any format to one CSS-selected element. When `selector` is supplied and the element is missing, the read returns `selector_not_found` instead of falling back to the whole page. Text, Markdown, and the structured list formats read the rendered light DOM of one document. Shadow roots, canvas, images, SVG, and form controls are not included in those formats. `interactive` is the exception: it scans form controls and controls inside open shadow roots, and at the top level it also collects controls from child frames.
+
+Iframes are read through `framePath`, an array of child frame indexes such as `[0]` or `[0,1]`. Every read result lists reachable http(s) frames under `frames`, each with its path, URL, and name, so the agent can drill in without guessing. A frame read returns that frame's document as `title`, `url`, `text`, and the other formats; `framePath` echoes the target. Frame paths are capped at three levels and listing stops after 20 frames; omitted frames are counted in `limitation`. Frames outside the domain allowlist and non-http(s) frames are never listed, read, or driven.
 
 The result includes the title, URL, selected text, content type, length, `offset`, and `nextOffset`. `maxChars` limits each chunk (24,000 by default, 60,000 maximum).
 
@@ -40,7 +42,7 @@ Offsets are positions in the extracted text, not the raw HTML. They stay stable 
 
 | Field | Meaning |
 | --- | --- |
-| `ref` | Short stable target such as `e12`, valid only for the current page state. |
+| `ref` | Short stable target such as `e12`, or a frame-prefixed ref such as `f0-e3` or `f0.1-e2`, valid only for the current page state. |
 | `tag`, `role`, `type` | Element identity, including `input` types and ARIA roles. |
 | `label` | Accessible name from `aria-label`, `aria-labelledby`, labels, text, placeholder, or name. |
 | `value` | Current value for text, select, and similar controls. Always `null` for password inputs. |
@@ -48,14 +50,15 @@ Offsets are positions in the extracted text, not the raw HTML. They stay stable 
 | `disabled`, `checked`, `readOnly` | State flags, with `checked` only for checkboxes and radios. |
 | `sensitive` | True for password inputs. |
 | `editable` | True when `zen_type` can reasonably target the element. |
+| `framePath`, `frameUrl` | Present for controls inside a frame, so the agent can tell where they live. |
 
-The scan covers links, buttons, inputs other than hidden ones, textareas, selects, summaries, contenteditable regions, elements with a non-negative tabindex, and common ARIA roles. It skips elements that are not visible. `elementsTruncated: true` and a limitation report when the 200-element cap was reached; use `selector` to narrow the scan. Interactive reads do not return page text, so their `text`, `length`, and `offset` are empty or zero.
+The scan covers links, buttons, inputs other than hidden ones, textareas, selects, summaries, contenteditable regions, elements with a non-negative tabindex, and common ARIA roles. It skips elements that are not visible. At the top level it also scans child frames and merges their controls into the same list, with refs prefixed by the frame path. The 200-element cap applies across the whole list; `elementsTruncated: true` and a limitation report when it was reached, and `selector` narrows the scan to the top document without scanning frames. Up to 10 frames are scanned per read; unread frames are counted in `limitation`. Interactive reads do not return page text, so their `text`, `length`, and `offset` are empty or zero.
 
-`zen_click` and `zen_type` take the `tabId` plus exactly one of `ref` or `selector`. A ref is resolved through the fixed script that assigned it, including open shadow roots; a selector is resolved in the light DOM. Refs are cleared by the next interactive read of any tab and are invalid after a navigation. When resolution fails, the call returns `element_not_found`; run a fresh interactive read rather than guessing a ref.
+`zen_click` and `zen_type` take the `tabId` plus exactly one of `ref` or `selector`. A ref is resolved through the fixed script that assigned it, including open shadow roots and the frame encoded in its prefix; a selector is resolved in the top document's light DOM. Refs are cleared by the next interactive read of the tab and are invalid after a navigation. When resolution fails, the call returns `element_not_found`; run a fresh interactive read rather than guessing a ref.
 
-`zen_click` refuses a disabled target, checks the tab URL and an anchor's `href` against the domain allowlist, then sends a native click. `zen_type` refuses disabled or read-only targets and file inputs, can clear the field first, and caps text at 10,000 characters. It reports `typed` (a character count), never the text, and adds a limitation when the target is a password field. Neither tool evaluates agent-supplied JavaScript, and both are blocked in read-only mode because they change page state.
+`zen_click` refuses a disabled target, checks the tab URL, the frame URL, and an anchor's `href` against the domain allowlist, then sends a native click. `zen_type` refuses disabled or read-only targets and file inputs, can clear the field first, and caps text at 10,000 characters. It reports `typed` (a character count), never the text, and adds a limitation when the target is a password field. Frame actions report `framePath` and the frame's current `frameUrl`. Neither tool evaluates agent-supplied JavaScript, and both are blocked in read-only mode because they change page state.
 
-A click is a real input event. It can submit a form, start a download, open a dialog, navigate, or make a purchase. The allowlist covers the tab URL before the action, an anchor target, and the tab URL after the action; it cannot predict what an in-page script does in between.
+A click is a real input event. It can submit a form, start a download, open a dialog, navigate, or make a purchase. The allowlist covers the tab URL before the action, the frame URL, an anchor target, and the tab URL after the action; it cannot predict what an in-page script does in between.
 
 ### PDFs
 
@@ -183,7 +186,7 @@ The matcher never picks one of several equally plausible passages. It reports `A
 
 - `http(s)` HTML and XML documents with a loaded content document.
 - Text that is rendered in the DOM and visible. Hidden, clipped, or off-screen passages are not indexed and can return `HIGHLIGHT_FAILED`.
-- Same-document content only. Text inside iframes (same-origin or cross-origin), open shadow roots, images, canvas, SVG, or form controls is not searched.
+- Same-document content only. Evidence Mode does not search iframes, open shadow roots, images, canvas, SVG, or form controls. Use `zen_read_page` with `framePath` to read frame text.
 - PDFs, `about:`/`chrome:` pages, `file:` URLs, and other non-HTML responses return `UNSUPPORTED_PAGE` or `PRIVILEGED_PAGE`.
 
 ### Limitations

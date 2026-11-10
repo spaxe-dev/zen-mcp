@@ -600,6 +600,7 @@ export class ZenRuntime {
       tabId?: string;
       format?: ReadFormat;
       selector?: string;
+      framePath?: number[];
       signal?: AbortSignal;
     } = {}
   ): Promise<PageReadResult> {

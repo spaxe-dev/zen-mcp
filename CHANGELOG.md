@@ -19,6 +19,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   blocks both tools, the domain allowlist checks the tab URL and link target,
   password values are never read back, file inputs are refused, and refs expire
   after another interactive read or a navigation.
+- Frame support for reads and actions. `zen_read_page` takes `framePath`, an
+  array of child frame indexes such as `[0]` or `[0,1]`, and every read lists
+  reachable `http(s)` frames with their paths and URLs. Top-level interactive
+  reads merge controls from child frames with prefixed refs such as `f0-e3` and
+  `f0.1-e2`; `zen_click` and `zen_type` resolve those refs in the right frame.
+  Frame URLs are checked against the domain allowlist, and off-list or
+  non-`http(s)` frames are never listed, read, or driven.
 
 ## [0.4.0] - 2026-11-08
 

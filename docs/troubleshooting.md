@@ -59,7 +59,10 @@ The ref came from an older interactive read, the page navigated, or the selector
 The control cannot accept that action right now. A disabled control has to be enabled by the page first; a read-only field cannot be typed into; file inputs are refused by design. Pick a different control or ask the user to complete that step.
 
 **An interactive read returns `elementsTruncated: true`**
-The scan stopped at 200 visible controls. Pass a `selector` that narrows the page area, then run the interactive read again.
+The scan stopped at 200 visible controls. Pass a `selector` that narrows the page area, or read a specific frame with `framePath`, then run the interactive read again.
+
+**A read or action returns `frame_not_found`, `frame_not_loaded`, `unsupported_frame`, or `invalid_frame`**
+`framePath` is a list of child indexes from the top document, such as `[0]` or `[0,1]`. `frame_not_found` means an index does not exist at that level; run a normal read to refresh the `frames` list first. `frame_not_loaded` means the frame has no document yet. `unsupported_frame` means the frame is not an `http(s)` page, and `invalid_frame` means the path has a non-integer, negative, or fourth-level entry. Frame refs follow the same path: `f0-e3` is the third control in the first child frame.
 
 **`zen_show_evidence` returns `QUOTE_NOT_FOUND`, `AMBIGUOUS_MATCH`, or `LOW_MATCH_CONFIDENCE`**
 No highlight was added and the quote should not be presented as support. Copy the passage from the page, shorten it, or add surrounding `context`. PDFs and privileged pages cannot be inspected at all.
@@ -86,7 +89,7 @@ Resources return errors as JSON instead of failing the request. The message desc
 - The startup race before lockdown cannot be eliminated while Marionette has no authentication. The server detects it and fails closed.
 - A browser whose Marionette session is lost cannot be re-attached, because the listener stays shut. Quit it and start a new one.
 - Shutdown runs on `stop`, `SIGINT`, `SIGTERM`, and a closed stdio transport. It does not run on a crash or `SIGKILL`, so the owned browser can stay open after an abnormal exit.
-- Evidence Mode searches rendered DOM text, not pixels. Iframes (same-origin and cross-origin), open shadow roots, images, canvas, SVG, and form controls cannot be searched. Hidden, clipped, or off-screen passages are not indexed.
+- Evidence Mode searches rendered DOM text, not pixels. It does not reach iframes, open shadow roots, images, canvas, SVG, or form controls. Frame text is available through `zen_read_page` with `framePath`. Hidden, clipped, or off-screen passages are not indexed.
 - Evidence only sees the current DOM. Infinite-scroll content and content behind interaction are invisible until loaded.
 - Evidence marks are temporary overlays. They can drift if the page reflows while visible, and pages that change constantly may return `HIGHLIGHT_FAILED`. Pause does not remove them.
 - `zen_clear_evidence` without a `tab_id` only knows about the 20 most recently marked tabs.
@@ -100,6 +103,6 @@ Resources return errors as JSON instead of failing the request. The message desc
 - The domain allowlist is checked before an action and again immediately after `zen_tabs_open`, but a redirect that happens later can move a tab outside the list. Reads recheck the tab URL.
 - The audit log redacts sensitive values and long strings, but a bounded preview of the summarized argument JSON can remain. Resource reads are logged as `resource:<uri>` entries without arguments.
 - Private-window exclusion is implemented but not covered by the automated live suite. Treat it as a best-effort boundary.
-- No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside iframes or closed shadow roots.
+- No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside closed shadow roots. Frames are reachable only through their prefixed refs or `framePath`, never with selector.
 - No per-action approval cards. Approval is per server session, and Pause is the global stop switch. Use read-only mode and the domain allowlist for additional guardrails.
 - macOS and Linux builds pass CI but have not had a live Zen launch verified. Windows is the only live-tested platform.

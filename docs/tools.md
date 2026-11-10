@@ -44,10 +44,10 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 
 | Tool | What it does |
 | --- | --- |
-| `zen_read_page` | Extract text or a structured view from one loaded tab, without selecting it |
+| `zen_read_page` | Extract text or a structured view from one loaded tab or frame, without selecting it |
 | `zen_read_pages` | Read up to 10 tabs in one call, three at a time |
-| `zen_click` | Click one control by ref or CSS selector in a loaded tab |
-| `zen_type` | Type text into one field by ref or CSS selector in a loaded tab |
+| `zen_click` | Click one control by ref or CSS selector in a loaded tab or frame |
+| `zen_type` | Type text into one field by ref or CSS selector in a loaded tab or frame |
 | `zen_find_text` | Find literal text in one tab with raw offsets and excerpts |
 | `zen_search_tabs` | Search up to 30 open tabs (20 by default) for the same text, two at a time |
 | `zen_show_evidence` | Reuse a source in the background, find a cited quote, scroll to it, and mark it |
@@ -64,14 +64,16 @@ For read formats and Evidence Mode behavior, see [reading-and-evidence.md](readi
 
 ### Page interaction
 
-`zen_read_page { format: "interactive" }` returns up to 200 visible controls as `elements`, each with a short `ref` such as `e12`, plus its tag, role, type, label, current value, href, and state flags. The scan includes form controls, ARIA controls, contenteditable regions, and controls inside open shadow roots. It caps at 200; `selector` narrows the scan, and `elementsTruncated` plus a limitation say when the cap was reached.
+`zen_read_page { format: "interactive" }` returns up to 200 visible controls as `elements`, each with a short `ref` such as `e12`, plus its tag, role, type, label, current value, href, and state flags. The scan includes form controls, ARIA controls, contenteditable regions, and controls inside open shadow roots. At the top level it also scans child frames and merges their controls with refs such as `f0-e3` or `f0.1-e2`; those elements carry `framePath` and `frameUrl`. It caps at 200 across all scanned frames; `selector` narrows the scan to the top document, and `elementsTruncated` plus a limitation say when the cap was reached.
+
+Every read result lists reachable `http(s)` frames under `frames`, each with a `path`, `url`, and `name`. Pass `framePath` (for example `[0]` or `[0,1]`) to read one frame's text or structured data instead of the top document; the result echoes `framePath`. Paths are limited to three levels and listing stops after 20 frames. Frames outside the domain allowlist are not listed or read.
 
 `zen_click` and `zen_type` accept exactly one of:
 
-- `ref`: a ref from the most recent interactive read of that tab.
-- `selector`: a CSS selector, resolved in the light DOM.
+- `ref`: a ref from the most recent interactive read of that tab, including frame-prefixed refs.
+- `selector`: a CSS selector, resolved in the top document's light DOM.
 
-Refs are written as a temporary attribute and are cleared by the next interactive read or replaced by a navigation. A stale ref fails with `element_not_found`; run another interactive read instead of guessing. Prefer refs over selectors because a ref identifies exactly one element the user could see.
+Refs are written as a temporary attribute and are cleared by the next interactive read or replaced by a navigation. A stale ref fails with `element_not_found`; run another interactive read instead of guessing. Prefer refs over selectors because a ref identifies exactly one element the user could see. Frame actions report `framePath` and the frame's current `frameUrl`.
 
 `zen_type` appends by default; `clear: true` replaces the current value first. An empty `text` is only valid with `clear: true`. Typed text is capped at 10,000 characters. Disabled and read-only targets are refused, file inputs are refused, and password values are never returned in the interactive element list or the type result. A successful type result reports the number of characters typed, not the text.
 
@@ -116,7 +118,7 @@ The MCP guard applies policy before a tool runs:
 
 - **Read-only mode** blocks the 32 tools that change browser, server, persisted, or on-screen state: `zen_launch`, space create/switch/delete, tab open/close/select, folder create/add, pin, essentials, Glance, split view/close, `zen_click`, `zen_type`, clipboard write, watch add/remove, session save/restore/delete, template save/apply/delete, tab grouping, the three evidence tools, and `zen_progress`, `zen_ask`, and `zen_notify`. A read-only server also refuses to auto-launch Zen.
 - **Read-only mode only blocks the mutating set.** `zen_read_page`, `zen_read_pages`, `zen_find_text`, `zen_search_tabs`, history, bookmarks, status, lists, `zen_events`, `zen_answers`, `zen_config`, and `zen_audit_tail` keep working. Session and template listings can still show stored URLs.
-- **The domain allowlist** checks URLs for tools that open, preview, verify, watch, restore, or apply a template, and checks the tab URL plus any link target before `zen_click` or `zen_type` acts. An empty list allows everything. Entries are normalized to a host and match exactly or as a subdomain on a label boundary. URL checks happen before the action and again after `zen_tabs_open` returns; a redirect that happens later, such as a slow script or meta refresh, can still leave the tab on another host. Reads recheck the tab URL before returning content.
+- **The domain allowlist** checks URLs for tools that open, preview, verify, watch, restore, or apply a template, and checks the tab URL, target frame URL, and any link target before `zen_click` or `zen_type` acts. Frames outside the list are omitted from reads and refused as targets. An empty list allows everything. Entries are normalized to a host and match exactly or as a subdomain on a label boundary. URL checks happen before the action and again after `zen_tabs_open` returns; a redirect that happens later, such as a slow script or meta refresh, can still leave the tab on another host. Reads recheck the tab URL before returning content.
 - **The audit log** records tool calls, including calls blocked by read-only mode or the allowlist, and resource reads under `resource:<uri>`. `executed` reports whether the handler returned a result; `ok` reports whether that result succeeded. Evidence batch entries add `citationsVerified`, `citationsFailed`, and `outcome` (`success`, `partial`, or `failed`), so a batch with a failed citation is not logged as full success.
 
 ## Progress, events, and watches

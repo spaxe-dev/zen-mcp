@@ -14,6 +14,11 @@ export interface ReadScriptOptions {
   offset?: number;
   format?: ReadFormat;
   selector?: string;
+  /**
+   * Prefix for interactive refs, used when the script runs inside a frame.
+   * Shape: "f0-", "f0.1-". The main document uses an empty prefix.
+   */
+  refPrefix?: string;
 }
 
 export interface PageSnapshot {
@@ -57,7 +62,10 @@ const MAX_TABLE_ROWS = 100;
 const MAX_TABLE_COLUMNS = 12;
 const MAX_CELL = 300;
 const MAX_HEADINGS = 200;
-const MAX_ELEMENTS = 200;
+/** Total controls returned by one interactive read, across frames. */
+export const MAX_PAGE_ELEMENTS = 200;
+
+const REF_PREFIX_PATTERN = /^(?:f[0-9]+(?:\.[0-9]+){0,2}-)?$/;
 
 function normalizeFormat(value: unknown): ReadFormat {
   return typeof value === "string" &&
@@ -151,10 +159,10 @@ function coerceHeadings(value: unknown): PageHeading[] {
 function coerceElements(value: unknown): PageElement[] {
   if (!Array.isArray(value)) return [];
   const elements: PageElement[] = [];
-  for (const entry of value.slice(0, MAX_ELEMENTS)) {
+  for (const entry of value.slice(0, MAX_PAGE_ELEMENTS)) {
     if (!entry || typeof entry !== "object") continue;
     const raw = entry as Partial<PageElement>;
-    const ref = asString(raw.ref, 16);
+    const ref = asString(raw.ref, 24);
     const tag = asString(raw.tag, 40);
     if (!ref || !tag) continue;
     elements.push({
@@ -171,6 +179,21 @@ function coerceElements(value: unknown): PageElement[] {
       readOnly: asBoolean(raw.readOnly, false),
       sensitive: asBoolean(raw.sensitive, false),
       editable: asBoolean(raw.editable, false),
+      ...(Array.isArray(raw.framePath)
+        ? {
+            framePath: raw.framePath
+              .slice(0, 3)
+              .map((index: unknown) =>
+                Math.max(0, Math.floor(Number(index) || 0))
+              ),
+          }
+        : {}),
+      ...(raw.frameUrl !== undefined
+        ? {
+            frameUrl:
+              raw.frameUrl === null ? null : asString(raw.frameUrl, 8_000),
+          }
+        : {}),
     });
   }
   return elements;
@@ -239,14 +262,20 @@ export function buildReadScript(options: ReadScriptOptions): string {
     typeof options?.selector === "string" && options.selector.trim()
       ? options.selector.trim()
       : null;
+  const refPrefix =
+    typeof options?.refPrefix === "string" &&
+    REF_PREFIX_PATTERN.test(options.refPrefix)
+      ? options.refPrefix
+      : "";
 
   return String.raw`
 const maxChars = ${JSON.stringify(maxChars)};
 const offset = ${JSON.stringify(offset)};
 const format = ${JSON.stringify(format)};
 const selector = ${JSON.stringify(selector)};
+const refPrefix = ${JSON.stringify(refPrefix)};
 const REF_ATTR = "data-zen-mcp-ref";
-const MAX_ELEMENTS = ${MAX_ELEMENTS};
+const MAX_ELEMENTS = ${MAX_PAGE_ELEMENTS};
 const FENCE = String.fromCharCode(96, 96, 96);
 const SENTINEL = "\u0000";
 
@@ -1120,7 +1149,7 @@ function collectInteractive(root) {
     }
     eligible += 1;
     if (elements.length >= MAX_ELEMENTS) continue;
-    var ref = "e" + (elements.length + 1);
+    var ref = refPrefix + "e" + (elements.length + 1);
     try {
       el.setAttribute(REF_ATTR, ref);
     } catch (e) {
@@ -1650,6 +1679,19 @@ export function toPageReadResult(
       readOnly: element?.readOnly === true,
       sensitive: element?.sensitive === true,
       editable: element?.editable === true,
+      ...(Array.isArray(element?.framePath)
+        ? {
+            framePath: element.framePath.map((index) =>
+              Math.max(0, Math.floor(Number(index) || 0))
+            ),
+          }
+        : {}),
+      ...(element?.frameUrl !== undefined
+        ? {
+            frameUrl:
+              element.frameUrl === null ? null : String(element.frameUrl),
+          }
+        : {}),
     }));
     if (page.elementsTruncated === true) {
       result.elementsTruncated = true;

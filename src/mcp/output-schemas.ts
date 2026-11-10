@@ -175,6 +175,14 @@ const pageElementSchema = z.looseObject({
   readOnly: z.boolean(),
   sensitive: z.boolean(),
   editable: z.boolean(),
+  framePath: z.array(z.number()).optional(),
+  frameUrl: z.string().nullable().optional(),
+});
+
+const pageFrameSchema = z.looseObject({
+  path: z.array(z.number()),
+  url: z.string(),
+  name: z.string(),
 });
 
 const pageActionTargetSchema = z.looseObject({
@@ -206,6 +214,8 @@ const pageReadShape = {
   outline: z.array(pageHeadingSchema).optional(),
   elements: z.array(pageElementSchema).optional(),
   elementsTruncated: z.boolean().optional(),
+  framePath: z.array(z.number()).optional(),
+  frames: z.array(pageFrameSchema).optional(),
 };
 
 const pageReadSchema = z.looseObject(pageReadShape);
@@ -515,6 +525,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
     url: z.string(),
     title: z.string(),
     target: pageActionTargetSchema,
+    framePath: z.array(z.number()).optional(),
+    frameUrl: z.string().nullable().optional(),
     limitation: z.string().optional(),
   },
   zen_type: {
@@ -524,6 +536,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
     url: z.string(),
     title: z.string(),
     target: pageActionTargetSchema,
+    framePath: z.array(z.number()).optional(),
+    frameUrl: z.string().nullable().optional(),
     limitation: z.string().optional(),
   },
   zen_search_tabs: {

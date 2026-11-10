@@ -525,6 +525,18 @@ export interface PageElement {
   /** True for password fields, so agents never echo the value. */
   sensitive: boolean;
   editable: boolean;
+  /** Set for controls inside a frame; the path used to reach that frame. */
+  framePath?: number[];
+  /** URL of the frame that owns this control. */
+  frameUrl?: string | null;
+}
+
+/** One child frame reachable from a tab's top-level document. */
+export interface PageFrame {
+  /** Child indexes from the top document, e.g. [0, 1]. */
+  path: number[];
+  url: string;
+  name: string;
 }
 
 export interface PageMetadata {
@@ -569,6 +581,10 @@ export interface PageReadResult {
   elements?: PageElement[];
   /** True when the interactive scan hit its element cap. */
   elementsTruncated?: boolean;
+  /** Echo of the frame this read targeted, when it was not the top document. */
+  framePath?: number[];
+  /** Child frames reachable from the read target, flattened depth-first. */
+  frames?: PageFrame[];
 }
 
 export type EvidenceErrorCode =
@@ -884,13 +900,20 @@ export interface TabReadParams {
   offset?: number;
   format?: ReadFormat;
   selector?: string;
+  /** Child-frame indexes to read instead of the top document. */
+  framePath?: number[];
+  /** Host-enforced allowlist; frames outside it are hidden and refused. */
+  allowedDomains?: string[];
 }
 
 /** Target of a page action. Exactly one of ref or selector is required. */
 export interface PageActionTarget {
-  /** Ref from an interactive read, such as "e12". */
+  /**
+   * Ref from an interactive read, such as "e12". A frame ref carries its path,
+   * such as "f0-e3" or "f0.1-e2".
+   */
   ref?: string;
-  /** CSS selector, evaluated in the page's light DOM. */
+  /** CSS selector, evaluated in the top document's light DOM. */
   selector?: string;
 }
 
@@ -922,6 +945,10 @@ export interface ClickElementResult {
   url: string;
   title: string;
   target: PageActionTargetInfo;
+  /** Set when the click happened inside a frame. */
+  framePath?: number[];
+  /** Current URL of the frame that was acted on. */
+  frameUrl?: string | null;
   limitation?: string;
 }
 
@@ -933,6 +960,10 @@ export interface TypeTextResult {
   url: string;
   title: string;
   target: PageActionTargetInfo;
+  /** Set when the field was inside a frame. */
+  framePath?: number[];
+  /** Current URL of the frame that was acted on. */
+  frameUrl?: string | null;
   limitation?: string;
 }
 
