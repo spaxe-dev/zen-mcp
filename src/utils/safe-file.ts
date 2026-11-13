@@ -21,6 +21,12 @@ export const PRIVATE_FILE_MODE = 0o600;
 /** Creates (or reuses) a data directory that only the current user can read. */
 export function ensurePrivateDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  try {
+    // mkdirSync does not tighten a directory that already exists.
+    chmodSync(dir, PRIVATE_DIR_MODE);
+  } catch {
+    // Windows ignores most mode bits; best effort, as for files.
+  }
 }
 
 /** Refuses to replace symlinks or special files. */

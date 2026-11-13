@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -11,6 +19,7 @@ import {
   PACKAGE_NAME,
   readUpdatePromptState,
   REGISTRY_URL,
+  resolveInstallerExecutable,
   runInstaller,
   shouldPromptUpdate,
   updateCommand,
@@ -180,6 +189,83 @@ describe("package manager detection", () => {
   });
 });
 
+describe("installer resolution", () => {
+  const withDirs = (
+    run: (dirs: { root: string; trusted: string; hostile: string }) => void
+  ): void => {
+    const root = mkdtempSync(join(tmpdir(), "zen-mcp-resolve-"));
+    const trusted = join(root, "trusted");
+    const hostile = join(root, "hostile");
+    mkdirSync(trusted);
+    mkdirSync(hostile);
+    try {
+      run({ root, trusted, hostile });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("skips an executable in the working directory", () => {
+    withDirs(({ trusted, hostile }) => {
+      writeFileSync(join(trusted, "tool.cmd"), "@echo trusted\r\n");
+      writeFileSync(join(hostile, "tool.cmd"), "@echo hostile\r\n");
+      const resolved = resolveInstallerExecutable("tool", {
+        platform: "win32",
+        cwd: hostile,
+        pathValue: `${hostile};${trusted}`,
+        pathExt: ".CMD",
+      });
+      assert.equal(resolved, join(trusted, "tool.cmd"));
+    });
+  });
+
+  it("ignores a relative PATH entry that points at the working directory", () => {
+    withDirs(({ hostile }) => {
+      writeFileSync(join(hostile, "tool.cmd"), "@echo hostile\r\n");
+      const resolved = resolveInstallerExecutable("tool", {
+        platform: "win32",
+        cwd: hostile,
+        pathValue: ".",
+        pathExt: ".CMD",
+      });
+      assert.equal(resolved, null);
+    });
+  });
+
+  it("returns null when the command only exists in the working directory", () => {
+    withDirs(({ trusted, hostile }) => {
+      writeFileSync(join(hostile, "tool.cmd"), "@echo hostile\r\n");
+      const resolved = resolveInstallerExecutable("tool", {
+        platform: "win32",
+        cwd: hostile,
+        pathValue: `${trusted};${hostile}`,
+        pathExt: ".CMD",
+      });
+      assert.equal(resolved, null);
+    });
+  });
+
+  it("allows an absolute PATH entry below the working directory", () => {
+    withDirs(({ root, trusted }) => {
+      writeFileSync(join(trusted, "tool.cmd"), "@echo trusted\r\n");
+      const resolved = resolveInstallerExecutable("tool", {
+        platform: "win32",
+        cwd: root,
+        pathValue: trusted,
+        pathExt: ".CMD",
+      });
+      assert.equal(resolved, join(trusted, "tool.cmd"));
+    });
+  });
+
+  it("leaves non-Windows spawning to PATH", () => {
+    assert.equal(
+      resolveInstallerExecutable("npm", { platform: "linux" }),
+      "npm"
+    );
+  });
+});
+
 describe("update prompt memory", () => {
   it("prompts only the first time a release is seen", () => {
     assert.equal(shouldPromptUpdate(undefined, "0.5.0"), true);
@@ -202,4 +288,58 @@ describe("update prompt memory", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it(
+    "refuses to write through a symlink",
+    { skip: process.platform === "win32" ? "needs symlink privileges" : false },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "zen-mcp-update-link-"));
+      const victim = join(dir, "victim.txt");
+      const link = join(dir, "update.json");
+      try {
+        writeFileSync(victim, "keep me");
+        symlinkSync(victim, link);
+        writeUpdatePromptState(link, { promptedVersion: "0.5.0" });
+        assert.equal(readFileSync(victim, "utf8"), "keep me");
+        assert.deepEqual(readUpdatePromptState(link), {});
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("ignores a state file larger than the read budget", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zen-mcp-update-size-"));
+    const file = join(dir, "update.json");
+    try {
+      writeFileSync(
+        file,
+        JSON.stringify({ promptedVersion: "9".repeat(70 * 1024) })
+      );
+      assert.deepEqual(readUpdatePromptState(file), {});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it(
+    "writes the state owner-only",
+    { skip: process.platform === "win32" ? "POSIX modes only" : false },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "zen-mcp-update-mode-"));
+      const nested = join(dir, "nested");
+      try {
+        writeUpdatePromptState(join(nested, "update.json"), {
+          promptedVersion: "0.5.0",
+        });
+        assert.equal(
+          statSync(join(nested, "update.json")).mode & 0o777,
+          0o600
+        );
+        assert.equal(statSync(nested).mode & 0o777, 0o700);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  );
 });

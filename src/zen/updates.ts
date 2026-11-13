@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SERVER_VERSION } from "../shared/brand.js";
+import { atomicWritePrivate, readFileTextBounded } from "../utils/safe-file.js";
 
 export const PACKAGE_NAME = "@spaxe-dev/zen-mcp";
 export const REGISTRY_URL = `https://registry.npmjs.org/${encodeURIComponent(
@@ -10,6 +12,9 @@ export const REGISTRY_URL = `https://registry.npmjs.org/${encodeURIComponent(
 
 export const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
 export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
+
+const MAX_UPDATE_STATE_BYTES = 64 * 1024;
+const DEFAULT_PATHEXT = [".com", ".exe", ".bat", ".cmd"];
 
 export function isPackageManager(value: string): value is PackageManager {
   return (PACKAGE_MANAGERS as readonly string[]).includes(value);
@@ -182,6 +187,68 @@ export function updateCommand(
   }
 }
 
+/** True when candidate is parent itself or sits below it. */
+function isSameOrInside(
+  candidate: string,
+  parent: string,
+  caseInsensitive: boolean
+): boolean {
+  const normalize = (value: string) =>
+    caseInsensitive ? value.toLowerCase() : value;
+  const rel = relative(normalize(parent), normalize(candidate));
+  return (
+    rel === "" ||
+    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`))
+  );
+}
+
+/**
+ * Finds the installer executable on PATH without letting the current working
+ * directory win. Windows resolves bare command names from the cwd before PATH,
+ * so a repository that contains npm.cmd would otherwise run on update.
+ */
+export function resolveInstallerExecutable(
+  command: string,
+  options: {
+    platform?: NodeJS.Platform;
+    pathValue?: string;
+    pathExt?: string;
+    cwd?: string;
+  } = {}
+): string | null {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") return command;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const pathValue = options.pathValue ?? process.env.PATH ?? "";
+  const configuredExt = (options.pathExt ?? process.env.PATHEXT ?? "")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  const extensions = configuredExt.length ? configuredExt : DEFAULT_PATHEXT;
+  const candidates = command.includes(".") ? [""] : extensions;
+
+  for (const rawEntry of pathValue.split(";")) {
+    const entry = rawEntry.trim().replace(/^"(.*)"$/, "$1");
+    if (!entry) continue;
+    const dir = resolve(cwd, entry);
+    // An absolute entry is trusted as given, but never the cwd itself.
+    // Repo-relative entries that land in the cwd are not trusted.
+    const unsafeDir = isAbsolute(entry)
+      ? dir.toLowerCase() === cwd.toLowerCase()
+      : isSameOrInside(dir, cwd, true);
+    if (unsafeDir) continue;
+    for (const extension of candidates) {
+      const candidate = resolve(join(dir, `${command}${extension}`));
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        // Not present in this directory; keep looking along PATH.
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Runs the global install. npm and pnpm are `.cmd` shims on Windows, so those
  * need a shell; the command and arguments are fixed by updateCommand.
@@ -191,13 +258,44 @@ export function runInstaller(
   args: string[],
   options: { stdio?: "inherit" | "ignore" } = {}
 ): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      stdio: options.stdio ?? "inherit",
-      shell: process.platform === "win32",
-    });
-    child.on("error", () => resolve(1));
-    child.on("close", (code) => resolve(code ?? 1));
+  return new Promise((resolveCode) => {
+    const stdio = options.stdio ?? "inherit";
+    let child: ReturnType<typeof spawn>;
+    try {
+      if (process.platform === "win32") {
+        // Resolve first: cmd.exe searches the cwd before PATH.
+        const executable = resolveInstallerExecutable(command);
+        if (!executable) {
+          console.error(
+            `Could not find ${command} on PATH outside the working directory.`
+          );
+          resolveCode(1);
+          return;
+        }
+        const comspec = isAbsolute(process.env.ComSpec ?? "")
+          ? process.env.ComSpec!
+          : join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+        child = spawn(
+          comspec,
+          // cmd /s strips the outer quotes; the inner pair keeps a path with
+          // spaces together.
+          ["/d", "/s", "/c", `""${executable}" ${args.join(" ")}"`],
+          {
+            stdio,
+            cwd: homedir(),
+            env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+            windowsVerbatimArguments: true,
+          }
+        );
+      } else {
+        child = spawn(command, args, { stdio });
+      }
+    } catch {
+      resolveCode(1);
+      return;
+    }
+    child.on("error", () => resolveCode(1));
+    child.on("close", (code) => resolveCode(code ?? 1));
   });
 }
 
@@ -212,7 +310,11 @@ export interface UpdatePromptState {
  */
 export function readUpdatePromptState(path: string): UpdatePromptState {
   try {
-    const body = JSON.parse(readFileSync(path, "utf8")) as {
+    // Refuse symlinks and oversized files before parsing the contents.
+    if (lstatSync(path).isSymbolicLink()) return {};
+    const body = JSON.parse(
+      readFileTextBounded(path, MAX_UPDATE_STATE_BYTES)
+    ) as {
       promptedVersion?: unknown;
     };
     return typeof body?.promptedVersion === "string"
@@ -228,8 +330,7 @@ export function writeUpdatePromptState(
   state: UpdatePromptState
 ): void {
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(state), "utf8");
+    atomicWritePrivate(path, JSON.stringify(state));
   } catch {
     // Losing this hint only means the prompt may show again next session.
   }
