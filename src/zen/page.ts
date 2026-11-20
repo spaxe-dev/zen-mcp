@@ -14,6 +14,8 @@ export interface PageReadOptions {
   tabId?: string;
   format?: ReadFormat;
   selector?: string;
+  /** Snapshot control cap, 1-200. */
+  maxElements?: number;
   /** Child-frame indexes to read instead of the top document. */
   framePath?: number[];
   /** Client cancellation for the underlying bridge request. */
@@ -44,10 +46,14 @@ export async function readActivePage(
   return hub.readTab(
     {
       tabId: active.id,
-      maxChars: clampMaxChars(options.maxChars),
+      maxChars:
+        options.format === "snapshot"
+          ? undefined
+          : clampMaxChars(options.maxChars),
       offset: options.offset,
       format: options.format,
       selector: options.selector,
+      maxElements: options.maxElements,
       framePath: options.framePath,
     },
     options.windowId,
@@ -69,10 +75,14 @@ export async function readTabPage(
   return hub.readTab(
     {
       tabId,
-      maxChars: clampMaxChars(options.maxChars),
+      maxChars:
+        options.format === "snapshot"
+          ? undefined
+          : clampMaxChars(options.maxChars),
       offset: options.offset,
       format: options.format,
       selector: options.selector,
+      maxElements: options.maxElements,
       framePath: options.framePath,
     },
     options.windowId,

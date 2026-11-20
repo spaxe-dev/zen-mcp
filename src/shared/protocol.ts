@@ -1,4 +1,5 @@
 import type { EvidenceMatchMethod } from "./evidence.js";
+import type { PageTargetSpec } from "./target.js";
 
 export const BRIDGE_PATH = "/bridge";
 
@@ -185,11 +186,17 @@ export interface BridgeFocus {
   ts: number;
 }
 
+export interface BrowserEventMessage {
+  type: "browser.event";
+  event: BrowserEventPayload;
+}
+
 export type BridgeToServer =
   | BridgeAuthResponse
   | BridgeHello
   | BridgePong
   | BridgeFocus
+  | BrowserEventMessage
   | UiAnswer
   | UiActionEvent
   | UiStop
@@ -264,7 +271,12 @@ export interface BridgeResponse {
   id: string;
   ok: boolean;
   result?: unknown;
-  error?: { code?: string; message: string };
+  error?: {
+    code?: string;
+    message: string;
+    /** Bounded structured detail, such as ambiguous target candidates. */
+    details?: Record<string, unknown>;
+  };
 }
 
 export type ServerToBridge =
@@ -286,13 +298,47 @@ export type ServerToBridge =
  * Agent events, progress and watch mode
  * ------------------------------------------------------------------ */
 
-export type AgentEventKind =
-  | "stop"
-  | "pause"
-  | "resume"
-  | "watch"
-  | "question";
+export const BROWSER_EVENT_KINDS = [
+  "tab",
+  "navigation",
+  "document",
+  "dialog",
+] as const;
 
+export type BrowserEventKind = (typeof BROWSER_EVENT_KINDS)[number];
+
+export const BROWSER_EVENT_PHASES = [
+  "opened",
+  "closed",
+  "selected",
+  "started",
+  "committed",
+  "completed",
+  "failed",
+  "redirect",
+  "same_document",
+  "replaced",
+  "shown",
+  "hidden",
+] as const;
+
+export type BrowserEventPhase = (typeof BROWSER_EVENT_PHASES)[number];
+
+export const AGENT_EVENT_KINDS = [
+  "stop",
+  "pause",
+  "resume",
+  "watch",
+  "question",
+  ...BROWSER_EVENT_KINDS,
+] as const;
+
+export type AgentEventKind = (typeof AGENT_EVENT_KINDS)[number];
+
+/**
+ * One observation from the owned browser. Observed transitions are evidence
+ * that something changed, never proof of what caused it.
+ */
 export interface AgentEvent {
   id: number;
   kind: AgentEventKind;
@@ -303,6 +349,11 @@ export interface AgentEvent {
   tabId?: string;
   watchId?: string;
   questionId?: string;
+  phase?: BrowserEventPhase;
+  url?: string;
+  /** Best-effort document identity, comparable with a wait result. */
+  documentId?: string;
+  source?: "server" | "browser";
 }
 
 export interface EventsResult {
@@ -317,6 +368,27 @@ export interface EventsResult {
   /** True while the global Pause switch is on. */
   paused: boolean;
   lastEventAt: number | null;
+  /** Events that were evicted before this cursor could read them. */
+  missed: number;
+  /** Oldest event still buffered, or null when the buffer is empty. */
+  oldestCursor: number | null;
+  /** Total events evicted since the server started. */
+  dropped: number;
+  /** Browser observations dropped because their URL was not allowed. */
+  filtered: number;
+}
+
+/** Sent by a bridge observer after `hello`; the host stamps window and time. */
+export interface BrowserEventPayload {
+  kind: BrowserEventKind;
+  phase: BrowserEventPhase;
+  tabId?: string;
+  url?: string;
+  title?: string;
+  detail?: string;
+  documentId?: string;
+  /** Dialog class such as alert or confirm. Never dialog text. */
+  label?: string;
 }
 
 export interface ProgressParams {
@@ -514,7 +586,9 @@ export type ReadFormat =
   | "tables"
   | "metadata"
   | "outline"
-  | "interactive";
+  | "interactive"
+  | "snapshot"
+  | "semantic";
 
 export interface PageLink {
   text: string;
@@ -532,10 +606,119 @@ export interface PageHeading {
   text: string;
 }
 
+export type PageClassification =
+  | "article"
+  | "search-results"
+  | "product"
+  | "listing"
+  | "dashboard"
+  | "login"
+  | "form"
+  | "documentation"
+  | "discussion"
+  | "generic";
+
+export type SemanticRegionRole =
+  | "banner"
+  | "navigation"
+  | "main"
+  | "complementary"
+  | "contentinfo"
+  | "search"
+  | "form"
+  | "article"
+  | "section"
+  | "dialog"
+  | "table"
+  | "list";
+
+export type SemanticCollectionKind = "cards" | "results" | "links" | "items";
+
 /**
- * One control found by an interactive read. `ref` is a short server-assigned
- * handle used by `zen_click` and `zen_type`; it expires after the next
- * interactive read or a navigation.
+ * One semantic landmark or repeated structure. `ref` is a stable handle to the
+ * region anchor; controls found in the same read carry their own refs.
+ *
+ * Optional fields are omitted from a page read when they add no information:
+ * `label` when it equals `heading`, counts when zero, and relation fields when
+ * absent. `id` and `role` are always present.
+ */
+export interface SemanticRegion {
+  id: string;
+  role: SemanticRegionRole;
+  /** Omitted when absent or identical to `heading`. */
+  label?: string | null;
+  /** Omitted with `label`. */
+  labelSource?: "aria" | "html" | "heading" | "inferred";
+  /** Omitted when the region has no heading. */
+  heading?: string | null;
+  /** Omitted for a top-level region. */
+  parent?: string | null;
+  /** Omitted when the anchor has no ref in this read. */
+  ref?: string | null;
+  /** Omitted when zero. */
+  controls?: number;
+  /** Omitted when zero. */
+  links?: number;
+  /** Omitted when zero or absent. */
+  items?: number | null;
+  itemKind?: SemanticCollectionKind | null;
+}
+
+export interface SemanticCollection {
+  regionId: string;
+  kind: SemanticCollectionKind;
+  count: number;
+  sample: Array<{ ref: string; label: string }>;
+}
+
+/** One heading in document order; the level is the h1-h6 number. */
+export interface SemanticHeading {
+  level: number;
+  text: string;
+  ref: string | null;
+}
+
+export interface SemanticDialog {
+  ref: string;
+  label: string;
+  modal: boolean;
+}
+
+export interface SemanticCoverage {
+  complete: boolean;
+  nodes: number;
+  regions: number;
+  regionsTruncated: boolean;
+  controls: number;
+  links: number;
+  headings: number;
+  tables: number;
+  images: number;
+  missingAlt: number;
+  shadowRoots: number;
+}
+
+/**
+ * A compact, deterministic model of the page. Labels are observed attributes
+ * or inferred from structure; the classification is a heuristic, not a fact.
+ */
+export interface SemanticPage {
+  classification: PageClassification;
+  confidence: number;
+  signals: string[];
+  primaryRegion: string | null;
+  regions: SemanticRegion[];
+  headings: SemanticHeading[];
+  collections: SemanticCollection[];
+  dialogs: SemanticDialog[];
+  coverage: SemanticCoverage;
+  limitations: string[];
+}
+
+/**
+ * One control found by an interactive or snapshot read. `ref` is a short
+ * server-assigned handle used by `zen_click` and `zen_type`; it is replaced by
+ * the next interactive or snapshot read of that document, or by a navigation.
  */
 export interface PageElement {
   ref: string;
@@ -543,16 +726,30 @@ export interface PageElement {
   role: string;
   type: string | null;
   label: string;
-  /** Current value, omitted for password fields and file inputs. */
-  value: string | null;
+  /**
+   * Current value for legacy interactive reads, omitted for sensitive fields
+   * and file inputs. Omitted entirely in snapshot and semantic reads.
+   */
+  value?: string | null;
   placeholder: string | null;
   href: string | null;
   disabled: boolean;
   checked: boolean | null;
   readOnly: boolean;
-  /** True for password fields, so agents never echo the value. */
+  /**
+   * True when the field is classified sensitive (password, payment, one-time
+   * code, telephone, email, account-like fields). Values are omitted.
+   */
   sensitive: boolean;
   editable: boolean;
+  /** Snapshot only: whether a non-empty value exists, without the value. */
+  valuePresent?: boolean;
+  /** Snapshot only: the autocomplete attribute, lowercased. */
+  autocomplete?: string | null;
+  /** Snapshot only: selected state for options and selectable controls. */
+  selected?: boolean | null;
+  /** Snapshot only: form id or name that owns the control. */
+  form?: string | null;
   /** Set for controls inside a frame; the path used to reach that frame. */
   framePath?: number[];
   /** URL of the frame that owns this control. */
@@ -605,10 +802,26 @@ export interface PageReadResult {
   tables?: PageTable[];
   metadata?: PageMetadata;
   outline?: PageHeading[];
-  /** Present for interactive reads, in document order. */
+  /** Present for interactive, snapshot and semantic reads, in document order. */
   elements?: PageElement[];
-  /** True when the interactive scan hit its element cap. */
+  /** Present for semantic reads: landmarks, classification and relationships. */
+  semantic?: SemanticPage;
+  /** True when the control scan hit its element cap. */
   elementsTruncated?: boolean;
+  /** Opaque id for the snapshot that produced these refs. */
+  snapshotId?: string;
+  /** Controls found before the output cap was applied. */
+  elementsTotal?: number;
+  /** True when the snapshot saw every frame it set out to scan. */
+  snapshotComplete?: boolean;
+  /** True when the text preview hit the snapshot cap. */
+  textTruncated?: boolean;
+  /** True when the snapshot outline hit its heading cap. */
+  outlineTruncated?: boolean;
+  /** True when every relevant frame was listed and scanned. */
+  framesComplete?: boolean;
+  /** Explicit reasons a snapshot is partial or truncated, at most five. */
+  limitations?: string[];
   /** Echo of the frame this read targeted, when it was not the top document. */
   framePath?: number[];
   /** Child frames reachable from the read target, flattened depth-first. */
@@ -928,13 +1141,15 @@ export interface TabReadParams {
   offset?: number;
   format?: ReadFormat;
   selector?: string;
+  /** Snapshot control cap, 1-200. Defaults to 100. Ignored by other formats. */
+  maxElements?: number;
   /** Child-frame indexes to read instead of the top document. */
   framePath?: number[];
   /** Host-enforced allowlist; frames outside it are hidden and refused. */
   allowedDomains?: string[];
 }
 
-/** Target of a page action. Exactly one of ref or selector is required. */
+/** Target of a page action. Legacy ref/selector or one additive target. */
 export interface PageActionTarget {
   /**
    * Ref from an interactive read, such as "e12". A frame ref carries its path,
@@ -943,6 +1158,8 @@ export interface PageActionTarget {
   ref?: string;
   /** CSS selector, evaluated in the top document's light DOM. */
   selector?: string;
+  /** Semantic target. Cannot be combined with ref or selector. */
+  target?: PageTargetSpec;
 }
 
 export interface ClickElementParams extends PageActionTarget {
@@ -982,6 +1199,14 @@ export interface ClickElementResult {
   effect?: PageActionEffect;
 }
 
+export interface TypeObservation {
+  /** False for sensitive fields, stale nodes, or unreadable controls. */
+  compared: boolean;
+  /** Whether the field value matched the typed text. Null when not compared. */
+  matchesInput: boolean | null;
+  sensitive: boolean;
+}
+
 export interface TypeTextResult {
   /** Number of characters sent, never the text itself. */
   typed: number;
@@ -995,24 +1220,47 @@ export interface TypeTextResult {
   /** Current URL of the frame that was acted on. */
   frameUrl?: string | null;
   limitation?: string;
+  /** Internal comparison; never includes the value or its length. */
+  observed?: TypeObservation;
   /** What changed in the page after the action, when it could be observed. */
   effect?: PageActionEffect;
 }
 
-export type WaitCondition =
-  | "selector"
-  | "text"
-  | "urlContains"
-  | "titleContains";
+export const WAIT_CONDITIONS = [
+  "selector",
+  "text",
+  "urlContains",
+  "titleContains",
+  "document",
+  "newTab",
+  "tabClosed",
+  "dialog",
+] as const;
+export type WaitCondition = (typeof WAIT_CONDITIONS)[number];
 
-export type WaitUntil = "present" | "absent";
+export const WAIT_UNTIL = ["present", "absent"] as const;
+export type WaitUntil = (typeof WAIT_UNTIL)[number];
+
+/** Selector state; `until: absent` means the state does not hold. */
+export const WAIT_ELEMENT_STATES = ["present", "visible", "enabled"] as const;
+export type WaitElementState = (typeof WAIT_ELEMENT_STATES)[number];
 
 export interface WaitForParams {
   tabId: string;
   selector?: string;
+  state?: WaitElementState;
   text?: string;
   urlContains?: string;
   titleContains?: string;
+  /** Wait until the document identity differs from documentId or the first probe. */
+  documentChanged?: boolean;
+  documentId?: string;
+  /** Wait until a tab opens after the wait starts. */
+  newTab?: boolean;
+  /** Wait until the given tab closes. */
+  tabClosed?: boolean;
+  /** Wait until a browser dialog appears after the wait starts. */
+  dialog?: boolean;
   until?: WaitUntil;
   timeoutMs?: number;
   pollMs?: number;
@@ -1034,6 +1282,44 @@ export interface WaitForResult {
   framePath?: number[];
   /** URL of the frame whose document was probed, when framePath was used. */
   frameUrl?: string | null;
+  /** Selector state that was requested. */
+  state?: WaitElementState;
+  /** Document identity observed at the end of the wait. */
+  documentId?: string;
+  /** Tab that opened for a newTab wait. */
+  newTabId?: string;
+  limitation?: string;
+}
+
+/** A bounded control shown in an action delta. */
+export interface ActionControlBrief {
+  role: string;
+  name: string;
+  type: string | null;
+}
+
+export interface ActionControlChange extends ActionControlBrief {
+  /** Which state fields changed, such as visible or checked. */
+  changes: string[];
+}
+
+/**
+ * Bounded structural changes observed after an action. Attribution is always
+ * "observed_after_action_not_proven"; a change near the action is not proof
+ * that the action caused it.
+ */
+export interface PageActionDelta {
+  addedControls: ActionControlBrief[];
+  removedControls: ActionControlBrief[];
+  changedControls: ActionControlChange[];
+  addedHeadings: string[];
+  removedHeadings: string[];
+  addedAlerts: string[];
+  removedAlerts: string[];
+  textChanged: boolean;
+  textLengthDelta: number;
+  readyState: string;
+  /** Set when comparison across documents would be misleading. */
   limitation?: string;
 }
 
@@ -1047,6 +1333,11 @@ export interface PageActionEffect {
   waitedMs: number;
   /** True when a signature could not be captured before or after the action. */
   probeFailed?: boolean;
+  navigation?: boolean;
+  documentReplaced?: boolean;
+  readyState?: string;
+  attribution?: "observed_after_action_not_proven";
+  delta?: PageActionDelta;
 }
 
 export interface GlanceParams {

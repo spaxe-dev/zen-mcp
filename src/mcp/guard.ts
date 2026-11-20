@@ -193,6 +193,7 @@ const SENSITIVE_ARG_KEYS = new Set([
   "quote",
   "sourceTitle",
   "source_title",
+  "target",
   "text",
 ]);
 
@@ -358,7 +359,7 @@ function summarizeValue(
       continue;
     }
     const summarized =
-      key === "url" && typeof entry === "string"
+      (key === "url" || key === "urlContains") && typeof entry === "string"
         ? redactUrlForAudit(entry)
         : key === "urls" && Array.isArray(entry)
           ? entry

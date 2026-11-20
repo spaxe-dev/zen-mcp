@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { WebSocket, WebSocketServer as WsServer } from "ws";
 import { WebSocketServer } from "ws";
 import { BRIDGE_PROTOCOL_VERSION, SERVER_VERSION } from "../shared/brand.js";
+import { EventLog, filterPausedEvents } from "./event-log.js";
+import type { EventInput } from "./event-log.js";
 import {
   AUTH_FAILED_CLOSE_CODE,
   AUTH_NONCE_BYTES,
@@ -15,6 +17,10 @@ import {
   serverAuthMessage,
 } from "../shared/bridge-auth.js";
 import { BRIDGE_PATH } from "../shared/protocol.js";
+import {
+  BROWSER_EVENT_KINDS as BROWSER_EVENT_KIND_LIST,
+  BROWSER_EVENT_PHASES as BROWSER_EVENT_PHASE_LIST,
+} from "../shared/protocol.js";
 import type {
   ActivityTone,
   AgentEvent,
@@ -68,10 +74,16 @@ export class BridgeUnavailableError extends Error {
 export class BridgeRequestError extends Error {
   override name = "BridgeRequestError";
   readonly code: string;
+  readonly details?: Record<string, unknown>;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    details?: Record<string, unknown>
+  ) {
     super(message);
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -185,8 +197,49 @@ interface PendingConsent {
   state: "pending" | "granted" | "denied";
 }
 
-const MAX_EVENTS = 200;
 const MAX_EVENT_WAIT_SECONDS = 25;
+const MAX_EVENT_URL = 8_000;
+const MAX_EVENT_TEXT = 300;
+const MAX_EVENT_ID = 80;
+const BROWSER_EVENT_KINDS: ReadonlySet<string> = new Set(
+  BROWSER_EVENT_KIND_LIST
+);
+const BROWSER_EVENT_PHASES: ReadonlySet<string> = new Set(
+  BROWSER_EVENT_PHASE_LIST
+);
+/** The phase each kind can report; unlisted pairs are rejected, not titled. */
+const BROWSER_EVENT_PAIRS: ReadonlySet<string> = new Set([
+  "tab:opened",
+  "tab:closed",
+  "tab:selected",
+  "navigation:started",
+  "navigation:committed",
+  "navigation:completed",
+  "navigation:failed",
+  "navigation:redirect",
+  "navigation:same_document",
+  "document:replaced",
+  "dialog:shown",
+  "dialog:hidden",
+]);
+
+function browserEventTitle(kind: string, phase: string): string {
+  const titles: Record<string, string> = {
+    "tab:opened": "Tab opened",
+    "tab:closed": "Tab closed",
+    "tab:selected": "Tab selected",
+    "navigation:started": "Navigation started",
+    "navigation:committed": "Navigation committed",
+    "navigation:completed": "Navigation completed",
+    "navigation:failed": "Navigation failed",
+    "navigation:redirect": "Navigation redirected",
+    "navigation:same_document": "Same-document navigation",
+    "document:replaced": "Document replaced",
+    "dialog:shown": "Dialog shown",
+    "dialog:hidden": "Dialog hidden",
+  };
+  return titles[`${kind}:${phase}`] ?? "Browser event";
+}
 
 export class BridgeHub {
   readonly #marionette: MarionetteClient;
@@ -208,8 +261,9 @@ export class BridgeHub {
   readonly #pendingQuestions = new Map<string, PendingQuestion>();
   readonly #answeredQuestions: AnswerInboxEntry[] = [];
 
-  readonly #events: AgentEvent[] = [];
-  #eventSeq = 0;
+  readonly #events = new EventLog();
+  /** Browser observations dropped because their URL was not allowed. */
+  #filteredEvents = 0;
   #eventWaiters: Array<() => void> = [];
   #progress: UiProgress | null = null;
   #stopRequestedAt: number | null = null;
@@ -488,6 +542,13 @@ export class BridgeHub {
             this.#primaryWindowId = connection.windowId;
           }
           return;
+        case "browser.event": {
+          this.#onBrowserEvent(
+            connection,
+            message as Extract<BridgeToServer, { type: "browser.event" }>
+          );
+          return;
+        }
         case "bridge.pong":
           return;
         case "ui.answer":
@@ -541,7 +602,8 @@ export class BridgeHub {
             pending.reject(
               new BridgeRequestError(
                 message.error?.code ?? "bridge_error",
-                message.error?.message ?? "The bridge request failed"
+                message.error?.message ?? "The bridge request failed",
+                message.error?.details
               )
             );
           }
@@ -1549,27 +1611,86 @@ export class BridgeHub {
   }
 
   /**
-   * Adds an event for agents that poll `events()`. Events are retained for the
-   * life of the server so a later tool call can still see a Stop request.
+   * Validates one browser observation and adds it to the bounded log. Events
+   * are dropped while paused or before consent, and events that carry a URL
+   * outside the allowlist lose their URL and title.
+   */
+  #onBrowserEvent(
+    connection: BridgeConnection,
+    message: Extract<BridgeToServer, { type: "browser.event" }>
+  ): void {
+    if (!this.#accessGranted || this.#paused) return;
+    const event = message?.event;
+    if (!event || typeof event !== "object") return;
+    const kind = String(event.kind ?? "");
+    const phase = String(event.phase ?? "");
+    if (!BROWSER_EVENT_KINDS.has(kind) || !BROWSER_EVENT_PHASES.has(phase)) {
+      return;
+    }
+    if (!BROWSER_EVENT_PAIRS.has(`${kind}:${phase}`)) return;
+    const boundedText = (value: unknown, max: number): string =>
+      typeof value === "string" ? value.trim().slice(0, max) : "";
+    const tabId = boundedText(event.tabId, MAX_EVENT_ID);
+    const documentId = boundedText(event.documentId, MAX_EVENT_ID);
+    const label = boundedText(event.label, 40);
+    let url = boundedText(event.url, MAX_EVENT_URL);
+    let pageTitle = boundedText(event.title, MAX_EVENT_TEXT);
+    let detail = boundedText(event.detail, MAX_EVENT_TEXT);
+    // No URL is not proof of an allowed page: file:, about: and extension
+    // URLs all arrive empty here, so their titles never leave the browser.
+    if (kind !== "dialog") {
+      const allowed = url !== "" && isUrlAllowed(url, this.#allowedDomains);
+      if (!allowed) {
+        if (kind === "navigation" || kind === "document") {
+          this.#filteredEvents += 1;
+          return;
+        }
+        url = "";
+        pageTitle = "";
+        detail = "";
+      }
+    }
+    const composed = kind === "dialog" ? label : detail || pageTitle;
+    this.pushEvent(
+      {
+        kind: kind as AgentEvent["kind"],
+        phase: phase as AgentEvent["phase"],
+        title: browserEventTitle(kind, phase),
+        detail: composed || undefined,
+        windowId: connection.windowId,
+        source: "browser",
+        ...(tabId ? { tabId } : {}),
+        ...(url ? { url } : {}),
+        ...(documentId ? { documentId } : {}),
+      },
+      {
+        dedupeKey: [
+          connection.windowId,
+          kind,
+          phase,
+          tabId,
+          documentId,
+          url,
+          kind === "dialog" ? label : "",
+        ].join("|"),
+      }
+    );
+  }
+
+  /**
+   * Adds an event for agents that poll `events()`. Control events (stop,
+   * pause, watch, question) outlive the browser-observation TTL but still
+   * share the bounded 200-event buffer.
    */
   pushEvent(
-    input: {
-      kind: AgentEvent["kind"];
-      title: string;
-      detail?: string;
-      windowId?: string;
-      tabId?: string;
-      watchId?: string;
-      questionId?: string;
-    }
-  ): AgentEvent {
-    const event: AgentEvent = {
-      id: ++this.#eventSeq,
-      at: Date.now(),
-      ...input,
-    };
-    this.#events.push(event);
-    while (this.#events.length > MAX_EVENTS) this.#events.shift();
+    input: EventInput,
+    options: { dedupeKey?: string; dedupeWindowMs?: number } = {}
+  ): AgentEvent | null {
+    const event = this.#events.push(
+      { ...input, source: input.source ?? "server" },
+      options
+    );
+    if (!event) return null;
     const waiters = this.#eventWaiters;
     this.#eventWaiters = [];
     for (const waiter of waiters) {
@@ -1590,7 +1711,7 @@ export class BridgeHub {
       0,
       Math.min(MAX_EVENT_WAIT_SECONDS, options.waitSeconds ?? 0)
     );
-    if (waitSeconds > 0 && !this.#events.some((event) => event.id > after)) {
+    if (waitSeconds > 0 && this.#events.read(after).events.length === 0) {
       await new Promise<void>((resolve) => {
         let settled = false;
         const finish = () => {
@@ -1610,17 +1731,21 @@ export class BridgeHub {
   }
 
   #eventsResult(after: number): EventsResult {
-    const events = this.#events.filter((event) => event.id > after);
+    const read = this.#events.read(after);
+    // Pause silences browser observation, including events buffered before
+    // the user paused; control events (stop, pause, resume) still arrive.
+    const events = filterPausedEvents(read.events, this.#paused);
     const last = events[events.length - 1];
     return {
       events,
-      cursor: last ? last.id : Math.max(after, this.#eventSeq),
+      cursor: last ? last.id : read.cursor,
+      oldestCursor: read.oldestCursor,
+      missed: read.missed,
+      dropped: read.dropped,
+      filtered: this.#filteredEvents,
       stopped: this.#paused || this.#stopRequestedAt !== null,
       paused: this.#paused,
-      lastEventAt:
-        this.#events.length > 0
-          ? this.#events[this.#events.length - 1].at
-          : null,
+      lastEventAt: last ? last.at : null,
     };
   }
 

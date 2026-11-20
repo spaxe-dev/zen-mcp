@@ -110,7 +110,9 @@ const PAGE = (): string => `<!doctype html><html><head><title>MCP Test Page</tit
 <ul><li>alpha</li><li>beta</li></ul>
 <table><caption>Sample table</caption>
 <thead><tr><th>Name</th><th>Value</th></tr></thead>
-<tbody><tr><td>one</td><td>1</td></tr></tbody></table>
+<tbody><tr><td>one</td><td>1</td></tr>
+<tr><td>two</td><td>2</td></tr>
+<tr><td>three</td><td>3</td></tr></tbody></table>
 <p><a href="https://example.com/one">Example One</a>
 <a href="/relative">Relative</a></p>
 <section id="scope"><p>SCOPED TEXT</p></section>
@@ -119,14 +121,64 @@ const PAGE = (): string => `<!doctype html><html><head><title>MCP Test Page</tit
 <section id="omega"><h2>Omega context</h2><p>${REPEATED_QUOTE}</p></section>
 <p id="evidence-target">${EVIDENCE_QUOTE}</p>
 <p id="page-owned-mark" data-zen-mcp-evidence="mark">Page-owned lookalike marker.</p>
-<form id="form">
+<form id="form" aria-label="Contact form">
 <label for="name">Name</label>
 <input id="name" name="name" value="initial">
+<label for="email">Email</label>
+<input id="email" name="email" type="email" value="ada@example.com">
+<label for="otp">Code</label>
+<input id="otp" name="otp" autocomplete="one-time-code" value="123456">
+<label for="card">Card number</label>
+<input id="card" name="card" autocomplete="cc-number" value="4242 4242 4242 4242">
+<label for="notes">Notes</label>
+<textarea id="notes" name="notes">draft notes</textarea>
+<label for="password">Password</label>
+<input id="password" name="password" type="password">
+<label for="search">Search</label>
+<input id="search" name="search" placeholder="Search files">
+<label for="readonly">Read-only</label>
+<input id="readonly" name="readonly" readonly value="fixed">
+<label for="delta-field">Delta field</label>
+<input id="delta-field" name="delta" placeholder="Delta field">
+<label><input id="agree" name="agree" type="checkbox" checked> Agree</label>
+<label><input id="delta-check" name="delta-check" type="checkbox"> Delta agree</label>
+<input id="upload" name="upload" type="file">
 <button id="save" type="submit">Save</button>
 </form>
 <p id="result">idle</p>
 <button id="plain" type="button">Plain</button>
 <p id="clicked">not clicked</p>
+<button id="duplicate-a" type="button">Continue</button>
+<button id="duplicate-b" type="button">Continue</button>
+<button id="hidden-action" type="button" style="display: none">Hidden action</button>
+<button id="disabled-action" type="button" disabled>Disabled action</button>
+<button id="alert-action" type="button">Show alert</button>
+<div id="alerts" aria-live="polite"></div>
+<button id="heading-action" type="button">Add heading</button>
+<div id="headings"></div>
+<p id="mutation-count">mutations 0</p>
+<button id="counter" type="button">Count</button>
+<p id="count">count 0</p>
+<button id="swap" type="button">Swap clone</button>
+<button id="replace-me" type="button">Replace target</button>
+<p id="replace-state">original</p>
+<a id="navigate" href="?nav=1">Navigate away</a>
+<section id="cards" aria-label="Results">
+<div><a href="/alpha">Alpha card</a><span>$10</span></div>
+<div><a href="/beta">Beta card</a><span>$20</span></div>
+<div><a href="/gamma">Gamma card</a><span>$30</span></div>
+</section>
+<div id="reveal-panel" hidden><button id="reveal-target" type="button">Revealed</button></div>
+<button id="reveal-button" type="button">Reveal panel</button>
+<button id="enable-target" type="button" disabled>Enable target</button>
+<button id="enable-button" type="button">Enable target button</button>
+<dialog id="semantic-dialog" aria-label="Semantic dialog" aria-modal="true">
+<p>Modal body</p><button id="close-dialog" type="button">Close dialog</button>
+</dialog>
+<button id="open-dialog" type="button">Open dialog</button>
+<div aria-hidden="true"><h2>Hidden heading</h2><p>decorative</p></div>
+<div id="shadow-host"></div>
+<section aria-label="After shadow"><h2>After shadow</h2><p>visible again</p></section>
 <p><iframe id="inner" src="${FRAME_URL}/frame" title="inner frame"></iframe></p>
 <div class="tick">tick 0</div>
 <script>
@@ -144,6 +196,64 @@ document.querySelector("#form").addEventListener("submit", (event) => {
 document.querySelector("#plain").addEventListener("click", () => {
   document.querySelector("#clicked").textContent = "clicked once";
 });
+document.querySelector("#alert-action").addEventListener("click", () => {
+  const alert = document.createElement("p");
+  alert.setAttribute("role", "alert");
+  alert.textContent = "Saved alert";
+  document.querySelector("#alerts").append(alert);
+});
+document.querySelector("#heading-action").addEventListener("click", () => {
+  const heading = document.createElement("h2");
+  heading.textContent = "Dynamic heading";
+  document.querySelector("#headings").append(heading);
+});
+let count = 0;
+document.querySelector("#counter").addEventListener("click", () => {
+  count += 1;
+  document.querySelector("#count").textContent = "count " + count;
+});
+document.querySelector("#swap").addEventListener("click", () => {
+  const target = document.querySelector("#replace-me");
+  const clone = target.cloneNode(true);
+  target.replaceWith(clone);
+  document.querySelector("#replace-state").textContent = "replaced";
+});
+document.querySelector("#replace-me").addEventListener("click", () => {
+  document.querySelector("#replace-state").textContent = "original clicked";
+});
+document.querySelector("#reveal-button").addEventListener("click", () => {
+  document.querySelector("#reveal-panel").hidden = false;
+});
+document.querySelector("#enable-button").addEventListener("click", () => {
+  document.querySelector("#enable-target").disabled = false;
+});
+document.querySelector("#open-dialog").addEventListener("click", () => {
+  document.querySelector("#semantic-dialog").showModal();
+});
+document.querySelector("#close-dialog").addEventListener("click", () => {
+  document.querySelector("#semantic-dialog").close();
+});
+// Scoped to the form tree so the ticker cannot inflate the count. A read that
+// instruments the page with attributes would be visible here.
+window.__zenFormMutations = 0;
+new MutationObserver((records) => {
+  window.__zenFormMutations += records.length;
+  document.querySelector("#mutation-count").textContent =
+    "mutations " + window.__zenFormMutations;
+}).observe(document.querySelector("#form"), {
+  attributes: true,
+  childList: true,
+  subtree: true,
+});
+const shadow = document.querySelector("#shadow-host").attachShadow({ mode: "open" });
+shadow.innerHTML =
+  '<section aria-label="Shadow section"><h2>Shadow heading</h2>' +
+  '<label for="shadow-input">Shadow field</label>' +
+  '<input id="shadow-input" placeholder="Shadow field">' +
+  '<button id="shadow-button" type="button">Shadow button</button></section>';
+shadow.querySelector("#shadow-button").addEventListener("click", () => {
+  document.querySelector("#clicked").textContent = "shadow clicked";
+});
 </script>
 </main></body></html>`;
 
@@ -158,18 +268,40 @@ describe(
     let tabId = "";
     let secondTabId = "";
 
+    const rawCall = async (
+      name: string,
+      args: Record<string, unknown> = {}
+    ): Promise<any> =>
+      client!.callTool({ name, arguments: args }, undefined, {
+        timeout: 60_000,
+      });
+
     const call = async (
       name: string,
       args: Record<string, unknown> = {}
     ): Promise<any> => {
-      const result = await client!.callTool({ name, arguments: args }, undefined, {
-        timeout: 60_000,
-      });
+      const result = await rawCall(name, args);
       const text =
         (result as any).content?.find((part: any) => part.type === "text")?.text ??
         "";
       if (result.isError) throw new Error(`${name} failed: ${text}`);
       return JSON.parse(text);
+    };
+
+    const callError = async (
+      name: string,
+      args: Record<string, unknown> = {}
+    ): Promise<{ text: string; error: any; result: any }> => {
+      const result = await rawCall(name, args);
+      assert.equal(result.isError, true, `${name} should fail`);
+      const text =
+        (result as any).content?.find((part: any) => part.type === "text")?.text ??
+        "";
+      return {
+        text,
+        error: (result as any).structuredContent?.error,
+        result,
+      };
     };
 
     before(async () => {
@@ -384,6 +516,570 @@ describe(
       );
     });
 
+    it("waits for a visible or enabled element", async () => {
+      const hidden = await call("zen_wait_for", {
+        tabId,
+        selector: "#reveal-target",
+        state: "visible",
+        timeout_ms: 300,
+        poll_ms: 100,
+      });
+      assert.equal(hidden.matched, false);
+
+      const visibleWait = call("zen_wait_for", {
+        tabId,
+        selector: "#reveal-target",
+        state: "visible",
+        timeout_ms: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await call("zen_click", {
+        tabId,
+        target: { selector: "#reveal-button" },
+      });
+      const visible = await visibleWait;
+      assert.equal(visible.matched, true);
+      assert.equal(visible.state, "visible");
+
+      const disabled = await call("zen_wait_for", {
+        tabId,
+        selector: "#enable-target",
+        state: "enabled",
+        timeout_ms: 300,
+        poll_ms: 100,
+      });
+      assert.equal(disabled.matched, false);
+
+      const enabledWait = call("zen_wait_for", {
+        tabId,
+        selector: "#enable-target",
+        state: "enabled",
+        timeout_ms: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await call("zen_click", {
+        tabId,
+        target: { selector: "#enable-button" },
+      });
+      const enabled = await enabledWait;
+      assert.equal(enabled.matched, true);
+      assert.equal(enabled.state, "enabled");
+    });
+
+    it("reads a semantic model with landmarks, headings and coverage", async () => {
+      const read = await call("zen_read_page", { tabId, format: "semantic" });
+      assert.equal(read.format, "semantic");
+      // Semantic reads carry no page field values; the fixture selects no text.
+      assert.equal(read.selectedText, "");
+      const model = read.semantic;
+      assert.ok(model);
+      assert.ok(
+        [
+          "article",
+          "search-results",
+          "product",
+          "listing",
+          "dashboard",
+          "login",
+          "form",
+          "documentation",
+          "discussion",
+          "generic",
+        ].includes(model.classification)
+      );
+      assert.ok(model.confidence >= 0 && model.confidence <= 1);
+      assert.ok(model.signals.length <= 6);
+      assert.ok(model.limitations.length <= 5);
+
+      const roles = model.regions.map((region: any) => region.role);
+      assert.ok(roles.includes("main"), JSON.stringify(roles));
+      assert.ok(roles.includes("form"), JSON.stringify(roles));
+      assert.ok(roles.includes("table"), JSON.stringify(roles));
+      assert.ok(model.regions.length <= 40);
+      assert.ok(model.headings.length <= 40);
+      assert.ok(
+        model.headings.some(
+          (heading: any) => heading.level === 1 && /MCP heading/.test(heading.text)
+        )
+      );
+      assert.ok(
+        model.headings.some(
+          (heading: any) =>
+            heading.level === 2 && /Second heading/.test(heading.text)
+        )
+      );
+
+      const cards = model.regions.find((region: any) => region.label === "Results");
+      assert.ok(cards, JSON.stringify(model.regions));
+      assert.equal(cards.items, 3);
+      assert.equal(cards.itemKind, "cards");
+      assert.ok(
+        model.collections.some(
+          (collection: any) =>
+            collection.regionId === cards.id &&
+            collection.count === 3 &&
+            collection.sample.length === 3
+        )
+      );
+
+      const tableRegion = model.regions.find(
+        (region: any) => region.role === "table"
+      );
+      assert.ok(tableRegion, JSON.stringify(model.regions));
+      assert.equal(tableRegion.items, 3);
+      assert.equal(tableRegion.itemKind, "results");
+
+      const main = model.regions.find((region: any) => region.role === "main");
+      assert.ok(main, JSON.stringify(model.regions));
+      const shadowRegion = model.regions.find(
+        (region: any) => region.label === "Shadow section"
+      );
+      assert.ok(shadowRegion, JSON.stringify(model.regions));
+      assert.equal(shadowRegion.parent, main.id);
+      const afterShadow = model.regions.find(
+        (region: any) => (region.label ?? region.heading) === "After shadow"
+      );
+      assert.ok(afterShadow, JSON.stringify(model.regions));
+      assert.equal(afterShadow.parent, main.id);
+      assert.ok(
+        !model.headings.some((heading: any) => /Hidden heading/.test(heading.text))
+      );
+
+      // The fixture contains a child frame, which the semantic model never
+      // models, so coverage must not claim completeness. The caveat lives in
+      // the read-level limitations, not twice in both lists.
+      assert.equal(model.coverage.complete, false);
+      assert.ok(
+        read.limitations.some((limitation: string) => /frame/i.test(limitation)),
+        JSON.stringify(read.limitations)
+      );
+      assert.ok(
+        !model.limitations.some((limitation: string) => /frame/i.test(limitation)),
+        "the child-frame caveat is reported once"
+      );
+      assert.equal(read.outline, undefined, "semantic reads do not repeat headings");
+      for (const region of model.regions as any[]) {
+        assert.ok(
+          region.label === undefined || region.label !== region.heading,
+          "duplicate labels are omitted"
+        );
+        assert.notEqual(region.controls, 0, "zero control counts are omitted");
+        assert.notEqual(region.links, 0, "zero link counts are omitted");
+      }
+      assert.ok(model.coverage.nodes > 0);
+      assert.ok(model.coverage.tables >= 1);
+      assert.ok(model.coverage.regions <= 40);
+      assert.equal(typeof model.coverage.regionsTruncated, "boolean");
+
+      const serialized = JSON.stringify(model);
+      assert.equal(serialized.includes("ada@example.com"), false);
+      assert.equal(serialized.includes("4242 4242"), false);
+      assert.equal(serialized.includes("123456"), false);
+      assert.equal(serialized.includes("draft notes"), false);
+
+      const heading = read.semantic.headings.find((entry: any) =>
+        /Second heading/.test(entry.text)
+      );
+      assert.ok(heading?.ref);
+      const clicked = await call("zen_click", { tabId, ref: heading.ref });
+      assert.equal(clicked.clicked, true);
+    });
+
+    it("reports a modal dialog in the semantic model", async () => {
+      await call("zen_click", {
+        tabId,
+        target: { selector: "#open-dialog" },
+      });
+      try {
+        const read = await call("zen_read_page", { tabId, format: "semantic" });
+        const dialog = read.semantic.dialogs.find(
+          (entry: any) => entry.label === "Semantic dialog"
+        );
+        assert.ok(dialog, JSON.stringify(read.semantic.dialogs));
+        assert.equal(dialog.modal, true);
+        assert.ok(
+          read.semantic.regions.some((region: any) => region.role === "dialog")
+        );
+      } finally {
+        await call("zen_click", {
+          tabId,
+          target: { selector: "#close-dialog" },
+        });
+      }
+    });
+
+    it("reports tab and navigation events with document identity", async () => {
+      const start = await call("zen_events", { waitSeconds: 0 });
+      const opened = await call("zen_tabs_open", {
+        urls: [`${page.url}?events=1`],
+        space: spaceId,
+      });
+      const eventTabId = opened.tabs[0].id;
+      try {
+        const openedEvents = await call("zen_events", {
+          after: start.cursor,
+          waitSeconds: 10,
+        });
+        assert.ok(
+          openedEvents.events.some(
+            (event: any) =>
+              event.kind === "tab" &&
+              event.phase === "opened" &&
+              event.tabId === eventTabId
+          ),
+          JSON.stringify(openedEvents)
+        );
+        assert.equal(openedEvents.missed, 0);
+        assert.equal(typeof openedEvents.oldestCursor, "number");
+        assert.equal(openedEvents.dropped, 0);
+
+        const loaded = await call("zen_wait_for", {
+          tabId: eventTabId,
+          title_contains: "mcp test",
+          timeout_ms: 10_000,
+        });
+        assert.equal(loaded.matched, true);
+
+        const navigationEvents = await call("zen_events", {
+          after: openedEvents.cursor,
+          waitSeconds: 10,
+        });
+        // The committed navigation may already be buffered when the first read
+        // runs, so both reads together cover the tab's lifecycle.
+        const navigation = [...openedEvents.events, ...navigationEvents.events].find(
+          (event: any) =>
+            event.kind === "navigation" &&
+            (event.phase === "committed" || event.phase === "completed") &&
+            event.tabId === eventTabId
+        );
+        assert.ok(navigation, JSON.stringify(navigationEvents));
+        assert.match(String(navigation.documentId), /^doc-\d+$/);
+        assert.equal(navigation.source, "browser");
+      } finally {
+        await call("zen_tabs_close", { tabIds: [eventTabId] });
+      }
+
+      const closed = await call("zen_events", { waitSeconds: 10 });
+      assert.ok(
+        closed.events.some(
+          (event: any) =>
+            event.kind === "tab" &&
+            event.phase === "closed" &&
+            event.tabId === eventTabId
+        ),
+        JSON.stringify(closed)
+      );
+    });
+
+    it("waits for a new tab and for a tab closing", async () => {
+      const newTabWait = call("zen_wait_for", {
+        tabId,
+        new_tab: true,
+        timeout_ms: 15_000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const opened = await call("zen_tabs_open", {
+        urls: [`${page.url}?wait-new=1`],
+        space: spaceId,
+      });
+      const tempId = opened.tabs[0].id;
+      try {
+        const newTab = await newTabWait;
+        assert.equal(newTab.matched, true);
+        assert.equal(newTab.newTabId, tempId);
+
+        const closeWait = call("zen_wait_for", {
+          tabId: tempId,
+          tab_closed: true,
+          timeout_ms: 15_000,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await call("zen_tabs_close", { tabIds: [tempId] });
+        const closed = await closeWait;
+        assert.equal(closed.matched, true);
+        assert.match(String(closed.limitation), /closed/i);
+
+        const alreadyClosed = await call("zen_wait_for", {
+          tabId: tempId,
+          tab_closed: true,
+          timeout_ms: 500,
+        });
+        assert.equal(alreadyClosed.matched, true);
+      } finally {
+        await call("zen_tabs_close", { tabIds: [tempId] }).catch(
+          () => undefined
+        );
+      }
+    });
+
+    it("waits for a document change and a specific document identity", async () => {
+      const opened = await call("zen_tabs_open", {
+        urls: [`${page.url}?identity-wait=1`],
+        space: spaceId,
+      });
+      const navTabId = opened.tabs[0].id;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const stable = await call("zen_wait_for", {
+          tabId: navTabId,
+          document_changed: true,
+          timeout_ms: 300,
+          poll_ms: 100,
+        });
+        assert.equal(stable.matched, false);
+
+        const changeWait = call("zen_wait_for", {
+          tabId: navTabId,
+          document_changed: true,
+          timeout_ms: 15_000,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const snapshot = await call("zen_read_page", {
+          tabId: navTabId,
+          format: "snapshot",
+        });
+        const navigate = snapshot.elements.find(
+          (element: any) => element.label === "Navigate away"
+        );
+        assert.ok(navigate?.ref);
+        await call("zen_click", { tabId: navTabId, ref: navigate.ref });
+
+        const changed = await changeWait;
+        assert.equal(changed.matched, true);
+        assert.match(String(changed.documentId), /^doc-\d+$/);
+
+        const identity = await call("zen_wait_for", {
+          tabId: navTabId,
+          document_id: changed.documentId,
+          timeout_ms: 15_000,
+        });
+        assert.equal(identity.matched, true, JSON.stringify(identity));
+        assert.equal(identity.condition, "document");
+      } finally {
+        await call("zen_tabs_close", { tabIds: [navTabId] }).catch(
+          () => undefined
+        );
+      }
+    });
+
+    it("resolves semantic targets and refuses ambiguity", async () => {
+      const byRole = await call("zen_click", {
+        tabId,
+        target: { role: "button", name: "Plain" },
+      });
+      assert.equal(byRole.clicked, true);
+      assert.equal(byRole.target.role, "button");
+      assert.equal(byRole.target.label, "Plain");
+
+      const byText = await call("zen_click", {
+        tabId,
+        target: { text: "Plain" },
+      });
+      assert.equal(byText.clicked, true);
+
+      const bySelector = await call("zen_click", {
+        tabId,
+        target: { selector: "#plain" },
+      });
+      assert.equal(bySelector.clicked, true);
+
+      const ambiguous = await callError("zen_click", {
+        tabId,
+        target: { role: "button", name: "Continue" },
+      });
+      assert.match(ambiguous.text, /target_ambiguous/);
+      assert.equal(ambiguous.error?.code, "target_ambiguous");
+      assert.equal(ambiguous.error?.category, "ambiguous");
+      assert.equal(ambiguous.error?.details?.candidates?.length, 2);
+      assert.deepEqual(
+        ambiguous.error.details.candidates.map((entry: any) => entry.name),
+        ["Continue", "Continue"]
+      );
+
+      const missing = await callError("zen_click", {
+        tabId,
+        target: { text: "No such action" },
+      });
+      assert.equal(missing.error?.code, "target_not_found");
+      assert.equal(missing.error?.category, "not_found");
+
+      const hidden = await callError("zen_click", {
+        tabId,
+        target: { role: "button", name: "Hidden action" },
+      });
+      assert.equal(hidden.error?.code, "target_not_actionable");
+      assert.equal(hidden.error?.details?.reason, "hidden");
+
+      const disabled = await callError("zen_click", {
+        tabId,
+        target: { role: "button", name: "Disabled action" },
+      });
+      assert.equal(disabled.error?.code, "target_not_actionable");
+      assert.equal(disabled.error?.details?.reason, "disabled");
+
+      const mixed = await callError("zen_type", {
+        tabId,
+        ref: "e1",
+        target: { label: "Notes" },
+        text: "x",
+      });
+      assert.equal(mixed.error?.code, "invalid_target");
+    });
+
+    it("types using labels and placeholders without exposing values", async () => {
+      const byLabel = await call("zen_type", {
+        tabId,
+        target: { label: "Notes" },
+        text: " more",
+      });
+      assert.equal(byLabel.typed, 5);
+      assert.equal(byLabel.cleared, false);
+      assert.equal(byLabel.target.label, "Notes");
+      assert.deepEqual(byLabel.observed, {
+        compared: true,
+        matchesInput: true,
+        sensitive: false,
+      });
+      assert.doesNotMatch(JSON.stringify(byLabel), / more/);
+
+      const byPlaceholder = await call("zen_type", {
+        tabId,
+        target: { placeholder: "Search files" },
+        text: "report",
+        clear: true,
+      });
+      assert.equal(byPlaceholder.typed, 6);
+      assert.equal(byPlaceholder.cleared, true);
+      assert.deepEqual(byPlaceholder.observed, {
+        compared: true,
+        matchesInput: true,
+        sensitive: false,
+      });
+
+      const secret = await call("zen_type", {
+        tabId,
+        target: { label: "Password" },
+        text: "correct horse",
+        clear: true,
+      });
+      assert.equal(secret.typed, 13);
+      assert.deepEqual(secret.observed, {
+        compared: false,
+        matchesInput: null,
+        sensitive: true,
+      });
+      assert.doesNotMatch(JSON.stringify(secret), /correct horse/);
+
+      const readonly = await callError("zen_type", {
+        tabId,
+        target: { label: "Read-only" },
+        text: "x",
+      });
+      assert.equal(readonly.error?.code, "target_not_actionable");
+      assert.equal(readonly.error?.details?.reason, "read_only");
+
+      const file = await callError("zen_type", {
+        tabId,
+        target: { label: "Agree" },
+        text: "x",
+      });
+      assert.equal(file.error?.code, "target_not_actionable");
+      assert.equal(file.error?.details?.reason, "not_editable");
+    });
+
+    it("searches open shadow roots with semantic targets only", async () => {
+      const clicked = await call("zen_click", {
+        tabId,
+        target: { role: "button", name: "Shadow button" },
+      });
+      assert.equal(clicked.clicked, true);
+      const read = await call("zen_read_page", { tabId });
+      assert.match(read.text, /shadow clicked/);
+
+      const typed = await call("zen_type", {
+        tabId,
+        target: { placeholder: "Shadow field" },
+        text: "shadow",
+      });
+      assert.equal(typed.observed?.matchesInput, true);
+
+      const bySelector = await callError("zen_click", {
+        tabId,
+        target: { selector: "#shadow-button" },
+      });
+      assert.equal(bySelector.error?.code, "target_not_found");
+
+      const inFrame = await callError("zen_click", {
+        tabId,
+        target: { text: "Frame button" },
+      });
+      assert.equal(inFrame.error?.code, "target_not_found");
+    });
+
+    it("keeps legacy error codes and adds a structured category", async () => {
+      const legacy = await callError("zen_click", { tabId, ref: "e9999" });
+      assert.equal(legacy.error?.code, "element_not_found");
+      assert.equal(legacy.error?.category, "stale_reference");
+      assert.match(legacy.text, /element_not_found/);
+
+      const structured = await callError("zen_click", {
+        tabId,
+        target: { ref: "e9999" },
+      });
+      assert.equal(structured.error?.code, "stale_reference");
+      assert.equal(structured.error?.category, "stale_reference");
+      assert.equal(structured.error?.details?.ref, "e9999");
+    });
+
+    it("reports bounded deltas after an action", async () => {
+      const alert = await call("zen_click", {
+        tabId,
+        target: { role: "button", name: "Show alert" },
+      });
+      assert.equal(alert.clicked, true);
+      assert.equal(alert.effect.attribution, "observed_after_action_not_proven");
+      assert.ok(alert.effect.delta);
+      assert.ok(alert.effect.delta.addedAlerts.includes("Saved alert"));
+
+      const again = await call("zen_click", {
+        tabId,
+        target: { role: "button", name: "Show alert" },
+      });
+      assert.ok(
+        again.effect.delta.addedAlerts.includes("Saved alert"),
+        `a repeated identical alert should still be reported: ${JSON.stringify(again.effect.delta)}`
+      );
+
+      const heading = await call("zen_click", {
+        tabId,
+        target: { role: "button", name: "Add heading" },
+      });
+      assert.ok(heading.effect.delta.addedHeadings.includes("Dynamic heading"));
+
+      const checkbox = await call("zen_click", {
+        tabId,
+        target: { role: "checkbox", name: "Delta agree" },
+      });
+      const toggle = checkbox.effect.delta.changedControls.find(
+        (control: any) => control.name === "Delta agree"
+      );
+      assert.ok(toggle, "the toggled checkbox should be in the delta");
+      assert.ok(toggle.changes.includes("checked"));
+
+      const typed = await call("zen_type", {
+        tabId,
+        target: { label: "Delta field" },
+        text: "hello",
+      });
+      assert.equal(typed.observed.matchesInput, true);
+      const filled = typed.effect.delta.changedControls.find(
+        (control: any) => control.name === "Delta field"
+      );
+      assert.ok(filled, "the typed field should be in the delta");
+      assert.ok(filled.changes.includes("valuePresent"));
+      assert.doesNotMatch(JSON.stringify(typed.effect), /hello/);
+    });
+
     it("clicks and types with a visible effect", async () => {
       const interactive = await call("zen_read_page", {
         tabId,
@@ -423,6 +1119,282 @@ describe(
 
       const read = await call("zen_read_page", { tabId });
       assert.match(read.text, /saved Ada/);
+    });
+
+    it("keeps snapshots private and leaves the DOM untouched", async () => {
+      const mutationCount = (text: string): number =>
+        Number(/mutations (\d+)/.exec(text)?.[1] ?? NaN);
+      const before = await call("zen_read_page", { tabId });
+      const beforeCount = mutationCount(before.text);
+      assert.ok(Number.isFinite(beforeCount), before.text);
+
+      const snapshot = await call("zen_read_page", {
+        tabId,
+        format: "snapshot",
+      });
+      assert.match(snapshot.snapshotId, /^snap-/);
+      assert.equal(snapshot.format, "snapshot");
+      assert.equal(snapshot.nextOffset, null);
+      assert.equal(snapshot.selectedText, "");
+      assert.equal(snapshot.snapshotComplete, true);
+      assert.equal(snapshot.framesComplete, true);
+      assert.ok(snapshot.elementsTotal >= 6);
+      assert.ok(snapshot.elements.length >= 6);
+      assert.ok(snapshot.outline.length >= 1);
+      assert.ok(snapshot.text.length <= 4_000);
+
+      for (const element of snapshot.elements) {
+        assert.ok(
+          !("value" in element),
+          `${element.ref} serialized a value field`
+        );
+        assert.ok(!("valueLength" in element));
+      }
+
+      const email = snapshot.elements.find(
+        (element: any) => element.type === "email"
+      );
+      assert.ok(email);
+      assert.equal(email.sensitive, true);
+      assert.equal(email.valuePresent, true);
+
+      const otp = snapshot.elements.find(
+        (element: any) => element.autocomplete === "one-time-code"
+      );
+      assert.ok(otp);
+      assert.equal(otp.sensitive, true);
+      assert.equal(otp.valuePresent, true);
+
+      const ord = snapshot.elements.find(
+        (element: any) => element.tag === "input" && element.label === "Name"
+      );
+      assert.ok(ord);
+      assert.equal(ord.sensitive, false);
+      assert.ok(!("value" in ord));
+
+      const password = snapshot.elements.find(
+        (element: any) => element.type === "password"
+      );
+      assert.ok(password);
+      assert.equal(password.sensitive, true);
+      assert.ok(!("value" in password));
+
+      const card = snapshot.elements.find(
+        (element: any) => element.autocomplete === "cc-number"
+      );
+      assert.ok(card);
+      assert.equal(card.sensitive, true);
+      assert.equal(card.valuePresent, true);
+      assert.ok(!("value" in card));
+
+      const notes = snapshot.elements.find(
+        (element: any) => element.tag === "textarea"
+      );
+      assert.ok(notes);
+      assert.equal(notes.valuePresent, true);
+      assert.equal(notes.editable, true);
+
+      const agree = snapshot.elements.find(
+        (element: any) => element.type === "checkbox"
+      );
+      assert.ok(agree);
+      assert.equal(agree.selected, true);
+      assert.equal(agree.form, "form");
+
+      const upload = snapshot.elements.find(
+        (element: any) => element.type === "file"
+      );
+      assert.ok(upload);
+      assert.equal(upload.sensitive, true);
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const after = await call("zen_read_page", { tabId });
+      assert.equal(mutationCount(after.text), beforeCount);
+    });
+
+    it("keeps a ref valid across repeated actions on one node", async () => {
+      const snapshot = await call("zen_read_page", {
+        tabId,
+        format: "snapshot",
+      });
+      const counter = snapshot.elements.find(
+        (element: any) => element.label === "Count"
+      );
+      assert.ok(counter?.ref);
+
+      const first = await call("zen_click", { tabId, ref: counter.ref });
+      assert.equal(first.clicked, true);
+      const second = await call("zen_click", { tabId, ref: counter.ref });
+      assert.equal(second.clicked, true);
+
+      const read = await call("zen_wait_for", {
+        tabId,
+        text: "count 2",
+        timeout_ms: 5_000,
+      });
+      assert.equal(read.matched, true);
+    });
+
+    it("rejects a ref whose node was replaced by an identical clone", async () => {
+      const snapshot = await call("zen_read_page", {
+        tabId,
+        format: "snapshot",
+      });
+      const target = snapshot.elements.find(
+        (element: any) => element.label === "Replace target"
+      );
+      const swap = snapshot.elements.find(
+        (element: any) => element.label === "Swap clone"
+      );
+      assert.ok(target?.ref);
+      assert.ok(swap?.ref);
+
+      const replaced = await call("zen_click", { tabId, ref: swap.ref });
+      assert.equal(replaced.clicked, true);
+
+      const state = await call("zen_wait_for", {
+        tabId,
+        text: "replaced",
+        timeout_ms: 5_000,
+      });
+      assert.equal(state.matched, true);
+
+      await assert.rejects(
+        call("zen_click", { tabId, ref: target.ref }),
+        /element_not_found|stale|removed|replaced/
+      );
+
+      const fresh = await call("zen_read_page", {
+        tabId,
+        format: "snapshot",
+      });
+      const freshTarget = fresh.elements.find(
+        (element: any) => element.label === "Replace target"
+      );
+      assert.ok(freshTarget?.ref);
+      const clicked = await call("zen_click", {
+        tabId,
+        ref: freshTarget.ref,
+      });
+      assert.equal(clicked.clicked, true);
+    });
+
+    it("invalidates refs when the document navigates", async () => {
+      const opened = await call("zen_tabs_open", {
+        urls: [`${page.url}?identity=1`],
+        space: spaceId,
+      });
+      const navTabId = opened.tabs[0].id;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const snapshot = await call("zen_read_page", {
+          tabId: navTabId,
+          format: "snapshot",
+        });
+        const navigate = snapshot.elements.find(
+          (element: any) => element.label === "Navigate away"
+        );
+        const counter = snapshot.elements.find(
+          (element: any) => element.label === "Count"
+        );
+        assert.ok(navigate?.ref);
+        assert.ok(counter?.ref);
+
+        const clicked = await call("zen_click", {
+          tabId: navTabId,
+          ref: navigate.ref,
+        });
+        assert.equal(clicked.clicked, true);
+        assert.equal(clicked.effect?.navigation, true);
+        assert.equal(clicked.effect?.documentReplaced, true);
+        assert.match(
+          String(clicked.effect?.delta?.limitation),
+          /document was replaced/
+        );
+
+        const moved = await call("zen_wait_for", {
+          tabId: navTabId,
+          url_contains: "nav=1",
+          timeout_ms: 10_000,
+        });
+        assert.equal(moved.matched, true);
+
+        await assert.rejects(
+          call("zen_click", { tabId: navTabId, ref: counter.ref }),
+          /element_not_found|navigation|replaced/
+        );
+      } finally {
+        await call("zen_tabs_close", { tabIds: [navTabId] }).catch(
+          () => undefined
+        );
+      }
+    });
+
+    it("separates snapshot collection completeness from output caps", async () => {
+      const controls = Array.from(
+        { length: 250 },
+        (_, index) => `<button type="button">Action ${index + 1}</button>`
+      ).join("");
+      const headings = Array.from(
+        { length: 90 },
+        (_, index) => `<h2>Heading ${index + 1}</h2>`
+      ).join("");
+      const filler = `<p>${"Long page text. ".repeat(400)}</p>`;
+      const complexPage = await startPageServer(
+        `<!doctype html><html><head><title>Snapshot Matrix</title></head>` +
+          `<body><main>${headings}${filler}${controls}` +
+          `<iframe src="about:blank" title="opaque frame"></iframe>` +
+          `</main></body></html>`
+      );
+      const opened = await call("zen_tabs_open", {
+        urls: [complexPage.url],
+        space: spaceId,
+      });
+      const complexTabId = opened.tabs[0].id;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const snapshot = await call("zen_read_page", {
+          tabId: complexTabId,
+          format: "snapshot",
+        });
+        assert.equal(snapshot.elements.length, 100);
+        assert.ok(snapshot.elementsTotal >= 250);
+        assert.equal(snapshot.elementsTruncated, true);
+        assert.equal(snapshot.outline.length, 80);
+        assert.equal(snapshot.outlineTruncated, true);
+        assert.equal(snapshot.text.length, 4_000);
+        assert.equal(snapshot.textTruncated, true);
+        assert.equal(snapshot.snapshotComplete, false);
+        assert.equal(snapshot.framesComplete, false);
+        assert.ok(
+          snapshot.limitations.some((line: string) => /skipped|not http/i.test(line))
+        );
+        assert.ok(snapshot.limitations.length <= 5);
+
+        const wide = await call("zen_read_page", {
+          tabId: complexTabId,
+          format: "snapshot",
+          maxElements: 200,
+        });
+        assert.equal(wide.elements.length, 200);
+        assert.equal(wide.elementsTruncated, true);
+        assert.equal(wide.snapshotComplete, false);
+
+        const complete = await call("zen_read_page", {
+          tabId,
+          format: "snapshot",
+        });
+        assert.equal(complete.elementsTruncated, false);
+        assert.equal(complete.textTruncated, false);
+        assert.equal(complete.outlineTruncated, false);
+        assert.equal(complete.snapshotComplete, true);
+        assert.equal(complete.framesComplete, true);
+      } finally {
+        await call("zen_tabs_close", { tabIds: [complexTabId] }).catch(
+          () => undefined
+        );
+        await complexPage.close();
+      }
     });
 
     it("reads, waits in, and drives a cross-origin frame", async () => {
@@ -829,6 +1801,9 @@ describe(
     });
 
     it("watches a changing page and reports a watch event", async () => {
+      // Without a cursor a long poll returns buffered events immediately, so
+      // the wait must start after every event the watch could otherwise see.
+      const baseline = await call("zen_events", { waitSeconds: 0 });
       const watch = await call("zen_watch_add", {
         tabId,
         intervalSeconds: 5,
@@ -840,7 +1815,10 @@ describe(
       assert.equal(watch.mode, "change");
       assert.equal(watch.intervalSeconds, 5);
 
-      const hit = await call("zen_events", { waitSeconds: 25 });
+      const hit = await call("zen_events", {
+        after: baseline.cursor,
+        waitSeconds: 25,
+      });
       assert.ok(
         hit.events.some(
           (event: any) => event.kind === "watch" && event.watchId === watch.id
@@ -991,6 +1969,7 @@ function policyEnv(
     ZEN_MCP_CONFIG: join(dir, "config.json"),
     ZEN_MCP_DATA_DIR: dir,
     ZEN_MCP_AUDIT_LOG: "1",
+    ZEN_MCP_TOOL_SURFACE: "full",
     ...overrides,
   };
 }

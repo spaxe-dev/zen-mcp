@@ -489,6 +489,7 @@ describe("ToolGuard.audit", () => {
         tool: "zen_show_evidence",
         args: {
           url: "https://user:pass@example.com/private?token=secret#frag",
+          urlContains: "https://user:pass@example.com/private?token=secret#frag",
           quote: "A private quotation",
           context: "Private context",
         },
@@ -499,9 +500,10 @@ describe("ToolGuard.audit", () => {
     );
     const line = readFileSync(guard.auditPath, "utf8");
     const parsed = JSON.parse(line.trim()) as AuditRecord & {
-      args: { url: string; quote: string; context: string };
+      args: { url: string; urlContains: string; quote: string; context: string };
     };
     assert.equal(parsed.args.url, "https://example.com/private");
+    assert.equal(parsed.args.urlContains, "https://example.com/private");
     assert.match(
       parsed.args.quote,
       /^<redacted \d+ chars sha256:[a-f0-9]{12}>$/

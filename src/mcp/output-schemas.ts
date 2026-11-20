@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  AGENT_EVENT_KINDS,
+  BROWSER_EVENT_PHASES,
+  WAIT_CONDITIONS,
+  WAIT_ELEMENT_STATES,
+  WAIT_UNTIL,
+} from "../shared/protocol.js";
+import { PAGE_CLASSIFICATIONS } from "../shared/semantic.js";
 
 /**
  * Output schemas for every registered tool. `guarded` returns the handler
@@ -26,7 +34,71 @@ const readFormatSchema = z.enum([
   "metadata",
   "outline",
   "interactive",
+  "snapshot",
+  "semantic",
 ]);
+
+const classificationSchema = z.enum(PAGE_CLASSIFICATIONS);
+
+const semanticRegionSchema = z.looseObject({
+  id: z.string(),
+  role: z.string(),
+  label: z.string().nullable().optional(),
+  labelSource: z
+    .enum(["aria", "html", "heading", "inferred"])
+    .optional(),
+  heading: z.string().nullable().optional(),
+  parent: z.string().nullable().optional(),
+  ref: z.string().nullable().optional(),
+  controls: z.number().optional(),
+  links: z.number().optional(),
+  items: z.number().nullable().optional(),
+  itemKind: z.enum(["cards", "results", "links", "items"]).optional(),
+});
+
+const semanticPageSchema = z.looseObject({
+  classification: classificationSchema,
+  confidence: z.number(),
+  signals: z.array(z.string()),
+  primaryRegion: z.string().nullable(),
+  regions: z.array(semanticRegionSchema),
+  headings: z.array(
+    z.looseObject({
+      level: z.number(),
+      text: z.string(),
+      ref: z.string().nullable(),
+    })
+  ),
+  collections: z.array(
+    z.looseObject({
+      regionId: z.string(),
+      kind: z.string(),
+      count: z.number(),
+      sample: z.array(z.looseObject({ ref: z.string(), label: z.string() })),
+    })
+  ),
+  dialogs: z.array(
+    z.looseObject({
+      ref: z.string(),
+      label: z.string(),
+      modal: z.boolean(),
+    })
+  ),
+  coverage: z.looseObject({
+    complete: z.boolean(),
+    nodes: z.number(),
+    regions: z.number(),
+    regionsTruncated: z.boolean(),
+    controls: z.number(),
+    links: z.number(),
+    headings: z.number(),
+    tables: z.number(),
+    images: z.number(),
+    missingAlt: z.number(),
+    shadowRoots: z.number(),
+  }),
+  limitations: z.array(z.string()),
+});
 
 const uiOptionSchema = z.looseObject({
   label: z.string(),
@@ -43,6 +115,19 @@ const uiQuestionSchema = z.looseObject({
   multiSelect: z.boolean(),
   createdAt: z.number(),
 });
+
+/** Shared by both answer lists, so the definition serializes once. */
+const answerRecordSchema = z
+  .looseObject({
+    question: uiQuestionSchema,
+    status: answerStatusSchema,
+    askedAt: z.number(),
+    answeredAt: z.number().optional(),
+    answer: z.string().optional(),
+    selectedLabels: z.array(z.string()).optional(),
+    freeform: z.boolean().optional(),
+  })
+  .meta({ id: "answerRecord" });
 
 const sessionInfoSchema = z.looseObject({
   ownsBrowser: z.boolean(),
@@ -174,9 +259,13 @@ const pageElementSchema = z.looseObject({
   role: z.string(),
   type: z.string().nullable(),
   label: z.string(),
-  value: z.string().nullable(),
+  value: z.string().nullable().optional(),
   sensitive: z.boolean(),
   editable: z.boolean(),
+  valuePresent: z.boolean().optional(),
+  autocomplete: z.string().nullable().optional(),
+  selected: z.boolean().nullable().optional(),
+  form: z.string().nullable().optional(),
   framePath: z.array(z.number()).optional(),
 });
 
@@ -186,35 +275,171 @@ const pageFrameSchema = z.looseObject({
   name: z.string(),
 });
 
-const pageActionTargetSchema = z.looseObject({
-  tag: z.string(),
-  role: z.string(),
-  label: z.string(),
-  type: z.string().nullable(),
-  sensitive: z.boolean(),
-});
+/**
+ * The resolved control an action landed on. Fields are declared optional: the
+ * node is re-read after input, and a replaced or detached control can come
+ * back partially described.
+ */
+const pageActionTargetSchema = z
+  .looseObject({
+    tag: z.string(),
+    role: z.string(),
+    label: z.string(),
+    type: z.string().nullable(),
+    sensitive: z.boolean(),
+  })
+  .partial();
 
-const pageActionEffectSchema = z.looseObject({
-  changed: z.boolean(),
-  urlChanged: z.boolean(),
-  titleChanged: z.boolean(),
-  domChanged: z.boolean(),
-  valueChanged: z.boolean(),
-  waitedMs: z.number(),
-  probeFailed: z.boolean().optional(),
-});
+/** Bounded control descriptors inside a delta, from src/shared/delta.ts. */
+const actionControlBriefSchema = z
+  .looseObject({
+    role: z.string(),
+    name: z.string(),
+    type: z.string().nullable(),
+  })
+  .partial();
+
+/**
+ * Observed structural changes after an action, from PageActionDelta. The
+ * declarations stay optional: an observation is advisory, and a probe failure
+ * or replaced document can return a reduced delta.
+ */
+const pageActionDeltaSchema = z
+  .looseObject({
+    addedControls: z.array(actionControlBriefSchema),
+    removedControls: z.array(actionControlBriefSchema),
+    changedControls: z.array(
+      z
+        .looseObject({
+          role: z.string(),
+          name: z.string(),
+          type: z.string().nullable(),
+          changes: z.array(z.string()),
+        })
+        .partial()
+    ),
+    addedHeadings: z.array(z.string()),
+    removedHeadings: z.array(z.string()),
+    addedAlerts: z.array(z.string()),
+    removedAlerts: z.array(z.string()),
+    textChanged: z.boolean(),
+    textLengthDelta: z.number(),
+    readyState: z.string(),
+    limitation: z.string().optional(),
+  })
+  .partial();
+
+/** Same advisory rule: a probe failure reports a reduced effect. */
+const pageActionEffectSchema = z
+  .looseObject({
+    changed: z.boolean(),
+    urlChanged: z.boolean(),
+    titleChanged: z.boolean(),
+    domChanged: z.boolean(),
+    valueChanged: z.boolean(),
+    waitedMs: z.number(),
+    probeFailed: z.boolean().optional(),
+    navigation: z.boolean().optional(),
+    documentReplaced: z.boolean().optional(),
+    readyState: z.string().optional(),
+    attribution: z.literal("observed_after_action_not_proven").optional(),
+    delta: pageActionDeltaSchema.optional(),
+  })
+  .partial();
+
+/** Structured failure returned beside the legacy text block on isError. */
+export const toolErrorSchema = z
+  .looseObject({
+    code: z.string(),
+    message: z.string(),
+    category: z.enum([
+      "not_found",
+      "stale_reference",
+      "document_changed",
+      "ambiguous",
+      "not_actionable",
+      "invalid_target",
+      "unsupported",
+      "permission",
+      "browser",
+      "action_failed",
+      "internal",
+    ]),
+    retryable: z.boolean(),
+    stateChanged: z.boolean().nullable(),
+    recovery: z.string(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  })
+  .partial();
+
+const clickOutputSchema = z
+  .looseObject({
+    clicked: z.boolean().optional(),
+    tabId: z.string().optional(),
+    url: z.string().optional(),
+    title: z.string().optional(),
+    target: pageActionTargetSchema.optional(),
+    effect: pageActionEffectSchema.optional(),
+    framePath: z.array(z.number()).optional(),
+    frameUrl: z.string().nullable().optional(),
+    error: toolErrorSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      value.error !== undefined ||
+      (value.clicked !== undefined &&
+        value.tabId !== undefined &&
+        value.url !== undefined &&
+        value.title !== undefined &&
+        value.target !== undefined),
+    { message: "A click result needs either an error or the success fields." }
+  );
+
+const typeOutputSchema = z
+  .looseObject({
+    typed: z.number().optional(),
+    cleared: z.boolean().optional(),
+    tabId: z.string().optional(),
+    url: z.string().optional(),
+    title: z.string().optional(),
+    target: pageActionTargetSchema.optional(),
+    effect: pageActionEffectSchema.optional(),
+    framePath: z.array(z.number()).optional(),
+    frameUrl: z.string().nullable().optional(),
+    observed: z
+      .looseObject({
+        compared: z.boolean(),
+        matchesInput: z.boolean().nullable(),
+        sensitive: z.boolean(),
+      })
+      .optional(),
+    error: toolErrorSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      value.error !== undefined ||
+      (value.typed !== undefined &&
+        value.tabId !== undefined &&
+        value.url !== undefined &&
+        value.title !== undefined &&
+        value.target !== undefined),
+    { message: "A type result needs either an error or the success fields." }
+  );
 
 const waitForShape = {
   matched: z.boolean(),
   waitedMs: z.number(),
-  condition: z.enum(["selector", "text", "urlContains", "titleContains"]),
-  until: z.enum(["present", "absent"]),
+  condition: z.enum(WAIT_CONDITIONS),
+  until: z.enum(WAIT_UNTIL),
   query: z.string(),
   tabId: z.string(),
   url: z.string(),
   title: z.string(),
   framePath: z.array(z.number()).optional(),
   frameUrl: z.string().nullable().optional(),
+  state: z.enum(WAIT_ELEMENT_STATES).optional(),
+  documentId: z.string().optional(),
+  newTabId: z.string().optional(),
   limitation: z.string().optional(),
 };
 
@@ -237,8 +462,16 @@ const pageReadShape = {
   tables: z.array(pageTableSchema).optional(),
   metadata: pageMetadataSchema.optional(),
   outline: z.array(pageHeadingSchema).optional(),
+  semantic: semanticPageSchema.optional(),
   elements: z.array(pageElementSchema).optional(),
   elementsTruncated: z.boolean().optional(),
+  snapshotId: z.string().optional(),
+  elementsTotal: z.number().optional(),
+  snapshotComplete: z.boolean().optional(),
+  textTruncated: z.boolean().optional(),
+  outlineTruncated: z.boolean().optional(),
+  framesComplete: z.boolean().optional(),
+  limitations: z.array(z.string()).optional(),
   framePath: z.array(z.number()).optional(),
   frames: z.array(pageFrameSchema).optional(),
 };
@@ -564,29 +797,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
   },
   zen_find_text: textSearchShape,
   zen_wait_for: waitForShape,
-  zen_click: {
-    clicked: z.boolean(),
-    tabId: z.string(),
-    url: z.string(),
-    title: z.string(),
-    target: pageActionTargetSchema,
-    framePath: z.array(z.number()).optional(),
-    frameUrl: z.string().nullable().optional(),
-    limitation: z.string().optional(),
-    effect: pageActionEffectSchema.optional(),
-  },
-  zen_type: {
-    typed: z.number(),
-    cleared: z.boolean(),
-    tabId: z.string(),
-    url: z.string(),
-    title: z.string(),
-    target: pageActionTargetSchema,
-    framePath: z.array(z.number()).optional(),
-    frameUrl: z.string().nullable().optional(),
-    limitation: z.string().optional(),
-    effect: pageActionEffectSchema.optional(),
-  },
+  zen_click: clickOutputSchema,
+  zen_type: typeOutputSchema,
   zen_search_tabs: {
     query: z.string(),
     tabsSearched: z.number(),
@@ -707,7 +919,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
     events: z.array(
       z.looseObject({
         id: z.number(),
-        kind: z.enum(["stop", "pause", "resume", "watch", "question"]),
+        kind: z.enum(AGENT_EVENT_KINDS),
         at: z.number(),
         title: z.string(),
         detail: z.string().optional(),
@@ -715,12 +927,20 @@ export const TOOL_OUTPUT_SCHEMAS = {
         tabId: z.string().optional(),
         watchId: z.string().optional(),
         questionId: z.string().optional(),
+        phase: z.enum(BROWSER_EVENT_PHASES).optional(),
+        url: z.string().optional(),
+        documentId: z.string().optional(),
+        source: z.enum(["server", "browser"]).optional(),
       })
     ),
     cursor: z.number(),
     stopped: z.boolean(),
     paused: z.boolean(),
     lastEventAt: z.number().nullable(),
+    missed: z.number(),
+    oldestCursor: z.number().nullable(),
+    dropped: z.number(),
+    filtered: z.number(),
   },
   zen_watch_add: watchInfoShape,
   zen_watch_list: {
@@ -792,28 +1012,8 @@ export const TOOL_OUTPUT_SCHEMAS = {
     message: z.string().optional(),
   },
   zen_answers: {
-    pending: z.array(
-      z.looseObject({
-        question: uiQuestionSchema,
-        status: answerStatusSchema,
-        askedAt: z.number(),
-        answeredAt: z.number().optional(),
-        answer: z.string().optional(),
-        selectedLabels: z.array(z.string()).optional(),
-        freeform: z.boolean().optional(),
-      })
-    ),
-    answered: z.array(
-      z.looseObject({
-        question: uiQuestionSchema,
-        status: answerStatusSchema,
-        askedAt: z.number(),
-        answeredAt: z.number().optional(),
-        answer: z.string().optional(),
-        selectedLabels: z.array(z.string()).optional(),
-        freeform: z.boolean().optional(),
-      })
-    ),
+    pending: z.array(answerRecordSchema),
+    answered: z.array(answerRecordSchema),
   },
   zen_notify: {
     delivered: z.boolean(),
@@ -908,4 +1108,4 @@ export const TOOL_OUTPUT_SCHEMAS = {
     name: z.string(),
     deleted: z.boolean(),
   },
-} satisfies Record<string, z.ZodRawShape>;
+} satisfies Record<string, z.ZodRawShape | z.ZodType>;

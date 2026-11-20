@@ -38,8 +38,8 @@ import type {
   OpenTabsResult,
   OpenedTab,
   PageActionEffect,
+  PageActionTarget,
   PageActionTargetInfo,
-  PageElement,
   PageFrame,
   PageReadResult,
   PinTabsParams,
@@ -67,24 +67,41 @@ import type {
   UnsplitParams,
   UnsplitResult,
   WaitCondition,
+  WaitElementState,
   WaitForParams,
   WaitForResult,
 } from "../shared/protocol.js";
 import {
+  buildInspectElementScript,
   buildPageSignatureScript,
   buildReadScript,
-  buildResolveTargetScript,
+  buildSemanticTargetScript,
+  buildVerifyTypedValueScript,
   buildWaitProbeScript,
   coercePageSignature,
   coercePageSnapshot,
+  coerceSemanticTarget,
+  coerceTypedValueProbe,
   coerceWaitProbe,
   comparePageSignatures,
   MAX_PAGE_ELEMENTS,
   toPageReadResult,
   type PageSignature,
+  type PageSnapshot,
+  type ReadScriptElement,
   type WaitProbe,
   type WaitProbeOptions,
 } from "../shared/read-script.js";
+import {
+  TargetInputError,
+  normalizeTargetInput,
+  type NormalizedTarget,
+} from "../shared/target.js";
+import {
+  SNAPSHOT_TEXT_CHARS,
+  clampSnapshotElements,
+  snapshotCompleteness,
+} from "../shared/snapshot.js";
 import {
   buildEvidenceClearScript,
   buildEvidenceHighlightScript,
@@ -104,8 +121,15 @@ import {
   parseFrameRef,
 } from "../shared/frame-path.js";
 import { findLiteralMatches } from "../shared/search.js";
+import { buildPageDelta, deltaHasChanges } from "../shared/delta.js";
 import { isUrlAllowed, normalizeWebUrl } from "../shared/url-policy.js";
 import { activateTab, type TabActivationOutcome } from "./tab-activation.js";
+import {
+  RefRegistry,
+  documentChanged,
+  elementDigest,
+  type ResolvedRef,
+} from "./ref-registry.js";
 import {
   captureEssentialsState,
   EssentialsStateStore,
@@ -115,6 +139,7 @@ import {
   type EssentialsRestoreHost,
 } from "./essentials-state.js";
 import { planSplitCleanup } from "./split-cleanup.js";
+import { documentIdForTab } from "./tab-identity.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -272,24 +297,37 @@ function watchGlanceRedirects(
 
 class OpsError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details?: Record<string, unknown>;
+  constructor(
+    code: string,
+    message: string,
+    details?: Record<string, unknown>
+  ) {
     super(message);
     this.code = code;
+    this.details = details;
   }
 }
 
 interface ResolvedPageTarget {
   found?: boolean;
+  root?: unknown;
   element?: unknown;
   tag?: string;
   role?: string;
+  name?: string;
   type?: string | null;
   label?: string;
+  placeholder?: string | null;
   href?: string | null;
   disabled?: boolean;
   readOnly?: boolean;
   sensitive?: boolean;
   editable?: boolean;
+  visible?: boolean;
+  valuePresent?: boolean;
+  checked?: boolean | null;
+  selected?: boolean | null;
 }
 
 /** A frame's actor plus the path and URL used to reach it. */
@@ -307,10 +345,31 @@ interface ResolvedFrame {
 export function createOps(win: ChromeWindow, windowId: string) {
   const tabIds = new WeakMap<ChromeTab, string>();
   const tabsById = new Map<string, ChromeTab>();
+  /**
+   * WebElement refs per tab and frame document; bounded and cleared on close.
+   * Semantic reads register control elements plus up to ~236 anchors, so the
+   * per-document budget is higher than a snapshot's element cap.
+   */
+  const refRegistry = new RefRegistry({ maxRefsPerDocument: 400 });
   /** Overlay attribute names created by this bridge session, per tab. */
   const evidenceMarkers = new Map<string, string[]>();
   /** Space and pinned state captured before tabs entered essentials. */
   const essentialsCaptures = new EssentialsStateStore();
+  /** Dialog notices from the chrome observer, consumed by dialog waits. */
+  let dialogSeq = 0;
+  const dialogWaiters = new Set<() => void>();
+  const noteDialogShown = (): void => {
+    dialogSeq += 1;
+    const waiters = [...dialogWaiters];
+    dialogWaiters.clear();
+    for (const waiter of waiters) {
+      try {
+        waiter();
+      } catch {
+        // Waiters only wake the polling loop.
+      }
+    }
+  };
 
   const essentialsRestoreHost = (): EssentialsRestoreHost => {
     const workspaceManager = win.gZenWorkspaces;
@@ -369,9 +428,20 @@ export function createOps(win: ChromeWindow, windowId: string) {
     return id;
   };
 
+  /** Bounded memory of ids whose tabs closed, so a later wait can match. */
+  const closedTabIds = new Set<string>();
+
   const pruneTabIds = (): void => {
     for (const [id, tab] of tabsById) {
-      if (!tab.isConnected || tab.closing) tabsById.delete(id);
+      if (!tab.isConnected || tab.closing) {
+        tabsById.delete(id);
+        closedTabIds.add(id);
+      }
+    }
+    while (closedTabIds.size > 256) {
+      const first = closedTabIds.values().next().value;
+      if (first === undefined) break;
+      closedTabIds.delete(first);
     }
   };
 
@@ -1091,79 +1161,221 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
   const resolvePageTarget = async (
     tab: ChromeTab,
-    params: { ref?: string; selector?: string },
+    params: PageActionTarget,
     allowedDomains?: string[]
   ): Promise<{
     target: ResolvedPageTarget;
     actor: any;
     framePath: number[];
     frameUrl: string | null;
+    legacy: boolean;
+    kind: NormalizedTarget["kind"];
   }> => {
-    const ref =
-      typeof params?.ref === "string" ? params.ref.trim() : "";
-    const selector =
-      typeof params?.selector === "string" ? params.selector.trim() : "";
-    if (!ref === !selector) {
-      throw new OpsError(
-        "invalid_target",
-        "Provide exactly one of ref or selector."
-      );
-    }
-    const parsed = ref ? parseFrameRef(ref) : null;
-    if (ref && !parsed) {
-      throw new OpsError(
-        "invalid_target",
-        `"${ref}" is not an interactive-read ref. Use a value such as ` +
-          '"e1", "f0-e3" for a child frame, or "f0.1-e2" for a nested frame.'
-      );
-    }
-    if (selector.length > 500) {
-      throw new OpsError(
-        "invalid_target",
-        "selector must be 500 characters or fewer."
-      );
+    let normalized: NormalizedTarget;
+    try {
+      normalized = normalizeTargetInput(params ?? {});
+    } catch (error) {
+      if (error instanceof TargetInputError) {
+        throw new OpsError(error.code, error.message, error.details);
+      }
+      throw error;
     }
 
-    const frame = parsed?.path.length
-      ? resolveFrame(tab, parsed.path, allowedDomains)
-      : null;
-    const actor = frame?.actor ?? pageActor(tab);
+    if (normalized.kind === "ref") {
+      const ref = normalized.ref;
+      const parsed = parseFrameRef(ref);
+      if (!parsed) {
+        throw new OpsError(
+          "invalid_target",
+          `"${ref}" is not an interactive-read ref. Use a value such as ` +
+            '"e1", "f0-e3" for a child frame, or "f0.1-e2" for a nested frame.'
+        );
+      }
+      const frame = parsed.path.length
+        ? resolveFrame(tab, parsed.path, allowedDomains)
+        : null;
+      const actor = frame?.actor ?? pageActor(tab);
+      const framePath = parsed.path;
+      const frameUrl = frame?.url ?? null;
+      const stored: ResolvedRef | null = refRegistry.resolve(
+        idForTab(tab),
+        framePath,
+        ref
+      );
+      if (!stored) {
+        throw new OpsError(
+          normalized.legacy ? "element_not_found" : "stale_reference",
+          normalized.legacy
+            ? `No element has ref "${ref}". It may be from an older read. ` +
+                'Call zen_read_page with format="snapshot" or "interactive" ' +
+                "again; refs are replaced by the next read of that document " +
+                "or a navigation."
+            : `Ref "${ref}" is not in the current snapshot. Call ` +
+                'zen_read_page with format="snapshot" and use a new ref.',
+          {
+            ref,
+            reason: "unknown_ref",
+            category: "stale_reference",
+          }
+        );
+      }
+
+      let fresh: unknown;
+      try {
+        fresh = await actor.sendQuery("MarionetteCommandsParent:executeScript", {
+          script: buildInspectElementScript(),
+          args: [stored.element],
+          opts: { timeout: 10_000 },
+        });
+      } catch {
+        throw new OpsError(
+          normalized.legacy ? "element_not_found" : "stale_reference",
+          normalized.legacy
+            ? `Ref "${ref}" is stale: the page removed or replaced the ` +
+                "element after it was read. Call zen_read_page again for a " +
+                "current ref."
+            : `Ref "${ref}" was removed or replaced after it was read. Call ` +
+                "zen_read_page again for a current ref.",
+          {
+            ref,
+            reason: "element_removed",
+            category: "stale_reference",
+          }
+        );
+      }
+
+      const inspected = fresh as ResolvedPageTarget | null;
+      if (!inspected || inspected.found !== true || !inspected.element) {
+        throw new OpsError(
+          normalized.legacy ? "element_not_found" : "stale_reference",
+          `Ref "${ref}" is stale: the page removed the element after it was ` +
+            "read. Call zen_read_page again for a current ref.",
+          {
+            ref,
+            reason: "element_removed",
+            category: "stale_reference",
+          }
+        );
+      }
+      if (documentChanged(stored.root, inspected.root)) {
+        throw new OpsError(
+          normalized.legacy ? "element_not_found" : "document_changed",
+          normalized.legacy
+            ? `Ref "${ref}" belongs to a document that was replaced by a ` +
+                "navigation. Call zen_read_page again for a current ref."
+            : `Ref "${ref}" belongs to a document that was replaced by a ` +
+                "navigation. Call zen_read_page again for a current ref.",
+          {
+            ref,
+            reason: "document_replaced",
+            category: "document_changed",
+          }
+        );
+      }
+      if (elementDigest(inspected) !== stored.digest) {
+        throw new OpsError(
+          normalized.legacy ? "element_not_found" : "stale_reference",
+          `Ref "${ref}" points to an element whose role, label, or link ` +
+            "changed after it was read. Call zen_read_page again for a " +
+            "current ref.",
+          {
+            ref,
+            reason: "descriptor_changed",
+            category: "stale_reference",
+          }
+        );
+      }
+      return {
+        target: { ...inspected, element: stored.element },
+        actor,
+        framePath,
+        frameUrl,
+        legacy: normalized.legacy,
+        kind: normalized.kind,
+      };
+    }
+
+    const actor = pageActor(tab);
     let raw: unknown;
     try {
       raw = await actor.sendQuery("MarionetteCommandsParent:executeScript", {
-        script: buildResolveTargetScript({
-          ...(parsed ? { ref: parsed.ref } : {}),
-          ...(selector ? { selector } : {}),
-        }),
+        script: buildSemanticTargetScript(normalized),
         args: [],
         opts: { timeout: 10_000 },
       });
     } catch (error) {
       throw new OpsError(
-        "element_not_found",
+        normalized.legacy ? "element_not_found" : "target_not_found",
         `Could not resolve the target: ${String(
           (error as Error)?.message ?? error
-        )}`
+        )}`,
+        { kind: normalized.kind, reason: "resolution_failed" }
       );
     }
 
-    const target = raw as ResolvedPageTarget | null;
-    if (!target || target.found !== true || !target.element) {
+    const probe = coerceSemanticTarget(raw);
+    if (!probe || probe.invalidSelector) {
       throw new OpsError(
-        "element_not_found",
-        ref
-          ? `No element has ref "${ref}". Call zen_read_page with ` +
-              'format="interactive" again; refs expire after another ' +
-              "interactive read or a navigation."
-          : `No element matches selector "${selector}".`
+        "invalid_target",
+        "The CSS selector is not valid in this document.",
+        { kind: normalized.kind }
+      );
+    }
+    if (probe.truncated) {
+      throw new OpsError(
+        "unsupported_operation",
+        "The target search hit its node limit before uniqueness could be " +
+          "proven. Use a snapshot ref or a CSS selector.",
+        { kind: normalized.kind, reason: "scan_limit" }
+      );
+    }
+    if (probe.ambiguous) {
+      const candidates = (probe.candidates ?? []).slice(0, 5);
+      throw new OpsError(
+        "target_ambiguous",
+        `${describeTargetKind(normalized)} matches ${probe.count} elements. ` +
+          "Use a snapshot ref or a more specific target.",
+        {
+          kind: normalized.kind,
+          count: probe.count,
+          candidates,
+        }
+      );
+    }
+    if (!probe.found || !probe.element) {
+      throw new OpsError(
+        normalized.legacy ? "element_not_found" : "target_not_found",
+        normalized.kind === "selector" && normalized.legacy
+          ? `No element matches selector "${normalized.selector}".`
+          : `No element matches the ${describeTargetKind(normalized)} target.`,
+        { kind: normalized.kind, match: "exact" }
       );
     }
     return {
-      target,
+      target: probe,
       actor,
-      framePath: frame?.path ?? [],
-      frameUrl: frame?.url ?? null,
+      framePath: [],
+      frameUrl: null,
+      legacy: normalized.legacy,
+      kind: normalized.kind,
     };
+  };
+
+  const describeTargetKind = (target: NormalizedTarget): string => {
+    switch (target.kind) {
+      case "selector":
+        return `selector "${target.selector}"`;
+      case "role":
+        return "role+name";
+      case "text":
+        return "text";
+      case "label":
+        return "label";
+      case "placeholder":
+        return "placeholder";
+      default:
+        return "ref";
+    }
   };
 
   const actionTarget = (
@@ -1213,6 +1425,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
   ): Promise<PageActionEffect> => {
     const started = Date.now();
     let after: PageSignature | null = null;
+    let documentReplaced = false;
     let waitedMs = 0;
     if (!before) {
       // Without a before signature there is nothing to compare; give a
@@ -1231,7 +1444,18 @@ export function createOps(win: ChromeWindow, windowId: string) {
         after = null;
       }
       waitedMs = Date.now() - started;
-      if (before && after && comparePageSignatures(before, after).changed) break;
+      if (!before || !after) continue;
+      documentReplaced = documentChanged(before.root, after.root);
+      if (documentReplaced) {
+        // A replaced document has to finish loading before its state means
+        // anything; comparing it with the old document would be a false diff.
+        if (after.readyState === "complete") break;
+        continue;
+      }
+      const delta = buildPageDelta(before, after, { documentReplaced: false });
+      if (comparePageSignatures(before, after).changed || deltaHasChanges(delta)) {
+        break;
+      }
     }
     if (!before || !after) {
       // A navigation can outlive the old actor. The tab URL is still worth
@@ -1247,11 +1471,24 @@ export function createOps(win: ChromeWindow, windowId: string) {
         valueChanged: false,
         waitedMs,
         probeFailed: true,
+        ...(urlChanged ? { navigation: true } : {}),
+        ...(after ? { readyState: after.readyState } : {}),
       };
     }
+    const diff = comparePageSignatures(before, after);
+    const delta = buildPageDelta(before, after, { documentReplaced });
     return {
-      ...comparePageSignatures(before, after),
+      changed: documentReplaced || diff.changed || deltaHasChanges(delta),
+      urlChanged: diff.urlChanged,
+      titleChanged: diff.titleChanged,
+      domChanged: documentReplaced ? false : diff.domChanged,
+      valueChanged: documentReplaced ? false : diff.valueChanged,
       waitedMs,
+      ...(diff.urlChanged ? { navigation: true } : {}),
+      ...(documentReplaced ? { documentReplaced: true } : {}),
+      readyState: after.readyState,
+      attribution: "observed_after_action_not_proven",
+      delta,
     };
   };
 
@@ -1507,8 +1744,9 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const tabs = resolveTabs(ids);
       const closed: string[] = [];
       for (const tab of tabs) {
-        if (!tab.isConnected || tab.closing) continue;
-        const id = tabIds.get(tab)!;
+        const id = tabIds.get(tab);
+        if (id) refRegistry.clearTab(id);
+        if (!tab.isConnected || tab.closing || !id) continue;
         win.gBrowser.removeTab(tab, { closeWindowWithLastTab: false });
         closed.push(id);
       }
@@ -1599,21 +1837,51 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "pages are never read."
         );
       }
-      const maxChars = clamp(params?.maxChars ?? 24_000, 500, 60_000);
+      const format = params?.format;
+      const isSnapshot = format === "snapshot";
+      const isSemantic = format === "semantic";
+      const isCompact = isSnapshot || isSemantic;
+      const isControls = format === "interactive" || isCompact;
+      const maxChars = isCompact
+        ? SNAPSHOT_TEXT_CHARS
+        : clamp(params?.maxChars ?? 24_000, 500, 60_000);
+      const requestedMaxElements = params?.maxElements;
+      const maxElements = isCompact
+        ? isSemantic
+          ? Math.min(120, clampSnapshotElements(requestedMaxElements))
+          : clampSnapshotElements(requestedMaxElements)
+        : MAX_PAGE_ELEMENTS;
       const requestedOffset = Number(params?.offset);
       const offset = Number.isFinite(requestedOffset)
         ? Math.max(0, Math.floor(requestedOffset))
         : 0;
-      const format = params?.format;
       const selector = params?.selector ? String(params.selector).trim() : undefined;
       const framePath = requireFramePath(params?.framePath);
       const allowedDomains = params?.allowedDomains;
+      const notes: string[] = [];
 
-      if (format === "interactive" && isPdfTab(tab)) {
+      if (requestedMaxElements !== undefined && !isCompact) {
+        notes.push("maxElements only applies to snapshot and semantic reads.");
+      }
+      if (
+        isCompact &&
+        params?.maxChars !== undefined &&
+        Math.floor(Number(params.maxChars)) !== SNAPSHOT_TEXT_CHARS
+      ) {
+        notes.push(
+          `maxChars is ignored for ${format} reads; the text preview is capped ` +
+            `at ${SNAPSHOT_TEXT_CHARS} characters.`
+        );
+      }
+      if (isSemantic && selector) {
+        notes.push("Semantic reads search only the selected subtree.");
+      }
+
+      if (isControls && isPdfTab(tab)) {
         throw new OpsError(
           "unsupported_page",
-          "Zen MCP cannot build an interactive snapshot of the PDF viewer. " +
-            "Open the page as HTML instead."
+          "Zen MCP cannot build an interactive, snapshot or semantic view of " +
+            "the PDF viewer. Open the page as HTML instead."
         );
       }
 
@@ -1648,6 +1916,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
             offset,
             ...(format ? { format } : {}),
             ...(selector ? { selector } : {}),
+            ...(isCompact ? { maxElements } : {}),
             ...(refPrefix ? { refPrefix } : {}),
           }),
           args: [],
@@ -1686,21 +1955,26 @@ export function createOps(win: ChromeWindow, windowId: string) {
       }
 
       const listed = listFrames(tab, allowedDomains);
-      const notes: string[] = [];
-      if (listed.skipped > 0) {
-        notes.push(
-          `${listed.skipped} frame(s) were skipped because they are not ` +
-            "http(s) pages or are outside the domain allowlist."
+      const snapshotId = isControls
+        ? `snap-${crypto.randomUUID().slice(0, 8)}`
+        : null;
+      const refTabId = idForTab(tab);
+      const storeDocument = (path: number[], target: PageSnapshot): void => {
+        if (!snapshotId) return;
+        refRegistry.beginSnapshot(
+          refTabId,
+          path,
+          snapshotId,
+          target.root,
+          [...(target.elements ?? []), ...(target.semanticAnchors ?? [])]
         );
-      }
-      if (listed.truncated) {
-        notes.push(
-          `Only the first ${MAX_FRAMES} frames are listed; deeper frames were ` +
-            "not inspected."
-        );
-      }
+      };
 
-      if (format === "interactive" && !selector) {
+      // Replace this document's refs only after the read succeeded, so a failed
+      // selector read never invalidates refs the agent is still using.
+      if (isControls) storeDocument(framePath, page);
+
+      if (isControls && !selector && !isSemantic) {
         const descendants = listed.frames.filter(
           (candidate) =>
             candidate.path.length > framePath.length &&
@@ -1709,14 +1983,10 @@ export function createOps(win: ChromeWindow, windowId: string) {
             )
         );
         const scanned = descendants.slice(0, MAX_FRAME_SCANS);
-        if (descendants.length > scanned.length) {
-          notes.push(
-            `Only the first ${MAX_FRAME_SCANS} frames were scanned for ` +
-              "controls."
-          );
-        }
+        const scanCap = MAX_FRAME_SCANS;
+        const mergeCap = isSnapshot ? maxElements : MAX_PAGE_ELEMENTS;
 
-        const merged: PageElement[] = (page.elements ?? []).map((element) =>
+        const merged: ReadScriptElement[] = (page.elements ?? []).map((element) =>
           framePath.length
             ? {
                 ...element,
@@ -1725,6 +1995,8 @@ export function createOps(win: ChromeWindow, windowId: string) {
               }
             : element
         );
+        let elementsTotal =
+          page.elementsTotal ?? page.elements?.length ?? 0;
         let truncated = page.elementsTruncated === true;
         const pending = scanned.map(async (candidate) => {
           try {
@@ -1748,9 +2020,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
             failed += 1;
             continue;
           }
+          storeDocument(outcome.frame.path, outcome.page);
+          elementsTotal +=
+            outcome.page.elementsTotal ?? outcome.page.elements?.length ?? 0;
           if (outcome.page.elementsTruncated === true) truncated = true;
           for (const element of outcome.page.elements ?? []) {
-            if (merged.length >= MAX_PAGE_ELEMENTS) {
+            if (merged.length >= mergeCap) {
               truncated = true;
               break;
             }
@@ -1761,15 +2036,97 @@ export function createOps(win: ChromeWindow, windowId: string) {
             });
           }
         }
-        if (failed > 0) {
-          notes.push(`${failed} frame(s) could not be read.`);
-        }
         page.elements = merged;
         page.elementsTruncated = truncated;
+        page.elementsTotal = elementsTotal;
+
+        if (isSnapshot) {
+          const completeness = snapshotCompleteness({
+            selectorUsed: false,
+            relevantFrames: descendants.length,
+            scannedFrames: scanned.length,
+            failedFrames: failed,
+            listedTruncated: listed.truncated,
+            listedSkipped: listed.skipped,
+            scanCap,
+          });
+          page.framesComplete = completeness.framesComplete;
+          page.snapshotComplete = completeness.snapshotComplete;
+          page.limitations = [
+            ...(page.limitations ?? []),
+            ...completeness.limitations,
+          ];
+        } else {
+          if (descendants.length > scanned.length) {
+            notes.push(
+              `Only the first ${scanCap} frames were scanned for controls.`
+            );
+          }
+          if (failed > 0) {
+            notes.push(`${failed} frame(s) could not be read.`);
+          }
+        }
+      } else if (isSemantic) {
+        const nestedFrames = listed.frames.filter(
+          (candidate) =>
+            candidate.path.length > framePath.length &&
+            framePath.every(
+              (index, position) => candidate.path[position] === index
+            )
+        );
+        if (nestedFrames.length) {
+          notes.push(
+            "Child frames are not part of the semantic model; read a frame " +
+              "with framePath."
+          );
+        }
+        // The model covers one document. A child frame, or a truncated frame
+        // list that may hide one, means it is not complete.
+        if (page.semantic) {
+          page.semantic.coverage.complete =
+            page.semantic.coverage.complete &&
+            nestedFrames.length === 0 &&
+            !listed.truncated;
+        }
+      } else if (isSnapshot) {
+        const completeness = snapshotCompleteness({
+          selectorUsed: true,
+          relevantFrames: 0,
+          scannedFrames: 0,
+          failedFrames: 0,
+          listedTruncated: false,
+          listedSkipped: 0,
+        });
+        page.framesComplete = completeness.framesComplete;
+        page.snapshotComplete = completeness.snapshotComplete;
+        page.limitations = [
+          ...(page.limitations ?? []),
+          ...completeness.limitations,
+        ];
       } else if (format === "interactive" && listed.frames.length) {
         notes.push(
           "Frame controls are not included because selector was used."
         );
+      }
+
+      if (!isSnapshot) {
+        if (listed.skipped > 0) {
+          notes.push(
+            `${listed.skipped} frame(s) were skipped because they are not ` +
+              "http(s) pages or are outside the domain allowlist."
+          );
+        }
+        if (listed.truncated) {
+          notes.push(
+            `Only the first ${MAX_FRAMES} frames are listed; deeper frames ` +
+              "were not inspected."
+          );
+        }
+      }
+      if (isCompact && notes.length) {
+        // Frame and scope notes belong to the read, not the semantic model;
+        // keeping them in one list avoids repeating them in both places.
+        page.limitations = [...(page.limitations ?? []), ...notes];
       }
 
       // A background tab can hide contentDocument from chrome scope, so omit
@@ -1778,10 +2135,11 @@ export function createOps(win: ChromeWindow, windowId: string) {
         maxChars,
         ...(contentType !== null ? { contentType } : {}),
         offset,
+        ...(snapshotId ? { snapshotId } : {}),
       }) satisfies PageReadResult;
       result.frames = listed.frames;
       if (framePath.length) result.framePath = framePath;
-      if (notes.length) {
+      if (!isCompact && notes.length) {
         const note = notes.join(" ");
         result.limitation = result.limitation
           ? `${result.limitation} ${note}`
@@ -1806,10 +2164,18 @@ export function createOps(win: ChromeWindow, windowId: string) {
         params?.allowedDomains
       );
       const target = resolved.target;
+      if (!resolved.legacy && target.visible === false) {
+        throw new OpsError(
+          "target_not_actionable",
+          `The target "${target.label || target.tag}" is not visible.`,
+          { reason: "hidden" }
+        );
+      }
       if (target.disabled) {
         throw new OpsError(
-          "element_disabled",
-          `The target "${target.label || target.tag}" is disabled.`
+          resolved.legacy ? "element_disabled" : "target_not_actionable",
+          `The target "${target.label || target.tag}" is disabled.`,
+          { reason: "disabled" }
         );
       }
       if (target.href) {
@@ -1890,23 +2256,40 @@ export function createOps(win: ChromeWindow, windowId: string) {
         params?.allowedDomains
       );
       const target = resolved.target;
+      if (!resolved.legacy && target.visible === false) {
+        throw new OpsError(
+          "target_not_actionable",
+          `The target "${target.label || target.tag}" is not visible.`,
+          { reason: "hidden" }
+        );
+      }
       if (target.disabled) {
         throw new OpsError(
-          "element_disabled",
-          `The target "${target.label || target.tag}" is disabled.`
+          resolved.legacy ? "element_disabled" : "target_not_actionable",
+          `The target "${target.label || target.tag}" is disabled.`,
+          { reason: "disabled" }
         );
       }
       if (target.readOnly) {
         throw new OpsError(
-          "element_readonly",
-          `The target "${target.label || target.tag}" is read-only.`
+          resolved.legacy ? "element_readonly" : "target_not_actionable",
+          `The target "${target.label || target.tag}" is read-only.`,
+          { reason: "read_only" }
         );
       }
       if (target.tag === "input" && target.type === "file") {
         throw new OpsError(
-          "unsupported_target",
+          resolved.legacy ? "unsupported_target" : "target_not_actionable",
           "Zen MCP does not attach files. Ask the user to choose the file " +
-            "in Zen."
+            "in Zen.",
+          { reason: "file_input" }
+        );
+      }
+      if (!resolved.legacy && target.editable !== true) {
+        throw new OpsError(
+          "target_not_actionable",
+          `The target "${target.label || target.tag}" is not editable.`,
+          { reason: "not_editable" }
         );
       }
 
@@ -1939,6 +2322,39 @@ export function createOps(win: ChromeWindow, windowId: string) {
           )}`
         );
       }
+      const observed = await (async () => {
+        try {
+          const raw = await resolved.actor.sendQuery(
+            "MarionetteCommandsParent:executeScript",
+            {
+              script: buildVerifyTypedValueScript(),
+              args: [target.element, text, clear ? "exact" : "suffix"],
+              opts: { timeout: 5_000 },
+            }
+          );
+          const probe = coerceTypedValueProbe(raw);
+          return {
+            ...probe,
+            sensitive: probe.sensitive || target.sensitive === true,
+          };
+        } catch {
+          return {
+            compared: false,
+            matchesInput: null,
+            sensitive: target.sensitive === true,
+          };
+        }
+      })();
+      const limitation = observed.compared
+        ? observed.matchesInput === false
+          ? "The field value did not match the typed text exactly; the page " +
+            "may have reformatted it."
+          : undefined
+        : observed.sensitive
+          ? "This field is classified sensitive. The text is not echoed or " +
+            "read back, so typing was not verified."
+          : "The typed value could not be read back; the field may have " +
+            "navigated or been replaced.";
       const effect = await observeActionEffect(
         tab,
         resolved.framePath,
@@ -1954,6 +2370,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
         title: tabTitle(tab),
         target: actionTarget(target),
         effect,
+        observed,
         ...(resolved.framePath.length
           ? {
               framePath: resolved.framePath,
@@ -1962,13 +2379,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
                 resolved.frameUrl,
             }
           : {}),
-        ...(target.sensitive
-          ? {
-              limitation:
-                "This is a password field. The text is not echoed or stored " +
-                "in the result.",
-            }
-          : {}),
+        ...(limitation ? { limitation } : {}),
       } satisfies TypeTextResult;
     },
 
@@ -1977,26 +2388,46 @@ export function createOps(win: ChromeWindow, windowId: string) {
       if (!tabId) {
         throw new OpsError("no_tab", "Provide the tabId to wait in.");
       }
-      const tab = requireActionTab(tabId, "wait in");
-      const framePath = requireFramePath(params?.framePath);
-      const allowedDomains = params?.allowedDomains;
-      assertActionUrlAllowed(tabUrl(tab), allowedDomains, "waiting in");
-
       const value = (input: unknown): string =>
         typeof input === "string" ? input.trim() : "";
-      const candidates = (
-        [
-          ["selector", value(params?.selector)],
-          ["text", value(params?.text)],
-          ["urlContains", value(params?.urlContains)],
-          ["titleContains", value(params?.titleContains)],
-        ] as Array<[WaitCondition, string]>
-      ).filter((entry) => !!entry[1]);
+      const until = params?.until === "absent" ? "absent" : "present";
+      const tabClosed = params?.tabClosed === true;
+      const selector = value(params?.selector);
+      const text = value(params?.text);
+      const urlContains = value(params?.urlContains);
+      const titleContains = value(params?.titleContains);
+      const state: WaitElementState =
+        params?.state === "visible" || params?.state === "enabled"
+          ? params.state
+          : "present";
+      if (params?.state !== undefined && !selector) {
+        throw new OpsError(
+          "invalid_args",
+          "state requires a selector condition."
+        );
+      }
+      const documentChanged = params?.documentChanged === true;
+      const requestedDocumentId = value(params?.documentId);
+      const newTab = params?.newTab === true;
+      const dialog = params?.dialog === true;
+
+      const candidates: Array<[WaitCondition, string]> = [];
+      if (selector) candidates.push(["selector", selector]);
+      if (text) candidates.push(["text", text]);
+      if (urlContains) candidates.push(["urlContains", urlContains]);
+      if (titleContains) candidates.push(["titleContains", titleContains]);
+      if (documentChanged || requestedDocumentId) {
+        candidates.push(["document", requestedDocumentId || "document"]);
+      }
+      if (newTab) candidates.push(["newTab", "newTab"]);
+      if (tabClosed) candidates.push(["tabClosed", tabId]);
+      if (dialog) candidates.push(["dialog", "dialog"]);
       if (candidates.length !== 1) {
         throw new OpsError(
           "invalid_args",
-          "Provide exactly one of selector, text, urlContains, or " +
-            "titleContains."
+          "Provide exactly one condition: selector, text, urlContains, " +
+            "titleContains, documentChanged, documentId, newTab, tabClosed, " +
+            "or dialog."
         );
       }
       const [condition, query] = candidates[0];
@@ -2006,10 +2437,59 @@ export function createOps(win: ChromeWindow, windowId: string) {
           "The condition text must be 2,000 characters or fewer."
         );
       }
-      const until = params?.until === "absent" ? "absent" : "present";
+      if (
+        until === "absent" &&
+        (condition === "document" ||
+          condition === "newTab" ||
+          condition === "tabClosed" ||
+          condition === "dialog")
+      ) {
+        throw new OpsError(
+          "invalid_args",
+          "until absent is only supported for selector, text, URL and title conditions."
+        );
+      }
+
+      let tab: ChromeTab;
+      try {
+        tab = requireActionTab(tabId, "wait in");
+      } catch (error) {
+        // Only a tab this session knew and that is now gone counts as closed;
+        // a live privileged or PDF tab must keep its original error.
+        const known = tabsById.get(tabId);
+        const closed =
+          closedTabIds.has(tabId) ||
+          (known !== undefined && (!known.isConnected || known.closing));
+        if (tabClosed && closed) {
+          return {
+            matched: true,
+            waitedMs: 0,
+            condition: "tabClosed",
+            until,
+            query: tabId,
+            tabId,
+            url: "",
+            title: "",
+            limitation: "The tab was already closed when the wait started.",
+          } satisfies WaitForResult;
+        }
+        throw error;
+      }
+      const framePath = requireFramePath(params?.framePath);
+      if (framePath.length && condition === "document") {
+        throw new OpsError(
+          "invalid_args",
+          "Document identity conditions apply to the top document; " +
+            "remove framePath."
+        );
+      }
+      const allowedDomains = params?.allowedDomains;
+      assertActionUrlAllowed(tabUrl(tab), allowedDomains, "waiting in");
+
       const requestedTimeout = Number(params?.timeoutMs);
+      // Zero means one immediate check, not the default window.
       const timeoutMs = clamp(
-        Number.isFinite(requestedTimeout) && requestedTimeout > 0
+        Number.isFinite(requestedTimeout) && requestedTimeout >= 0
           ? requestedTimeout
           : WAIT_TIMEOUT_MS,
         0,
@@ -2024,83 +2504,251 @@ export function createOps(win: ChromeWindow, windowId: string) {
         WAIT_MAX_POLL_MS
       );
 
-      const started = Date.now();
-      const probeOptions: WaitProbeOptions = {
-        [condition]: query,
-      };
-      let probe: WaitProbe | null = null;
-      let lastError = "";
-      let matched = false;
-      let waitedMs = 0;
-      for (;;) {
-        let actor: any = null;
-        try {
-          actor = framePath.length
-            ? resolveFrame(tab, framePath, allowedDomains).actor
-            : pageActor(tab);
-        } catch (error) {
-          if (
-            error instanceof OpsError &&
-            error.code === "domain_not_allowed"
-          ) {
-            throw error;
-          }
-          lastError = String((error as Error)?.message ?? error);
-        }
-        if (actor) {
-          try {
-            const raw = await actor.sendQuery(
-              "MarionetteCommandsParent:executeScript",
-              {
-                script: buildWaitProbeScript(probeOptions),
-                args: [],
-                opts: { timeout: WAIT_PROBE_TIMEOUT_MS },
-              }
-            );
-            probe = coerceWaitProbe(raw);
-            if (!probe) lastError = "the probe returned no document state";
-          } catch (error) {
-            probe = null;
-            lastError = String((error as Error)?.message ?? error);
-          }
-        }
-        matched = probe
-          ? until === "absent"
-            ? probe.matched === false
-            : probe.matched === true
-          : false;
-        waitedMs = Date.now() - started;
-        if (matched || waitedMs >= timeoutMs) break;
-        await sleep(Math.min(pollMs, timeoutMs - waitedMs));
-      }
+      const pageCondition =
+        condition === "selector" ||
+        condition === "text" ||
+        condition === "urlContains" ||
+        condition === "titleContains";
 
-      const finalUrl = tabUrl(tab);
-      let limitation: string | undefined;
-      if (!matched) {
-        limitation = probe
-          ? `The condition did not hold within ${waitedMs} ms.`
-          : `The document could not be inspected after ${waitedMs} ms` +
-            (lastError ? `: ${lastError}` : ".");
-      }
-      return {
-        matched,
-        waitedMs,
-        condition,
-        until,
-        query,
-        tabId,
-        url: isHttpUrl(finalUrl) ? finalUrl : "",
-        title: tabTitle(tab),
-        ...(framePath.length
-          ? {
-              framePath,
-              frameUrl:
-                currentFrameUrl(tab, framePath) ??
-                (probe?.url ? probe.url : null),
+      const startDocumentId = documentIdForTab(tab);
+      const documentBaseline = requestedDocumentId || startDocumentId;
+      const startTabIds = new Set(realTabs().map((entry) => idForTab(entry)));
+      let openedTabId = "";
+      let closedTab = false;
+      const dialogBaseline = dialogSeq;
+
+      let changeWaiter: (() => void) | null = null;
+      let wakeTimer: ReturnType<typeof setTimeout> | null = null;
+      const signalChange = (): void => {
+        if (wakeTimer) {
+          clearTimeout(wakeTimer);
+          wakeTimer = null;
+        }
+        const waiter = changeWaiter;
+        changeWaiter = null;
+        waiter?.();
+      };
+      const sleepOrChange = (ms: number): Promise<void> =>
+        new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled) return;
+            settled = true;
+            changeWaiter = null;
+            if (wakeTimer) {
+              clearTimeout(wakeTimer);
+              wakeTimer = null;
             }
-          : {}),
-        ...(limitation ? { limitation } : {}),
-      } satisfies WaitForResult;
+            resolve();
+          };
+          changeWaiter = finish;
+          wakeTimer = setTimeout(finish, ms);
+        });
+
+      const container = win.gBrowser?.tabContainer;
+      const onTabOpen = (event: any): void => {
+        try {
+          const id = idForTab(event?.target);
+          if (!openedTabId && !startTabIds.has(id)) openedTabId = id;
+        } catch {
+          // A tab that cannot be identified still wakes the loop.
+        }
+        signalChange();
+      };
+      const onTabClose = (event: any): void => {
+        try {
+          if (idForTab(event?.target) === tabId) closedTab = true;
+        } catch {
+          // Fall through to polling.
+        }
+        signalChange();
+      };
+      const dialogWaiter = (): void => signalChange();
+      const watchingTabs = condition === "newTab" || condition === "tabClosed";
+      try {
+        if (watchingTabs && container?.addEventListener) {
+          container.addEventListener("TabOpen", onTabOpen);
+          container.addEventListener("TabClose", onTabClose);
+        }
+        if (condition === "dialog") dialogWaiters.add(dialogWaiter);
+
+        const probeOptions: WaitProbeOptions = {
+          [condition]: query,
+          ...(condition === "selector" ? { state } : {}),
+        };
+        let probe: WaitProbe | null = null;
+        let lastError = "";
+        let matched = false;
+        let waitedMs = 0;
+        const started = Date.now();
+        for (;;) {
+          if (!tab.isConnected && (pageCondition || condition === "document")) {
+            lastError = "the tab closed";
+            matched = false;
+            break;
+          }
+          if (pageCondition) {
+            // The top document can navigate to another site mid-wait; recheck
+            // the allowlist before probing so an off-list page is not read.
+            try {
+              assertActionUrlAllowed(tabUrl(tab), allowedDomains, "waiting in");
+            } catch (error) {
+              if (
+                error instanceof OpsError &&
+                error.code === "domain_not_allowed"
+              ) {
+                lastError = "the page left the domain allowlist";
+                matched = false;
+                break;
+              }
+              throw error;
+            }
+            let actor: any = null;
+            try {
+              actor = framePath.length
+                ? resolveFrame(tab, framePath, allowedDomains).actor
+                : pageActor(tab);
+            } catch (error) {
+              if (
+                error instanceof OpsError &&
+                error.code === "domain_not_allowed"
+              ) {
+                throw error;
+              }
+              lastError = String((error as Error)?.message ?? error);
+            }
+            if (actor) {
+              try {
+                const raw = await actor.sendQuery(
+                  "MarionetteCommandsParent:executeScript",
+                  {
+                    script: buildWaitProbeScript(probeOptions),
+                    args: [],
+                    opts: { timeout: WAIT_PROBE_TIMEOUT_MS },
+                  }
+                );
+                probe = coerceWaitProbe(raw);
+                if (!probe) lastError = "the probe returned no document state";
+              } catch (error) {
+                probe = null;
+                lastError = String((error as Error)?.message ?? error);
+              }
+            }
+            matched = probe
+              ? until === "absent"
+                ? probe.matched === false
+                : probe.matched === true
+              : false;
+          } else if (condition === "document") {
+            const current = tab.isConnected ? documentIdForTab(tab) : "";
+            // An empty identity is a missing document, never a match: a
+            // replaced page that has not committed must not read as changed.
+            matched =
+              current !== "" &&
+              documentBaseline !== "" &&
+              (documentChanged
+                ? current !== documentBaseline
+                : current === documentBaseline);
+          } else if (condition === "newTab") {
+            if (!openedTabId) {
+              for (const entry of realTabs()) {
+                const id = idForTab(entry);
+                if (!startTabIds.has(id)) {
+                  openedTabId = id;
+                  break;
+                }
+              }
+            }
+            matched = openedTabId.length > 0;
+          } else if (condition === "tabClosed") {
+            if (!closedTab) {
+              const alive = realTabs().some(
+                (entry) => idForTab(entry) === tabId
+              );
+              if (!alive) closedTab = true;
+            }
+            matched = closedTab;
+          } else if (condition === "dialog") {
+            matched = dialogSeq > dialogBaseline;
+          }
+          waitedMs = Date.now() - started;
+          if (matched || waitedMs >= timeoutMs) break;
+          const remaining = Math.min(pollMs, timeoutMs - waitedMs);
+          if (watchingTabs || condition === "dialog") {
+            await sleepOrChange(remaining);
+          } else {
+            await sleep(remaining);
+          }
+        }
+
+        const finalDocumentId = tab.isConnected ? documentIdForTab(tab) : "";
+        const finalUrl = tab.isConnected ? tabUrl(tab) : "";
+        // The page may have navigated off the allowlist since the last probe;
+        // do not echo a title or URL the caller was never allowed to read.
+        const finalAllowed =
+          isHttpUrl(finalUrl) && isUrlAllowed(finalUrl, allowedDomains);
+        let limitation: string | undefined;
+        if (!matched) {
+          if (lastError && (pageCondition || condition === "document")) {
+            limitation = `The document could not be inspected after ${waitedMs} ms` +
+              (lastError ? `: ${lastError}` : ".");
+          } else if (condition === "document") {
+            limitation = documentBaseline
+              ? `The document identity did not ${
+                  documentChanged ? "change" : "match"
+                } within ${waitedMs} ms.`
+              : `The document identity was not available after ${waitedMs} ms.`;
+          } else if (condition === "newTab") {
+            limitation = `No new tab opened within ${waitedMs} ms.`;
+          } else if (condition === "tabClosed") {
+            limitation = `The tab was still open after ${waitedMs} ms.`;
+          } else if (condition === "dialog") {
+            limitation =
+              `No browser dialog was observed within ${waitedMs} ms. ` +
+              "A dialog that appeared before the wait started is not counted.";
+          } else {
+            limitation = `The condition did not hold within ${waitedMs} ms.`;
+          }
+        } else if (condition === "tabClosed") {
+          limitation =
+            "The tab closed during the wait; its final page state was not read.";
+        }
+        return {
+          matched,
+          waitedMs,
+          condition,
+          until,
+          query,
+          tabId,
+          url: finalAllowed ? finalUrl : "",
+          title: finalAllowed ? tabTitle(tab) : "",
+          ...(condition === "selector" ? { state } : {}),
+          ...(finalDocumentId ? { documentId: finalDocumentId } : {}),
+          ...(openedTabId ? { newTabId: openedTabId } : {}),
+          ...(framePath.length
+            ? {
+                framePath,
+                frameUrl: (() => {
+                  const candidate =
+                    currentFrameUrl(tab, framePath) ??
+                    (probe?.url ? probe.url : null);
+                  return candidate &&
+                    isHttpUrl(candidate) &&
+                    isUrlAllowed(candidate, allowedDomains)
+                    ? candidate
+                    : null;
+                })(),
+              }
+            : {}),
+          ...(limitation ? { limitation } : {}),
+        } satisfies WaitForResult;
+      } finally {
+        if (watchingTabs && container?.removeEventListener) {
+          container.removeEventListener("TabOpen", onTabOpen);
+          container.removeEventListener("TabClose", onTabClose);
+        }
+        dialogWaiters.delete(dialogWaiter);
+      }
     },
 
     "tabs.findText": async (
@@ -3533,6 +4181,10 @@ export function createOps(win: ChromeWindow, windowId: string) {
         handler(params as never) as Promise<unknown>
       );
     },
+    /** Stable id for a tab seen by a chrome observer. */
+    tabIdFor: idForTab,
+    /** Lets a dialog wait learn that a prompt appeared in this window. */
+    noteDialogShown,
   };
 }
 

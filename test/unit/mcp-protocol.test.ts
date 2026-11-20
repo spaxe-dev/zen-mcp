@@ -375,6 +375,22 @@ describe("resources", () => {
     }
   });
 
+  it("returns resource payloads as compact JSON", async () => {
+    const harness = await createHarness();
+    try {
+      const read = await harness.client.readResource({
+        uri: "zen://capabilities",
+      });
+      const first = read.contents?.[0];
+      const text = first && "text" in first ? first.text : "";
+      assert.ok(text.length > 0);
+      assert.equal(text, JSON.stringify(JSON.parse(text)));
+      assert.ok(!text.includes("\n"), "resource text is a single line");
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("announces list changes after a resource-changing tool succeeds", async () => {
     const harness = await createHarness();
     try {

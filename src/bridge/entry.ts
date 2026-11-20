@@ -10,6 +10,7 @@ import type {
   UiQuestion,
 } from "../shared/protocol.js";
 import { createOps } from "./ops.js";
+import { observeBrowserEvents } from "./browser-events.js";
 import {
   EvidenceRecordStore,
   cacheEvidenceRequest,
@@ -137,6 +138,16 @@ import { ZenMcpUi } from "./ui.js";
       send({ type: "ui.updateAction", action, ts: Date.now() }),
   });
   const ops = createOps(win, windowId);
+  const browserEvents = observeBrowserEvents(
+    win,
+    (tab) => ops.tabIdFor(tab),
+    (event) => {
+      if (event.kind === "dialog" && event.phase === "shown") {
+        ops.noteDialogShown();
+      }
+      send({ type: "browser.event", event });
+    }
+  );
   // Last successful evidence request per tab, so "Show source" can re-run the
   // fixed highlight pipeline after the original overlay expired.
   const evidenceRecords = new EvidenceRecordStore();
@@ -357,7 +368,21 @@ import { ZenMcpUi } from "./ui.js";
             result,
           });
         } catch (error) {
-          const err = error as Error & { code?: string };
+          const err = error as Error & {
+            code?: string;
+            details?: Record<string, unknown>;
+          };
+          let details: Record<string, unknown> | undefined;
+          if (err.details && typeof err.details === "object") {
+            try {
+              details =
+                JSON.stringify(err.details).length <= 2_000
+                  ? err.details
+                  : { truncated: true };
+            } catch {
+              details = { truncated: true };
+            }
+          }
           send({
             type: "res",
             id: message.id,
@@ -365,6 +390,7 @@ import { ZenMcpUi } from "./ui.js";
             error: {
               code: err.code ?? "bridge_error",
               message: String(err.message ?? err),
+              ...(details ? { details } : {}),
             },
           });
         }
@@ -456,6 +482,7 @@ import { ZenMcpUi } from "./ui.js";
       }
     }
     ui.destroy();
+    browserEvents.destroy();
     pendingStop.clear();
     if (win.__zenMcpBridge?.windowId === windowId) {
       delete win.__zenMcpBridge;

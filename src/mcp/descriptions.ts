@@ -53,15 +53,15 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   zen_bookmarks_search:
     "Search bookmarks by title or URL, newest first. Use it to find saved dashboards, repositories, and docs. Metadata only.",
   zen_read_page:
-    "Extract one tab, including tabs in spaces the user is not looking at, without selecting or focusing anything. Use markdown for prose, links for sources, tables for data, metadata or outline to orient, interactive for controls. `selector` reads one element; long text is paged with offset/nextOffset.",
+    "Extract one tab, including tabs in other spaces, without focusing. Use snapshot for a bounded value-free control view with refs, outline, text preview and completeness flags; semantic for landmarks, repeated structures, forms, dialogs and a confidence-labelled page type. Use markdown for prose, links for sources, tables for data; `selector` narrows scope and text is paged with offset/nextOffset.",
   zen_read_pages:
     "Read up to 10 tabs in one call, three at a time. Each tab succeeds or fails independently. One format, selector, and offset apply to the batch; use it for the first pass across sources, then read selectively.",
   zen_click:
-    "Click one control by interactive ref or top-document CSS selector. Use only when the user asked you to operate the page. Refs expire after another interactive read or a navigation. This is real input: it can submit, download, navigate, or purchase.",
+    "Click one control by ref, semantic `target` (role+name, text, label, placeholder, or selector), or top-level CSS selector. One resolver re-validates before input; two matches fail with candidates. Use only when asked. Refs expire with the next read; removed or navigated nodes return element_not_found. Real input can submit, navigate, or purchase. `effect.delta` reports observed changes, not proof.",
   zen_type:
-    "Type into one field by interactive ref or top-document CSS selector. Use only when asked; refs expire. `clear` replaces the value; the default appends. Typed text is never returned, file inputs are refused, and passwords are typed only when the user supplied them.",
+    "Type into one field by ref, semantic `target` (label, placeholder, role+name, text, or selector), or top-level CSS selector. `clear` replaces; the default appends. `observed` says whether the field matched without returning the value or length; sensitive fields are not read back. File inputs are refused. `effect.delta` reports observed changes.",
   zen_wait_for:
-    "Wait for exactly one condition in a tab: selector present or absent, text, URL substring, or title substring. Read-only and safe in read-only mode. Timeout returns matched:false, not an error.",
+    "Wait for exactly one condition in a tab: selector present, visible or enabled, text, URL substring, title substring, a document change or identity, a new tab, a tab closing, or a dialog appearing. Read-only. Timeout returns matched:false, not an error.",
   zen_find_text:
     "Find literal text in one tab and return match offsets with short excerpts. Read-only: no selection, scroll, or highlight. Case and typographic folding by default; the query is text, not a regex.",
   zen_search_tabs:
@@ -81,7 +81,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   zen_progress:
     "Show or update a persistent progress card with a Stop button. Call at each stage of long work; `done:true` hides it and acknowledges Stop. Poll zen_events to notice Stop.",
   zen_events:
-    "Collect Stop, Pause, Resume, watch, and question events after a cursor. `waitSeconds` long-polls up to 25. A stop event means stop; a pause means stop retrying browser tools until resume.",
+    "Collect events after a cursor: Stop, Pause, Resume, watches, questions, plus observed tab, navigation, document and dialog transitions. `waitSeconds` long-polls up to 25. `missed` counts evicted events and `filtered` counts allowlist drops. Transitions are evidence, not cause. A stop means stop; a pause means stop retrying browser tools until resume.",
   zen_watch_add:
     "Watch a tab without taking it over: text changes, or a selector appearing or disappearing. Polls server-side, posts events and an optional card, and expires after maxMinutes. At most 50 watches.",
   zen_watch_list:

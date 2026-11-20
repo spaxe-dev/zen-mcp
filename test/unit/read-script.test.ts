@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReadFormat } from "../../src/shared/protocol.js";
 import {
+  buildInspectElementScript,
   buildPageSignatureScript,
   buildReadScript,
-  buildResolveTargetScript,
   buildWaitProbeScript,
   coercePageSignature,
   coercePageSnapshot,
@@ -22,6 +22,8 @@ const FORMATS: ReadFormat[] = [
   "metadata",
   "outline",
   "interactive",
+  "snapshot",
+  "semantic",
 ];
 
 describe("page read script", () => {
@@ -102,22 +104,475 @@ describe("page read script", () => {
 
   it("contains the interactive scan and excludes hidden inputs", () => {
     const script = buildReadScript({ maxChars: 500, format: "interactive" });
-    assert.match(script, /const REF_ATTR = "data-zen-mcp-ref";/);
     assert.match(script, /const MAX_ELEMENTS = 200;/);
-    assert.match(script, /function collectInteractive/);
+    assert.match(script, /function collectElements/);
     assert.match(script, /function describeElement/);
     assert.match(script, /input:not\(\[type='hidden'\]\)/);
     assert.match(script, /\[contenteditable='true'\]/);
     assert.match(script, /\[role='textbox'\]/);
     assert.match(script, /shadowRoot/);
-    assert.match(script, /var localRef = "e" \+ \(elements\.length \+ 1\);/);
-    assert.match(script, /var ref = refPrefix \+ localRef;/);
-    // The frame-local ref is what resolution searches for; the prefix is a
-    // reporting and routing namespace, not part of the stored attribute.
-    assert.match(script, /el\.setAttribute\(REF_ATTR, localRef\);/);
+    assert.match(script, /refPrefix \+ "e" \+ \(elements\.length \+ 1\)/);
+    // Reads never instrument the page: refs live in the bridge registry.
+    assert.ok(!script.includes("setAttribute"));
+    assert.ok(!script.includes("removeAttribute"));
+    assert.ok(!script.includes("data-zen-mcp-ref"));
   });
 
-  it("embeds a frame ref prefix and ignores malformed ones", () => {
+  it("embeds the snapshot caps and ignores caller text paging", () => {    const script = buildReadScript({
+      maxChars: 50_000,
+      offset: 900,
+      format: "snapshot",
+    });
+    assert.ok(script.includes('const format = "snapshot";'));
+    assert.ok(script.includes("const privateView = true;"));
+    assert.ok(script.includes("const maxChars = 4000;"));
+    assert.ok(script.includes("const offset = 0;"));
+    assert.ok(script.includes("const MAX_ELEMENTS = 100;"));
+    assert.ok(script.includes("const OUTLINE_LIMIT = 80;"));
+    assert.ok(script.includes("const OUTLINE_CHARS = 160;"));
+
+    const wide = buildReadScript({ maxChars: 1, format: "snapshot", maxElements: 999 });
+    assert.ok(wide.includes("const MAX_ELEMENTS = 200;"));
+
+    const tiny = buildReadScript({ maxChars: 1, format: "snapshot", maxElements: 0 });
+    assert.ok(tiny.includes("const MAX_ELEMENTS = 1;"));
+  });
+
+  it("embeds the semantic caps and shares snapshot privacy", () => {
+    const script = buildReadScript({ maxChars: 50_000, format: "semantic" });
+    assert.ok(script.includes('const format = "semantic";'));
+    assert.ok(script.includes("const privateView = true;"));
+    assert.ok(script.includes("const maxChars = 4000;"));
+    assert.ok(script.includes("const offset = 0;"));
+    assert.ok(script.includes("const SEM_MAX_REGIONS = 40;"));
+    assert.ok(script.includes("const SEM_MAX_HEADINGS_LIST = 40;"));
+    assert.ok(script.includes("const SEM_MAX_COLLECTIONS = 12;"));
+    assert.ok(script.includes("const SEM_MAX_DIALOGS = 5;"));
+    assert.ok(script.includes("const SEM_MAX_SAMPLES = 3;"));
+    assert.ok(script.includes("const SEM_MAX_SHADOW_ROOTS = 40;"));
+    assert.ok(script.includes("const SEM_MAX_DEPTH = 10;"));
+
+    const capped = buildReadScript({ maxChars: 1, format: "semantic", maxElements: 999 });
+    assert.ok(capped.includes("const MAX_ELEMENTS = 120;"));
+    assert.ok(!script.includes("valueLength"));
+  });
+
+  it("derives landmarks from sectioning rather than class names", () => {
+    const script = buildReadScript({ maxChars: 500, format: "semantic" });
+    assert.ok(script.includes("function hasSectioningAncestor(el)"));
+    assert.match(
+      script,
+      /if \(tag === "header"\) \{\s*return hasSectioningAncestor\(el\) \? null : "banner";/
+    );
+    assert.match(
+      script,
+      /if \(tag === "footer"\) \{\s*return hasSectioningAncestor\(el\) \? null : "contentinfo";/
+    );
+    assert.ok(script.includes('if (tag === "nav") return "navigation";'));
+    assert.ok(script.includes('if (tag === "main") return "main";'));
+    assert.ok(script.includes('if (tag === "search") return "search";'));
+    assert.ok(!/(?:className|classList)/.test(script));
+  });
+
+  it("builds a bounded semantic model with headings, dialogs and coverage", () => {
+    const script = buildReadScript({ maxChars: 500, format: "semantic" });
+    assert.ok(
+      script.includes(
+        "function buildSemantic(root, startRefIndex, elementsTotal, elementsTruncated)"
+      )
+    );
+    assert.ok(script.includes("var primaryRoles ="));
+    assert.ok(script.includes("aria-modal"));
+    assert.ok(script.includes("regionsTruncated"));
+    assert.ok(script.includes("headingsTruncated"));
+    assert.ok(script.includes("function semanticRole(el, tag, explicit)"));
+    assert.ok(script.includes("PAGE_CLASSIFICATIONS.indexOf(best) >= 0"));
+    assert.ok(script.includes("confidence: Math.round(confidence * 100) / 100"));
+    assert.ok(script.includes("SEM_MAX_LIMITATIONS"));
+  });
+
+  it("keeps regions and hidden text honest across shadow boundaries", () => {
+    const script = buildReadScript({ maxChars: 500, format: "semantic" });
+    assert.ok(script.includes("function composedContains(ancestor, node)"));
+    assert.ok(script.includes("function ariaHidden(el)"));
+    assert.ok(script.includes("if (!isElementVisible(el) || ariaHidden(el)) return;"));
+    assert.ok(script.includes('el.matches(":modal")'));
+    assert.ok(!/\.contains\(current\)/.test(script));
+    assert.ok(
+      script.includes('return semanticAriaLabel(el) || hasHtmlName(el, "form") ? "form" : null;')
+    );
+    assert.ok(
+      script.includes("!collectionsTruncated &&") &&
+        script.includes("!elementsTruncated,")
+    );
+  });
+
+  it("never sends values or value lengths for snapshots", () => {
+    const script = buildReadScript({ maxChars: 500, format: "snapshot" });
+    assert.match(script, /out\.valuePresent = fields\.valuePresent;/);
+    assert.match(script, /if \(!privateView && !fields\.sensitive\)/);
+    assert.ok(!script.includes("valueLength"));
+
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      elements: [
+        {
+          ref: "e1",
+          tag: "input",
+          role: "textbox",
+          label: "Coupon",
+          value: "HUNTER2",
+          valuePresent: true,
+          autocomplete: null,
+          selected: null,
+          form: "checkout",
+        },
+      ],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { snapshotId: "snap-1234abcd" });
+    const element = result.elements?.[0];
+    assert.ok(element);
+    assert.ok(!("value" in element), "snapshot reads omit the value field");
+    assert.equal(element.valuePresent, true);
+    assert.equal(element.form, "checkout");
+    assert.ok(
+      !("autocomplete" in element),
+      "an absent autocomplete is omitted rather than null"
+    );
+    assert.ok(
+      !("selected" in element),
+      "an unknown selected state is omitted rather than null"
+    );
+    assert.ok(!("valueLength" in element));
+    assert.equal(result.snapshotId, "snap-1234abcd");
+    assert.equal(result.nextOffset, null);
+    assert.equal(result.selectedText, "");
+  });
+
+  it("omits absent snapshot state but keeps state that carries information", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      elements: [
+        { ref: "e1", tag: "button", role: "button", label: "Save" },
+        {
+          ref: "e2",
+          tag: "input",
+          role: "textbox",
+          label: "Coupon",
+          valuePresent: true,
+          autocomplete: "off",
+          selected: false,
+          form: "checkout",
+        },
+      ],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    const plain = (result.elements?.[0] ?? {}) as Record<string, unknown>;
+    assert.equal(plain.valuePresent, undefined);
+    assert.equal(plain.autocomplete, undefined);
+    assert.equal(plain.selected, undefined);
+    assert.equal(plain.form, undefined);
+    assert.equal(plain.value, undefined);
+
+    const stateful = (result.elements?.[1] ?? {}) as Record<string, unknown>;
+    assert.equal(stateful.valuePresent, true);
+    assert.equal(stateful.autocomplete, "off");
+    assert.equal(stateful.selected, false, "false is a real selected state");
+    assert.equal(stateful.form, "checkout");
+  });
+
+  it("keeps legacy interactive value mapping and the script-side guard", () => {
+    const script = buildReadScript({ maxChars: 500, format: "interactive" });
+    assert.match(script, /if \(!privateView && !fields\.sensitive\)/);
+
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "interactive",
+      elements: [
+        {
+          ref: "e1",
+          tag: "input",
+          role: "textbox",
+          label: "Coupon",
+          value: "SAVE10",
+        },
+      ],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.elements?.[0].value, "SAVE10");
+    assert.ok(!("valuePresent" in (result.elements?.[0] ?? {})));
+  });
+
+  const semanticPage = (overrides: Record<string, unknown> = {}) =>
+    coercePageSnapshot({
+      url: "https://example.com/docs",
+      format: "semantic",
+      text: "body",
+      fullLength: 4,
+      outline: [
+        { level: 1, text: "Docs" },
+        { level: 2, text: "Introduction" },
+      ],
+      elements: [
+        { ref: "e1", tag: "main", role: "main", label: "Docs" },
+      ],
+      semantic: {
+        classification: "documentation",
+        confidence: 0.9,
+        primaryRegion: "r1",
+        regions: [
+          {
+            id: "r1",
+            role: "main",
+            label: "Docs",
+            labelSource: "heading",
+            heading: "Docs",
+            parent: null,
+            ref: "e1",
+            controls: 0,
+            links: 0,
+            items: null,
+            itemKind: null,
+          },
+          {
+            id: "r2",
+            role: "section",
+            label: "Intro",
+            labelSource: "aria",
+            heading: "Introduction",
+            parent: "r1",
+            ref: null,
+            controls: 2,
+            links: 0,
+            items: 4,
+            itemKind: "cards",
+          },
+          {
+            id: "r3",
+            role: "navigation",
+            label: null,
+            labelSource: "inferred",
+            heading: null,
+            parent: null,
+            ref: null,
+            controls: 0,
+            links: 0,
+            items: 0,
+            itemKind: null,
+          },
+        ],
+        headings: [{ level: 1, text: "Docs", ref: "e1" }],
+        collections: [],
+        dialogs: [],
+        coverage: {
+          complete: true,
+          nodes: 40,
+          regions: 3,
+          regionsTruncated: false,
+          controls: 2,
+          links: 0,
+          headings: 1,
+          tables: 0,
+          images: 0,
+          missingAlt: 0,
+          shadowRoots: 0,
+        },
+        limitations: [],
+        ...overrides,
+      },
+    });
+
+  it("leans semantic regions without losing identity or relations", () => {
+    const page = semanticPage();
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    const regions = result.semantic?.regions ?? [];
+    assert.equal(regions.length, 3);
+    assert.deepEqual(regions[0], {
+      id: "r1",
+      role: "main",
+      heading: "Docs",
+      ref: "e1",
+    });
+    assert.deepEqual(regions[1], {
+      id: "r2",
+      role: "section",
+      label: "Intro",
+      labelSource: "aria",
+      heading: "Introduction",
+      parent: "r1",
+      controls: 2,
+      items: 4,
+      itemKind: "cards",
+    });
+    assert.deepEqual(regions[2], { id: "r3", role: "navigation" });
+    assert.equal(result.semantic?.primaryRegion, "r1");
+  });
+
+  it("does not mutate the coerced semantic model", () => {
+    const page = semanticPage();
+    assert.ok(page);
+    const before = JSON.stringify(page.semantic);
+
+    toPageReadResult(page);
+
+    assert.equal(JSON.stringify(page.semantic), before);
+  });
+
+  it("omits the outline on semantic reads but keeps it for snapshots", () => {
+    const semantic = semanticPage();
+    assert.ok(semantic);
+    const semanticResult = toPageReadResult(semantic);
+    assert.equal(semanticResult.outline, undefined);
+    assert.equal(semanticResult.outlineTruncated, undefined);
+    assert.equal(semanticResult.semantic?.headings.length, 1);
+
+    const snapshot = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      text: "body",
+      fullLength: 4,
+      outline: [{ level: 1, text: "Title" }],
+    });
+    assert.ok(snapshot);
+    const snapshotResult = toPageReadResult(snapshot);
+    assert.deepEqual(snapshotResult.outline, [{ level: 1, text: "Title" }]);
+  });
+
+  it("emits the child-frame caveat only when present and only once", () => {
+    const clean = semanticPage();
+    assert.ok(clean);
+    const cleanResult = toPageReadResult(clean);
+    assert.deepEqual(cleanResult.limitations, []);
+
+    const framed = semanticPage();
+    assert.ok(framed);
+    framed.limitations = [
+      "Child frames are not part of the semantic model; read a frame with framePath.",
+    ];
+    const framedResult = toPageReadResult(framed);
+    const mentions = (framedResult.limitations ?? []).filter((line) =>
+      line.includes("Child frames")
+    );
+    assert.equal(mentions.length, 1);
+    assert.ok(
+      !framedResult.semantic?.limitations.some((line) =>
+        line.includes("Child frames")
+      ),
+      "the caveat lives in one list"
+    );
+  });
+
+  it("separates snapshot collection completeness from output truncation", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      text: "x".repeat(10),
+      fullLength: 500,
+      elements: [
+        {
+          ref: "e1",
+          tag: "button",
+          role: "button",
+          label: "Save",
+        },
+      ],
+      elementsTruncated: true,
+      elementsTotal: 250,
+      outline: [{ level: 1, text: "Title" }],
+      outlineTruncated: true,
+      framesComplete: false,
+      snapshotComplete: false,
+      limitations: ["Only the first 10 child frames were scanned."],
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { snapshotId: "snap-deadbeef" });
+    assert.equal(result.textTruncated, true);
+    assert.equal(result.elementsTruncated, true);
+    assert.equal(result.outlineTruncated, true);
+    assert.equal(result.elementsTotal, 250);
+    assert.equal(result.truncated, true);
+    assert.equal(result.framesComplete, false);
+    assert.equal(result.snapshotComplete, false);
+    assert.ok(result.limitations?.some((line) => line.includes("child frames")));
+    assert.ok(result.limitations?.some((line) => line.includes("Text preview")));
+    assert.ok(
+      (result.limitations?.length ?? 0) <= 5,
+      "limitations stay bounded"
+    );
+  });
+
+  it("marks an unscoped snapshot complete even when output is capped", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      text: "x".repeat(4000),
+      fullLength: 90_000,
+      elements: [{ ref: "e1", tag: "button", role: "button", label: "Go" }],
+      elementsTruncated: true,
+      elementsTotal: 120,
+      framesComplete: true,
+      snapshotComplete: true,
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.textTruncated, true);
+    assert.equal(result.elementsTruncated, true);
+    assert.equal(result.framesComplete, true);
+    assert.equal(result.snapshotComplete, true);
+  });
+
+  it("returns the element handle from the inspect script", () => {
+    const script = buildInspectElementScript();
+    assert.match(script, /var element = arguments\.length/);
+    assert.match(script, /element: element/);
+    assert.match(script, /found: false, root: root/);
+  });
+
+  it("always reports an elementsTruncated boolean for snapshots", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+      text: "short",
+      fullLength: 5,
+      elements: [{ ref: "e1", tag: "button", role: "button", label: "Go" }],
+      elementsTruncated: false,
+      elementsTotal: 1,
+      framesComplete: true,
+      snapshotComplete: true,
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page);
+    assert.equal(result.elementsTruncated, false);
+    assert.equal(result.truncated, false);
+  });
+
+  it("explains an ignored snapshot offset", () => {
+    const page = coercePageSnapshot({
+      url: "https://example.com/",
+      format: "snapshot",
+    });
+    assert.ok(page);
+
+    const result = toPageReadResult(page, { offset: 50 });
+    assert.equal(result.offset, 0);
+    assert.equal(result.nextOffset, null);
+    assert.ok(result.limitations?.some((line) => line.includes("offset is ignored")));
+  });
+
+  it("builds a frame ref prefix and ignores malformed ones", () => {
     const framed = buildReadScript({
       maxChars: 500,
       format: "interactive",
@@ -267,26 +722,6 @@ describe("page read script", () => {
     assert.equal(result.truncated, true);
     assert.equal(result.elementsTruncated, true);
     assert.match(result.limitation ?? "", /element cap/);
-  });
-
-  it("builds a target resolver with only the requested target", () => {
-    const byRef = buildResolveTargetScript({ ref: "e12" });
-    assert.ok(byRef.includes(`const ref = "e12";`));
-    assert.ok(byRef.includes("const selector = null;"));
-    assert.match(byRef, /function findByRef/);
-    assert.match(byRef, /return \{ found: false \};/);
-
-    const bySelector = buildResolveTargetScript({
-      selector: 'button[data-test="a"]',
-    });
-    assert.ok(bySelector.includes(`const ref = null;`));
-    assert.ok(
-      bySelector.includes(
-        `const selector = ${JSON.stringify('button[data-test="a"]')};`
-      )
-    );
-    assert.doesNotThrow(() => new Function(byRef));
-    assert.doesNotThrow(() => new Function(bySelector));
   });
 
   it("rejects values that are not page snapshots", () => {
@@ -834,6 +1269,20 @@ describe("fixed page scripts behavior", () => {
     );
   };
 
+  const runElement = (script: string, element: unknown): any => {
+    const document = {
+      title: "",
+      readyState: "complete",
+      body: { innerText: "", textContent: "" },
+      querySelector: () => element,
+      querySelectorAll: () => [],
+    };
+    return new Function("document", "location", script)(
+      document,
+      { href: "https://example.com/" }
+    );
+  };
+
   it("matches a selector condition", () => {
     const script = buildWaitProbeScript({ selector: "#ready" });
     assert.equal(run(script, { matches: (sel) => sel === "#ready" }).matched, true);
@@ -873,6 +1322,61 @@ describe("fixed page scripts behavior", () => {
   it("treats an invalid selector as unmatched instead of throwing", () => {
     const script = buildWaitProbeScript({ selector: ":::" });
     assert.equal(run(script, { queryThrows: true }).matched, false);
+  });
+
+  it("requires a visible element for state=visible", () => {
+    const script = buildWaitProbeScript({ selector: "#go", state: "visible" });
+    const shown = runElement(script, {
+      getClientRects: () => [{}],
+      ownerDocument: {
+        defaultView: {
+          getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+        },
+      },
+    });
+    assert.equal(shown.matched, true);
+    assert.equal(runElement(script, null).matched, false);
+    assert.equal(
+      runElement(script, {
+        getClientRects: () => [{}],
+        ownerDocument: {
+          defaultView: { getComputedStyle: () => ({ display: "none" }) },
+        },
+      }).matched,
+      false
+    );
+    assert.equal(runElement(script, { getClientRects: () => [] }).matched, false);
+  });
+
+  it("requires an enabled element for state=enabled", () => {
+    const script = buildWaitProbeScript({ selector: "#send", state: "enabled" });
+    assert.equal(
+      runElement(script, { disabled: false, getAttribute: () => null }).matched,
+      true
+    );
+    assert.equal(runElement(script, { disabled: true }).matched, false);
+    assert.equal(
+      runElement(script, {
+        disabled: false,
+        getAttribute: () => "true",
+      }).matched,
+      false
+    );
+  });
+
+  it("treats a missing element as unmatched for every state", () => {
+    for (const state of ["present", "visible", "enabled"] as const) {
+      const script = buildWaitProbeScript({ selector: "#gone", state });
+      assert.equal(runElement(script, null).matched, false, state);
+    }
+  });
+
+  it("embeds the requested state and defaults to present", () => {
+    assert.match(
+      buildWaitProbeScript({ selector: "#a", state: "visible" }),
+      /const state = "visible";/
+    );
+    assert.match(buildWaitProbeScript({ selector: "#a" }), /const state = "present";/);
   });
 
   it("produces a stable signature for an unchanged page", () => {

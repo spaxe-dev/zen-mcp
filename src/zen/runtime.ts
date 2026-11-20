@@ -36,12 +36,14 @@ import type {
   TabInfo,
   TextSearchResult,
   TypeTextResult,
+  WaitElementState,
   WaitForResult,
   UiConsent,
   UiOption,
   WatchInfo,
   WatchParams,
 } from "../shared/protocol.js";
+import type { PageTargetSpec } from "../shared/target.js";
 import { hostOf, isUrlAllowed } from "../shared/url-policy.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 import {
@@ -674,6 +676,7 @@ export class ZenRuntime {
       tabId?: string;
       format?: ReadFormat;
       selector?: string;
+      maxElements?: number;
       framePath?: number[];
       signal?: AbortSignal;
     } = {}
@@ -693,6 +696,7 @@ export class ZenRuntime {
     tabId: string;
     ref?: string;
     selector?: string;
+    target?: PageTargetSpec;
     windowId?: string;
     signal?: AbortSignal;
   }): Promise<ClickElementResult> {
@@ -704,6 +708,7 @@ export class ZenRuntime {
         tabId,
         ...(options.ref ? { ref: options.ref } : {}),
         ...(options.selector ? { selector: options.selector } : {}),
+        ...(options.target ? { target: options.target } : {}),
       },
       options.windowId,
       { signal: options.signal }
@@ -716,6 +721,7 @@ export class ZenRuntime {
     text: string;
     ref?: string;
     selector?: string;
+    target?: PageTargetSpec;
     clear?: boolean;
     windowId?: string;
     signal?: AbortSignal;
@@ -729,6 +735,7 @@ export class ZenRuntime {
         text: String(options.text ?? ""),
         ...(options.ref ? { ref: options.ref } : {}),
         ...(options.selector ? { selector: options.selector } : {}),
+        ...(options.target ? { target: options.target } : {}),
         ...(options.clear === true ? { clear: true } : {}),
       },
       options.windowId,
@@ -743,9 +750,15 @@ export class ZenRuntime {
   async waitFor(options: {
     tabId: string;
     selector?: string;
+    state?: WaitElementState;
     text?: string;
     urlContains?: string;
     titleContains?: string;
+    documentChanged?: boolean;
+    documentId?: string;
+    newTab?: boolean;
+    tabClosed?: boolean;
+    dialog?: boolean;
     until?: "present" | "absent";
     timeoutMs?: number;
     pollMs?: number;
@@ -760,11 +773,17 @@ export class ZenRuntime {
       {
         tabId,
         ...(options.selector ? { selector: options.selector } : {}),
+        ...(options.state ? { state: options.state } : {}),
         ...(options.text ? { text: options.text } : {}),
         ...(options.urlContains ? { urlContains: options.urlContains } : {}),
         ...(options.titleContains
           ? { titleContains: options.titleContains }
           : {}),
+        ...(options.documentChanged ? { documentChanged: true } : {}),
+        ...(options.documentId ? { documentId: options.documentId } : {}),
+        ...(options.newTab ? { newTab: true } : {}),
+        ...(options.tabClosed ? { tabClosed: true } : {}),
+        ...(options.dialog ? { dialog: true } : {}),
         ...(options.until ? { until: options.until } : {}),
         ...(options.timeoutMs !== undefined
           ? { timeoutMs: options.timeoutMs }

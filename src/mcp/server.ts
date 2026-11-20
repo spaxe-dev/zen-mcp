@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { BridgeRequestError } from "../bridge/host.js";
 import { dataDirPath, type ZenMcpConfig } from "../config.js";
@@ -31,6 +32,11 @@ import { SessionStore } from "../zen/sessions.js";
 import { auditTabs, planDomainFolders } from "../zen/tab-audit.js";
 import { TemplateStore } from "../zen/templates.js";
 import { BRAND, SERVER_NAME, SERVER_VERSION } from "../shared/brand.js";
+import { errorMetadata } from "../shared/errors.js";
+import {
+  WAIT_ELEMENT_STATES,
+  WAIT_UNTIL,
+} from "../shared/protocol.js";
 import type {
   ActivityTone,
   UiOption,
@@ -48,6 +54,40 @@ type HandlerContext = {
   signal: AbortSignal;
   report: ProgressReporter;
 };
+
+/**
+ * The field names are the whole contract; the tool descriptions list the
+ * strategies, so per-field prose would only repeat them in every definition.
+ */
+const pageTargetInputSchema = z
+  .object({
+    ref: z.string().max(20).optional(),
+    role: z.string().max(200).optional(),
+    name: z.string().max(200).optional(),
+    text: z.string().max(500).optional(),
+    label: z.string().max(200).optional(),
+    placeholder: z.string().max(200).optional(),
+    selector: z.string().max(500).optional(),
+    match: z.enum(["exact", "contains"]).optional(),
+  })
+  .optional()
+  .describe(
+    "One strategy per call; do not combine with top-level ref/selector. " +
+      "Ambiguous matches are refused with candidates."
+  );
+
+const pageTargetShortcutRef = z
+  .string()
+  .max(20)
+  .regex(/^(?:f[0-9]+(?:\.[0-9]+){0,2}-)?e[0-9]{1,4}$/)
+  .optional()
+  .describe("Shortcut for target.ref.");
+
+const pageTargetShortcutSelector = z
+  .string()
+  .max(500)
+  .optional()
+  .describe("Shortcut for target.selector.");
 
 /**
  * The SDK keeps registered tools in a plain map and exposes the validation and
@@ -77,6 +117,55 @@ type McpServerInternals = {
     extra: unknown
   ) => Promise<unknown>;
 };
+
+type ProtocolInternals = {
+  _requestHandlers: Map<
+    string,
+    (request: unknown, extra: unknown) => unknown
+  >;
+};
+
+/**
+ * The SDK adds `$schema` and the default `additionalProperties: {}` to every
+ * node of a converted schema. Neither changes validation, and both are repeated
+ * in every tool definition an agent has to carry, so drop them from the
+ * `tools/list` view only. Calling a tool still validates against the Zod
+ * schemas.
+ */
+function compactSchemaNode(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const entry of node) compactSchemaNode(entry);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+  delete record.$schema;
+  const additional = record.additionalProperties;
+  if (
+    additional &&
+    typeof additional === "object" &&
+    Object.keys(additional).length === 0
+  ) {
+    delete record.additionalProperties;
+  }
+  for (const value of Object.values(record)) compactSchemaNode(value);
+}
+
+function compactSchemaLists(server: McpServer): void {
+  const protocol = server.server as unknown as ProtocolInternals;
+  const original = protocol._requestHandlers.get("tools/list");
+  if (!original) return;
+  server.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
+    const result = (await original(request, extra)) as {
+      tools?: Array<{ inputSchema?: unknown; outputSchema?: unknown }>;
+    };
+    for (const tool of result.tools ?? []) {
+      compactSchemaNode(tool.inputSchema);
+      compactSchemaNode(tool.outputSchema);
+    }
+    return result as never;
+  });
+}
 
 const CANCELLED_MESSAGE = "The request was cancelled by the client.";
 const NEVER_ABORT = new AbortController().signal;
@@ -198,6 +287,13 @@ export function createZenMcpServer(
   ]);
 
   /**
+   * Only these output schemas model an error variant. Every other tool keeps
+   * an error-free structuredContent contract, and MCP clients validate
+   * structuredContent against the schema even when isError is set.
+   */
+  const STRUCTURED_ERROR_TOOLS = new Set(["zen_click", "zen_type"]);
+
+  /**
    * Sends a sanitized client-visible log line. Never throws and never
    * includes arguments, page text or URLs.
    */
@@ -240,7 +336,7 @@ export function createZenMcpServer(
         auditRecord(tool, started, args, urls, { ok: false, executed: false }, error)
       );
       logToolEvent("warning", tool, "cancelled", error.message);
-      return errorResult(error);
+      return errorResult(error, STRUCTURED_ERROR_TOOLS.has(tool));
     }
     if (runtime.paused && !PAUSED_ALLOWED.has(tool)) {
       const error = new BridgeRequestError(
@@ -253,7 +349,7 @@ export function createZenMcpServer(
         auditRecord(tool, started, args, urls, { ok: false, executed: false }, error)
       );
       logToolEvent("warning", tool, "paused", error.message);
-      return errorResult(error);
+      return errorResult(error, STRUCTURED_ERROR_TOOLS.has(tool));
     }
     try {
       const extra = options.urls ? await options.urls() : [];
@@ -271,7 +367,7 @@ export function createZenMcpServer(
         )
       );
       logToolEvent("warning", tool, errorCode(error), describeError(error));
-      return errorResult(error);
+      return errorResult(error, STRUCTURED_ERROR_TOOLS.has(tool));
     }
     try {
       const value = await raceWithAbort(
@@ -292,7 +388,7 @@ export function createZenMcpServer(
         }
       }
       return {
-        content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(value) }],
         structuredContent: value as Record<string, unknown>,
       };
     } catch (error) {
@@ -316,7 +412,7 @@ export function createZenMcpServer(
         code,
         describeError(failure)
       );
-      return errorResult(failure);
+      return errorResult(failure, STRUCTURED_ERROR_TOOLS.has(tool));
     }
   };
 
@@ -552,7 +648,7 @@ export function createZenMcpServer(
           .array(z.string().min(1))
           .min(1)
           .max(30)
-          .describe("HTTP(S) or about: URLs. At most 30 per call."),
+          .describe("HTTP(S) or about: URLs."),
         space: z
           .string()
           .optional()
@@ -1075,16 +1171,28 @@ export function createZenMcpServer(
             "metadata",
             "outline",
             "interactive",
+            "snapshot",
+            "semantic",
           ])
           .optional()
           .describe(
-            "Output view. Defaults to text; interactive returns controls with refs."
+            "Output view. Defaults to text; snapshot, semantic and " +
+              "interactive return structured views."
           ),
         selector: z
           .string()
           .max(500)
           .optional()
           .describe("CSS selector limiting the read to one element."),
+        maxElements: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe(
+            "Control cap for snapshot (1-200) or semantic (1-120) reads. Defaults to 100."
+          ),
         framePath: z
           .array(z.number().int().min(0))
           .min(1)
@@ -1096,10 +1204,10 @@ export function createZenMcpServer(
       },
       annotations: { readOnlyHint: false },
     },
-    ({ tabId, maxChars, offset, format, selector, framePath }, extra) =>
+    ({ tabId, maxChars, offset, format, selector, maxElements, framePath }, extra) =>
       guarded(
         "zen_read_page",
-        { tabId, maxChars, offset, format, selector, framePath },
+        { tabId, maxChars, offset, format, selector, maxElements, framePath },
         async ({ signal, report }) => {
           report.report(1, 2, "reading page");
           const page = await runtime.readPage({
@@ -1108,6 +1216,7 @@ export function createZenMcpServer(
             offset,
             format,
             selector,
+            maxElements,
             framePath,
             signal,
           });
@@ -1144,7 +1253,7 @@ export function createZenMcpServer(
           .min(0)
           .optional()
           .describe(
-            "Character offset applied to every text or markdown read in the batch. Structured formats ignore it."
+            "Offset for every text or markdown read; structured formats ignore it."
           ),
         format: z
           .enum([
@@ -1193,20 +1302,9 @@ export function createZenMcpServer(
         TOOL_DESCRIPTIONS.zen_click,
       inputSchema: {
         tabId: z.string().min(1).describe("Tab id from zen_tabs_list."),
-        ref: z
-          .string()
-          .regex(/^(?:f[0-9]+(?:\.[0-9]+){0,2}-)?e[0-9]{1,4}$/)
-          .optional()
-          .describe(
-            'Ref from an interactive read, such as "e12" or "f0-e3". Provide ref or selector, not both.'
-          ),
-        selector: z
-          .string()
-          .max(500)
-          .optional()
-          .describe(
-            "CSS selector in the top document's light DOM. Provide ref or selector, not both."
-          ),
+        ref: pageTargetShortcutRef,
+        selector: pageTargetShortcutSelector,
+        target: pageTargetInputSchema,
       },
       annotations: {
         readOnlyHint: false,
@@ -1214,16 +1312,17 @@ export function createZenMcpServer(
         openWorldHint: true,
       },
     },
-    ({ tabId, ref, selector }, extra) =>
+    ({ tabId, ref, selector, target }, extra) =>
       guarded(
         "zen_click",
-        { tabId, ref, selector },
+        { tabId, ref, selector, target },
         async ({ signal, report }) => {
           report.report(1, 2, "clicking element");
           const result = await runtime.clickElement({
             tabId,
             ref,
             selector,
+            target,
             signal,
           });
           report.report(2, 2, "clicked");
@@ -1242,20 +1341,9 @@ export function createZenMcpServer(
         TOOL_DESCRIPTIONS.zen_type,
       inputSchema: {
         tabId: z.string().min(1).describe("Tab id from zen_tabs_list."),
-        ref: z
-          .string()
-          .regex(/^(?:f[0-9]+(?:\.[0-9]+){0,2}-)?e[0-9]{1,4}$/)
-          .optional()
-          .describe(
-            'Ref from an interactive read, such as "e4" or "f0-e3". Provide ref or selector, not both.'
-          ),
-        selector: z
-          .string()
-          .max(500)
-          .optional()
-          .describe(
-            "CSS selector in the top document's light DOM. Provide ref or selector, not both."
-          ),
+        ref: pageTargetShortcutRef,
+        selector: pageTargetShortcutSelector,
+        target: pageTargetInputSchema,
         text: z
           .string()
           .max(10000)
@@ -1271,16 +1359,17 @@ export function createZenMcpServer(
         openWorldHint: true,
       },
     },
-    ({ tabId, ref, selector, text, clear }, extra) =>
+    ({ tabId, ref, selector, target, text, clear }, extra) =>
       guarded(
         "zen_type",
-        { tabId, ref, selector, text, clear },
+        { tabId, ref, selector, target, text, clear },
         async ({ signal, report }) => {
           report.report(1, 2, "typing");
           const result = await runtime.typeText({
             tabId,
             ref,
             selector,
+            target,
             text,
             clear,
             signal,
@@ -1300,12 +1389,18 @@ export function createZenMcpServer(
       description:
         TOOL_DESCRIPTIONS.zen_wait_for,
       inputSchema: {
-        tabId: z.string().min(1).describe("Tab id from zen_tabs_list."),
+        tabId: z.string().min(1).max(200).describe("Tab id from zen_tabs_list."),
         selector: z
           .string()
           .max(500)
           .optional()
           .describe("CSS selector that should exist (or be absent)."),
+        state: z
+          .enum(WAIT_ELEMENT_STATES)
+          .optional()
+          .describe(
+            "What must be true of the selector. Requires selector. Defaults to present."
+          ),
         text: z
           .string()
           .max(1000)
@@ -1321,8 +1416,35 @@ export function createZenMcpServer(
           .max(500)
           .optional()
           .describe("Case-insensitive substring of the document title."),
+        document_changed: z
+          .boolean()
+          .optional()
+          .describe(
+            "Wait until the top-level document identity differs from document_id or from the wait's start."
+          ),
+        document_id: z
+          .string()
+          .max(80)
+          .optional()
+          .describe(
+            "Identity to wait for from a read or event; combine with document_changed."
+          ),
+        new_tab: z
+          .boolean()
+          .optional()
+          .describe("Wait until a tab opens in this window after the wait starts."),
+        tab_closed: z
+          .boolean()
+          .optional()
+          .describe("Wait until the given tab closes."),
+        dialog: z
+          .boolean()
+          .optional()
+          .describe(
+            "Wait until a browser dialog appears after the wait starts. Dialog text is never read."
+          ),
         until: z
-          .enum(["present", "absent"])
+          .enum(WAIT_UNTIL)
           .optional()
           .describe(
             "Wait for the condition to hold or to stop holding. Defaults to present."
@@ -1333,7 +1455,9 @@ export function createZenMcpServer(
           .min(0)
           .max(30000)
           .optional()
-          .describe("Maximum wait in milliseconds. Defaults to 5000."),
+          .describe(
+            "Maximum wait in milliseconds. 0 checks once. Defaults to 5000."
+          ),
         poll_ms: z
           .number()
           .int()
@@ -1356,9 +1480,15 @@ export function createZenMcpServer(
       {
         tabId,
         selector,
+        state,
         text,
         url_contains,
         title_contains,
+        document_changed,
+        document_id,
+        new_tab,
+        tab_closed,
+        dialog,
         until,
         timeout_ms,
         poll_ms,
@@ -1371,9 +1501,15 @@ export function createZenMcpServer(
         {
           tabId,
           selector,
+          state,
           text,
           url_contains,
           title_contains,
+          document_changed,
+          document_id,
+          new_tab,
+          tab_closed,
+          dialog,
           until,
           timeout_ms,
           poll_ms,
@@ -1383,9 +1519,15 @@ export function createZenMcpServer(
           runtime.waitFor({
             tabId,
             selector,
+            state,
             text,
             urlContains: url_contains,
             titleContains: title_contains,
+            documentChanged: document_changed,
+            documentId: document_id,
+            newTab: new_tab,
+            tabClosed: tab_closed,
+            dialog,
             until,
             timeoutMs: timeout_ms,
             pollMs: poll_ms,
@@ -1413,12 +1555,12 @@ export function createZenMcpServer(
           .string()
           .min(1)
           .max(1000)
-          .describe("Literal text to find. Not a regular expression."),
+          .describe("Literal text to find."),
         case_sensitive: z
           .boolean()
           .optional()
           .describe(
-            "Match exact case and characters. Defaults to false, which folds case, diacritics, and typographic punctuation."
+            "Defaults to false, folding case, diacritics and typographic punctuation."
           ),
         max_matches: z
           .number()
@@ -1467,7 +1609,7 @@ export function createZenMcpServer(
           .string()
           .min(1)
           .max(1000)
-          .describe("Literal text to find. Not a regular expression."),
+          .describe("Literal text to find."),
         space: z
           .string()
           .max(200)
@@ -1590,7 +1732,7 @@ export function createZenMcpServer(
           .max(200)
           .optional()
           .describe(
-            "Existing tab id to reuse, if it still shows the same URL. Otherwise the URL decides."
+            "Existing tab id to reuse, if it still shows the same URL."
           ),
         min_confidence: z
           .number()
@@ -1698,7 +1840,7 @@ export function createZenMcpServer(
           )
           .min(1)
           .max(20)
-          .describe("Citations to verify. At most 5 per source URL."),
+          .describe("Citations to verify."),
         focus: z
           .boolean()
           .optional()
@@ -2009,6 +2151,7 @@ export function createZenMcpServer(
           .number()
           .int()
           .min(0)
+          .max(2_147_483_647)
           .optional()
           .describe("Cursor from the previous zen_events result."),
         waitSeconds: z
@@ -2648,7 +2791,11 @@ export function createZenMcpServer(
   /** Converts a registered input schema to JSON Schema for on-demand docs. */
   const jsonSchemaFor = (entry: RegisteredToolEntry): unknown => {
     try {
-      return z.toJSONSchema(entry.inputSchema as z.ZodType, { io: "input" });
+      const schema = z.toJSONSchema(entry.inputSchema as z.ZodType, {
+        io: "input",
+      });
+      compactSchemaNode(schema);
+      return schema;
     } catch {
       return { type: "object", additionalProperties: true };
     }
@@ -2776,14 +2923,10 @@ export function createZenMcpServer(
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  code: "invalid_args",
-                  message: "zen_tools_use cannot call itself.",
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                code: "invalid_args",
+                message: "zen_tools_use cannot call itself.",
+              }),
             },
           ],
           isError: true,
@@ -2795,16 +2938,12 @@ export function createZenMcpServer(
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  code: "invalid_args",
-                  message:
-                    `Unknown tool "${tool}". Call zen_tools_search to find ` +
-                    "the capability, then pass its exact name.",
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                code: "invalid_args",
+                message:
+                  `Unknown tool "${tool}". Call zen_tools_search to find ` +
+                  "the capability, then pass its exact name.",
+              }),
             },
           ],
           isError: true,
@@ -2833,14 +2972,10 @@ export function createZenMcpServer(
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  code: "invalid_args",
-                  message: String((error as Error)?.message ?? error).slice(0, 1_000),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                code: "invalid_args",
+                message: String((error as Error)?.message ?? error).slice(0, 1_000),
+              }),
             },
           ],
           isError: true,
@@ -3078,6 +3213,7 @@ export function createZenMcpServer(
     })
   );
 
+  compactSchemaLists(server);
   return server;
 }
 
@@ -3107,7 +3243,7 @@ function registerJsonResource(
           {
             uri: resourceUri.href,
             mimeType: "application/json",
-            text: JSON.stringify(payload, null, 2),
+            text: JSON.stringify(payload),
           },
         ],
       };
@@ -3144,9 +3280,26 @@ function auditRecord(
   };
 }
 
-function errorResult(error: unknown): ToolResult {
+function errorResult(error: unknown, structured = false): ToolResult {
+  const code = errorCode(error);
+  const details =
+    error instanceof BridgeRequestError && error.details
+      ? error.details
+      : undefined;
   return {
     content: [{ type: "text", text: describeError(error) }],
+    ...(structured
+      ? {
+          structuredContent: {
+            error: {
+              code,
+              message: describeError(error),
+              ...errorMetadata(code, details),
+              ...(details ? { details } : {}),
+            },
+          },
+        }
+      : {}),
     isError: true,
   };
 }
