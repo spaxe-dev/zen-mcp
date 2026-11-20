@@ -263,7 +263,32 @@ async function loadSurface() {
       client.listPrompts(),
       client.listResources(),
     ]);
-    return { tools: tools.tools, prompts: prompts.prompts, resources: resources.resources };
+    const catalog = JSON.parse(
+      (
+        await client.readResource({ uri: "zen://capabilities" })
+      ).contents?.find((entry) => "text" in entry)?.text ?? "{}"
+    );
+    const schemas = new Map();
+    for (const entry of catalog.tools ?? []) {
+      const result = await client.callTool({
+        name: "zen_tools_search",
+        arguments: { name: entry.name },
+      });
+      const text = result.content?.find((part) => part.type === "text")?.text ?? "{}";
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.tool?.inputSchema) schemas.set(entry.name, parsed.tool.inputSchema);
+      } catch {
+        // Reported as an unknown tool below.
+      }
+    }
+    return {
+      tools: tools.tools,
+      prompts: prompts.prompts,
+      resources: resources.resources,
+      catalogTools: catalog.tools ?? [],
+      schemas,
+    };
   } finally {
     await client.close();
   }
@@ -399,12 +424,10 @@ async function main() {
     process.exit(1);
   }
 
-  const toolNames = new Set(surface.tools.map((tool) => tool.name));
+  const toolNames = new Set(surface.catalogTools.map((tool) => tool.name));
   const promptNames = new Set(surface.prompts.map((prompt) => prompt.name));
   const resourceUris = new Set(surface.resources.map((entry) => entry.uri));
-  const documentedTools = new Map(
-    surface.tools.map((tool) => [tool.name, tool.inputSchema ?? {}])
-  );
+  const documentedTools = surface.schemas;
 
   // Every zen_* identifier is a real tool or prompt.
   const identifiers = new Set();
@@ -485,8 +508,8 @@ async function main() {
       `(${budget.chars} chars, ${budget.words} words; budget ${TOKEN_BUDGET}).`
   );
   console.log(
-    `Surface: ${surface.tools.length} tools, ${surface.prompts.length} prompts, ` +
-      `${surface.resources.length} resources.`
+    `Catalog: ${surface.catalogTools.length} tools, ${surface.prompts.length} prompts, ` +
+      `${surface.resources.length} resources; exposed: ${surface.tools.length} tools.`
   );
 
   if (failures.length) {
