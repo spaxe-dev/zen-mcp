@@ -103,7 +103,8 @@ will work.
 | `PAGE_STILL_LOADING` | The page is not ready. | `zen_wait_for`, then read once. |
 | `UNSUPPORTED_PAGE` | Not an http(s) or inspectable page. | Report; do not force. |
 | `PRIVILEGED_PAGE` | Browser-internal page. | Out of scope; report. |
-| `ACTOR_UNAVAILABLE` | Ref or frame changed. | New interactive read, new ref. |
+| `ACTOR_UNAVAILABLE` | Marionette lost the content actor. | Re-list tabs; retry once. |
+| `element_not_found` | Ref from an older read, or the element was removed, replaced, or navigated. | New snapshot or interactive read, new ref. |
 | `pdf_unreadable` | Hidden PDF; the viewer is not initialized. | Ask the user to open it visibly; retry once. |
 | `QUOTE_NOT_FOUND` | The page does not contain the quote. | Do not cite. Shorten the quote or report the miss. |
 | `AMBIGUOUS_MATCH` | Several candidates fit. | Add `context` or a longer quote; retry once. |

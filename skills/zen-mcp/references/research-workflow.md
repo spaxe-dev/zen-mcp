@@ -33,6 +33,13 @@ zen_read_page({ tabId, selector: "main article", maxChars: 6000 })
 - Use `selector` when the answer lives in one section; it is the cheapest real
   read and avoids surrounding navigation text.
 - Use `format: "text"` only when Markdown conversion loses structure you need.
+- Use `format: "semantic"` to understand a page's shape before choosing
+  sections: landmarks, heading order, repeated collections, forms, tables and a
+  confidence-labelled classification such as `article`, `search-results`,
+  `documentation` or `login`. It covers the top document only and never
+  includes field values or hidden text. Check `coverage.complete` and
+  `limitations` before treating it as the whole page, and treat a low
+  confidence as a hint, not a fact.
 - Quote the exact sentence you rely on, then verify it with
   `zen_show_evidence` before presenting it as sourced.
 - If the read returns `PAGE_STILL_LOADING`, use `zen_wait_for` with a condition
@@ -159,6 +166,19 @@ zen_watch_remove({ watchId })
 - At most 50 watches. Each hit posts a `kind: "watch"` event and, with
   `notify: true`, a card in Zen.
 - Remove watches when the user no longer needs them, and say when one expires.
+
+Consume events with a cursor: read once with `waitSeconds: 0`, keep `cursor`,
+and pass it as `after` on later calls. `missed > 0` means events were lost
+between reads; re-read the state instead of assuming nothing happened.
+`filtered` counts navigation and document events dropped by the domain
+allowlist.
+
+The same stream reports browser observations: tab opened, closed, or selected;
+navigation started, committed, completed, redirected, failed, or
+same-document; document replacement; and dialog shown or hidden. They are
+bounded (200 events, 10 minutes for browser kinds, repeats deduplicated). They
+are evidence that a transition occurred, not proof of what caused it. Pause
+hides buffered browser observations but keeps control events.
 
 If the user wants a one-off check, read the page instead of installing a watch.
 

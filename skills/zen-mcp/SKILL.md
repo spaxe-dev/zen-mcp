@@ -23,7 +23,7 @@ Be a good guest: background first, verify before claiming, respect existing stat
 - **Space = job.** One workspace per task.
 - **Folder = result set.** Group related sources.
 - **Tab = source.** Ids from `zen_tabs_list` live only while the tab is open.
-- **Ref = handle.** `e12`/`f0-e3`; expires after another interactive read or navigation.
+- **Ref = handle.** `e12`/`f0-e3` from a snapshot or interactive read; replaced by the next read of its document.
 - **Evidence = receipt.** `zen_show_evidence` ties a claim to a URL and an exact quote.
 
 "Compare three CI vendors" becomes one space, a folder per vendor, a tab per pricing and docs page, verified quotes, then `zen_notify`.
@@ -55,11 +55,11 @@ Stop at the first rung that answers:
 5. `format:"markdown"` for prose, `"links"` for source discovery, `"tables"` for data.
 6. `zen_read_pages` — up to 10 tabs, three at a time, same field across sources.
 7. `format:"text"` with `maxChars`, then `offset`/`nextOffset` paging.
-8. `format:"interactive"` only when you intend to act.
+8. `format:"snapshot"` before acting; `"interactive"` for the full list; `"semantic"` for page shape.
 
-No screenshot tool exists; use text, tables, links, and interactive reads instead.
+No screenshot exists; use text and control reads.
 
-Never reread a chunk you hold: pass `nextOffset` back as `offset`; structured formats ignore offset. A selector read beats a full-page dump; one batch beats ten calls.
+Never reread a chunk you hold: pass `nextOffset` as `offset`; structured formats ignore it. A selector read beats a full-page dump; one batch beats ten calls.
 
 ## Playbooks
 
@@ -68,8 +68,8 @@ Never reread a chunk you hold: pass `nextOffset` back as `offset`; structured fo
 3. **Compare options.** One shared set of dimensions, one folder per option, one read format for all sources; `format:"tables"` for spec sheets. Mark missing data; never guess. → `research-workflow.md`
 4. **Verify an answer.** Extract exact quotes, then `zen_show_evidence_batch` (≤20 citations, ≤5 per URL). Report per-claim status and fix or drop what fails. → `evidence-and-verification.md`
 5. **Triage tabs.** `zen_tabs_audit`, then `zen_tabs_group` for domains. Save a session first if the layout matters, and `zen_ask` before closing anything you did not open. → `tab-management.md`
-6. **Monitor.** `zen_watch_add` (`mode` change/appear/disappear), collect hits with `zen_events`, remove it when done. → `tab-management.md`
-7. **Operate a page.** `zen_read_page({ format:"interactive" })`, act on one `ref`, check `effect`, confirm with `zen_wait_for`. Only when asked. → `browser-interaction.md`
+6. **Monitor.** `zen_watch_add` (`mode` change/appear/disappear), collect hits with `zen_events` (cursor, missed), remove it when done. → `tab-management.md`
+7. **Operate a page.** `zen_read_page({ format:"snapshot" })`, act on one `ref`, check `effect`, confirm with `zen_wait_for`. Only when asked. → `browser-interaction.md`
 8. **Recover.** Read the error code, inspect state, retry once with corrected input. → `safety-and-recovery.md`
 
 ## Evidence discipline
@@ -101,7 +101,7 @@ Track sources honestly: discovered → opened → read → claim extracted → v
 
 ## Efficiency
 
-- Search and check history before opening anything.
+- Search and check history before opening.
 - Open once, read once, batch repeated shapes, paginate instead of refetching.
 - Keep compact notes (URL, claim, quote, date), not whole pages.
 

@@ -4,7 +4,7 @@
 deleting spaces, grouping tabs into folders, pinning or handover, or saving a
 layout with sessions or templates.
 
-Tool names and parameters here are verified against Zen MCP 0.5.0. The main
+Tool names and parameters here are verified against Zen MCP 0.6.0. The main
 `SKILL.md` has the decision rules; this file has the detail.
 
 ## Spaces

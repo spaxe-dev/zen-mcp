@@ -3,7 +3,7 @@
 **Read this when** you know the intent but not the tool, when you are choosing
 between read formats, or when a parameter name does not match what you expected.
 
-Every tool below exists in Zen MCP 0.5.0. Names and parameters are taken from
+Every tool below exists in Zen MCP 0.6.0. Names and parameters are taken from
 the registered schemas. Defaults are server-side unless noted.
 
 ## Surfaces and discovery
@@ -35,7 +35,7 @@ not in `tools/list`, search for it and invoke it through the gateway.
 | `zen_config` | none | Local, no browser needed. Read-only flag, allowlist, audit path, data dir, profile mode, consent requirement, session state (owns browser, paused, consent), auto-launch, timeouts, watch minimum, saved session and template counts. |
 | `zen_launch` | none | Mutating. Starts the owned Zen, proves ownership, locks down, attaches the bridge, shows the consent card. Use only when a call reports Zen unreachable or the session was lost. |
 | `zen_audit_tail` | `limit` (1-200, default 50) | Recent calls, including blocked ones. Works while paused. |
-| `zen_events` | `after` (cursor), `waitSeconds` (0-25) | Stop, pause, resume, watch, and question events. Long-polls. Works while paused. |
+| `zen_events` | `after` (cursor), `waitSeconds` (0-25) | Control events plus observed tab, navigation, document, and dialog transitions. Long-polls; `missed` and `filtered` expose loss and policy drops. Pause hides browser observations. |
 | `zen_answers` | none | Open and recently answered question cards. Works while paused. |
 
 ## Spaces and templates
@@ -91,9 +91,14 @@ Read formats:
 | `tables` | Spec and pricing tables. | 20 tables, 100 rows, 12 columns, 300 chars per cell. |
 | `metadata` | Title, description, canonical, lang, author, published, site name, OG/Twitter. | Small fixed shape. |
 | `outline` | Headings to orient. | 200 headings. |
-| `interactive` | Controls with refs for click/type. | 200 controls across frames. |
+| `snapshot` | Bounded control view before acting. `zen_read_page` only. | 100 controls (200 max), 80 headings, 4,000-char preview; no values. |
+| `interactive` | Full control list with refs for click/type. | 200 controls across frames; legacy values. |
+| `semantic` | Landmarks, sections, forms, collections, heading order, dialogs, and a confidence-labelled page classification. `zen_read_page` only. | Top document, 40 regions, 40 headings, 12 collections, 120 controls; no values. |
 
-`offset` and `nextOffset` apply to `text` and `markdown`; structured formats
+`snapshot` reports `snapshotComplete` and `framesComplete` for collection and
+`textTruncated`, `elementsTruncated` and `outlineTruncated` for output caps.
+Output caps never make the snapshot incomplete; unreadable or unlisted frames
+do. `offset` and `nextOffset` apply to `text` and `markdown`; structured formats
 ignore offset and report that in `limitation`. Reads also return `selectedText`
 (the current selection in that tab, up to 4,000 characters, possibly empty).
 There is no separate selection tool.
@@ -102,9 +107,9 @@ There is no separate selection tool.
 
 | Tool | Parameters | Notes |
 | --- | --- | --- |
-| `zen_click` | `tabId`, `ref` or `selector` (not both) | Mutating, real input, blocked in read-only. Returns `target` and `effect`. |
-| `zen_type` | `tabId`, `ref` or `selector`, `text` (≤10,000), `clear` (default false) | Mutating. Typed text is not returned; file inputs refused. |
-| `zen_wait_for` | `tabId`, one of `selector`/`text`/`url_contains`/`title_contains`, `until` (`present`/`absent`), `timeout_ms` (default 5,000, max 30,000), `poll_ms` (100-2,000, default 250), `frame_path` | Read-only. Timeout returns `matched: false`, not an error. Allowed in read-only mode. |
+| `zen_click` | `tabId` and one of `target` (ref, role+name, text, label, placeholder, or selector) or the `ref`/`selector` shortcuts | Mutating, real input, blocked in read-only. Strict ambiguity; returns `target`, `effect` with a bounded `delta`. |
+| `zen_type` | `tabId`, one target, `text` (≤10,000), `clear` (default false) | Mutating. Typed text is not returned; `observed` says whether it matched; file inputs refused. |
+| `zen_wait_for` | `tabId`, one primary of `selector` (+`state`), `text`, `url_contains`, `title_contains`, `document_id`/`document_changed`, `new_tab`, `tab_closed`, `dialog`; `until` (`present`/`absent`), `timeout_ms` (default 5,000, max 30,000), `poll_ms` (100-2,000, default 250), `frame_path` | Read-only. Timeout returns `matched: false`, not an error. Stops on tab close or an off-allowlist navigation. |
 
 ## Evidence
 
