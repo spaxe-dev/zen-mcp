@@ -53,7 +53,7 @@ Consent is per server process, not per browser window. Once granted, relaunching
 
 ### Global pause and read-only mode
 
-The banner in Zen has a Pause button. Pausing rejects pending bridge requests, hides the progress card, defers questions, skips watch polls, and blocks every browser tool with the `paused` error, both at the MCP guard and at the bridge request boundary. `zen_events`, `zen_answers`, `zen_config`, and `zen_audit_tail` stay available so the agent can see what happened.
+The banner in Zen has a Pause button. Pausing rejects pending bridge requests, hides the progress card, defers questions, skips watch polls, and blocks every browser tool with the `paused` error, both at the MCP guard and at the bridge request boundary. `zen_events`, `zen_answers`, `zen_config`, and `zen_audit_tail` stay available so the agent can see what happened, but `zen_events` serves only control events while paused: new browser observations are dropped and buffered ones are hidden.
 
 A command that is already executing in Zen when Pause is pressed may still finish in the browser. The server drops its result and rejects later requests. Pause is held in memory, is not persisted, and does not remove evidence overlays that are already visible.
 
@@ -73,6 +73,8 @@ Reads go only through the authenticated bridge, never through an ad hoc Marionet
 
 PDF text is read through Zen's PDF viewer. That viewer may not be initialized for a hidden tab, so a hidden PDF can return `pdf_unreadable`; open the PDF and retry. This path is not covered by the automated live suite. Text reads capture one document's rendered light DOM; shadow roots, canvas, images, SVG, and form controls are not included. Iframe text is available through `framePath`, and an interactive read scans visible form controls, links, buttons, and common ARIA controls, walks open shadow roots, and merges controls from reachable frames with frame-prefixed refs. Off-list and non-http(s) frames are omitted and never read.
 
+A semantic read is also a fixed server script. It returns a bounded model of the top document: landmarks, headings, sections, repeated collections, forms, tables, dialogs and a confidence-labelled page type, with refs shared with snapshot and interactive reads. The model never carries field values, value lengths, selected text or `aria-hidden` content, and it records whether each label was observed in accessibility attributes or inferred heuristically. Classification is deterministic but heuristic: a wrong or low-confidence type changes only how the model is labelled, not what is collected, and privacy does not depend on the classifier being right.
+
 ### Page actions
 
 `zen_click` and `zen_type` are the only tools that send input to page content. They do not accept scripts: an interactive read assigns refs with a fixed server script, and the action resolves exactly one ref or CSS selector with another fixed script, then calls Marionette's native click or sendKeys command. A frame ref is resolved and acted on through that frame's own actor. There is no tool that evaluates agent-supplied JavaScript, and the agent cannot choose a script body.
@@ -83,9 +85,26 @@ Both tools require an `http(s)` tab, refuse frames that are not `http(s)`, and a
 
 `zen_wait_for` and the post-action effect probes are also fixed scripts. The wait probe returns only the document URL, title, ready state, and whether one server-chosen condition holds. The effect signature returns hashes of text and non-password form values, plus counts and lengths, never the values themselves. `zen_wait_for` is read-only and stays available in read-only mode; it does not select the tab or touch the page, and each frame poll rechecks the allowlist.
 
+### Browser events
+
+`zen_events` mixes control events from the server with browser observations
+pushed from fixed chrome listeners: tab opened, closed or selected, navigation
+phases, document replacement, and dialog shown or hidden. An event carries an
+id, timestamp, tab or document identity and a source; it never carries page
+text, form values, or dialog text, and dialogs are never dismissed. An event's
+bounded `detail` may be the page title for an allowed page. Navigation and
+document events for a URL outside the domain allowlist are dropped and counted
+in `filtered`, so an off-list URL is not exposed through the stream. The buffer
+is bounded at 200 events, browser kinds expire after 10 minutes, repeats are
+deduplicated for 2 seconds, and `missed` reports events the cursor can no
+longer read. Pause drops new browser observations and hides buffered ones from
+the tool; only control events such as pause and resume are served. An
+observation is evidence that a transition occurred, not proof of what caused
+it.
+
 ### Private windows
 
-Private windows are skipped during bridge injection, and an existing bridge found in a private window is destroyed. This is a best-effort boundary: the detection path is implemented, but private-window behavior is not covered by the automated live suite. Do not rely on it as the only protection when using the normal profile.
+Private windows are skipped during bridge injection, and an existing bridge found in a private window is destroyed. Dialog observation also skips windows marked as private. This is a best-effort boundary: the detection path is implemented, but private-window behavior is not covered by the automated live suite. Do not rely on it as the only protection when using the normal profile.
 
 ### Agent profile
 

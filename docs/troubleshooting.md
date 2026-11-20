@@ -52,23 +52,44 @@ Only normal windows get the bridge. Open a normal window for the agent.
 **A PDF reports `pdf_unreadable`**
 Zen's PDF viewer may not be initialized for a hidden tab. Open the PDF, then read the active tab. PDF reads outside the active tab are not covered by the automated live suite.
 
-**`zen_click` or `zen_type` returns `element_not_found`**
-The ref came from an older interactive read, the page navigated, or the selector matched nothing. Run `zen_read_page { format: "interactive" }` for that tab and use a fresh ref instead of retrying the stale one.
+**`zen_click` or `zen_type` returns `element_not_found`, `stale_reference`, or `document_changed`**
+The ref came from an older read, the element was removed or replaced by a same-shaped clone, the page navigated, or the selector matched nothing. A semantic `target.ref` reports `stale_reference`; a document that was replaced between resolution and input reports `document_changed`. Run `zen_read_page { format: "snapshot" }` or `{ format: "interactive" }` for that tab and use a fresh ref instead of retrying the stale one.
+
+**A semantic target returns `target_not_found`, `target_ambiguous`, or `target_not_actionable`**
+`target_not_found` means nothing matched the role, name, text, label, or placeholder; check the spelling and the page state, or take a snapshot. `target_ambiguous` means more than one element matched; `details.candidates` lists up to five, and the server will not pick the first. Use a more specific role+name, a label, or a ref. `target_not_actionable` means the match is hidden, disabled, read-only, not editable, or a file input; `details.reason` says which.
+
+**A semantic scan returns `unsupported_operation` with reason `scan_limit`**
+The page is too large or too deeply nested to prove a unique match within the bounded scan (6,000 nodes, six matches, six levels). The target was not reported as absent or unique. Narrow the page with a selector, take a snapshot, and act on a ref instead.
 
 **`zen_click` or `zen_type` returns `element_disabled`, `element_readonly`, or `unsupported_target`**
-The control cannot accept that action right now. A disabled control has to be enabled by the page first; a read-only field cannot be typed into; file inputs are refused by design. Pick a different control or ask the user to complete that step.
+The legacy shortcuts keep these codes. The control cannot accept that action right now. A disabled control has to be enabled by the page first; a read-only field cannot be typed into; file inputs are refused by design. Pick a different control or ask the user to complete that step.
 
 **An interactive read returns `elementsTruncated: true`**
 The scan stopped at 200 visible controls. Pass a `selector` that narrows the page area, or read a specific frame with `framePath`, then run the interactive read again.
 
+**A snapshot reports `snapshotComplete: false`**
+Some controls may be missing from the result. Read `limitations`: frames can be unlisted after the 20-frame listing cap, skipped by the domain allowlist, left unscanned after 10 frame scans, or fail to load. A selector-scoped snapshot is complete for its subtree but never includes frame controls. Output caps (`textTruncated`, `elementsTruncated`, `outlineTruncated`) do not make the snapshot incomplete; raise `maxElements` up to 200 or read the full text with `format: "text"`.
+
+**A semantic read reports `coverage.complete: false`**
+The model is partial. Read `limitations`: a region, heading, collection, dialog, or control cap was hit, the 6,000-node scan was truncated, the page has a child frame (the model covers the top document only), or the 20-frame listing was truncated. Narrow the read with `selector`, read a frame separately with `framePath`, or raise `maxElements` up to 120. Child frames are never merged into the semantic model.
+
+**A semantic classification looks wrong or low-confidence**
+Classification is heuristic and deliberately conservative. Read `signals` to see what it observed and `confidence` to see how close the top two candidates were. When two candidates are close, confidence is capped at 0.6. Treat `generic` as "no confident match", not a failure. Prefer structure (landmarks, regions, collections) over the label when deciding what to do.
+
 **`zen_wait_for` returns `matched: false`**
-The condition never held before the timeout, or the document could not be probed. Read `limitation`: a probe failure names the error, while a timeout means the selector, text, URL, or title did not appear. Check the condition spelling, allow more time up to 30000 ms, or read the page to see its current state. A timeout is a normal result, not a failed call.
+The condition never held before the timeout, the document could not be probed, or the page left the domain allowlist. Read `limitation`: a probe failure names the error, a timeout means the condition did not appear (for `selector`, `text`, `url_contains`, `title_contains`, `document_id`, `new_tab`, or `dialog`), and `tab_closed` reports that the tab stayed open. Document waits never match an empty identity or a disconnected tab. Check the condition spelling, allow more time up to 30000 ms, or read the page to see its current state. A timeout is a normal result, not a failed call. `timeout_ms: 0` checks once.
 
 **`zen_wait_for` returns `invalid_args`**
-Pass exactly one of `selector`, `text`, `url_contains`, or `title_contains`. Two conditions at once, or none, are refused.
+Pass exactly one condition. Two conditions at once, or none, are refused. `until: "absent"` applies only to `selector`, `text`, `url_contains`, and `title_contains`; `state` requires `selector`; and document conditions reject `frame_path`.
+
+**`zen_events` returns `missed` above zero, or nothing for an expected transition**
+The cursor fell behind the 200-event buffer or a browser observation expired after 10 minutes. Resume from `oldestCursor` and treat `missed` as events you cannot reconstruct. `filtered` above zero means navigation or document events were dropped because their URL was not allowed; add the domain to the allowlist, but note that events are only evidence and not proof of what caused a transition. While paused, new browser observations are dropped and buffered ones are hidden, so only control events such as pause and resume are returned.
 
 **A click or type result has `effect.probeFailed: true` or `effect.changed: false`**
-The signature script could not run on both sides of the action, usually because a navigation replaced the document, or nothing in the URL, title, text, element count, or form values changed. That does not mean the action failed. Follow up with `zen_wait_for` on a state the action should produce, or read the page and compare.
+The signature script could not run on both sides of the action, usually because a navigation replaced the document, or nothing in the URL, title, text, element count, or form values changed. That does not mean the action failed. Check `effect.delta` for bounded control, heading, alert, and text changes, follow up with `zen_wait_for` on a state the action should produce, or read the page and compare. A replaced document reports `documentReplaced: true` and a `delta.limitation` instead of a cross-document diff.
+
+**A type result has `observed.matchesInput: null` or `observed.matchesInput: false`**
+`null` means the field is classified sensitive or could not be read back, so no comparison was attempted; the text was still sent. `false` means the field's value did not match the input after typing, possibly because the page reformatted or rejected it. Re-read the control state instead of retyping blindly.
 
 **A read or action returns `frame_not_found`, `frame_not_loaded`, `unsupported_frame`, or `invalid_frame`**
 `framePath` is a list of child indexes from the top document, such as `[0]` or `[0,1]`. `frame_not_found` means an index does not exist at that level; run a normal read to refresh the `frames` list first. `frame_not_loaded` means the frame has no document yet. `unsupported_frame` means the frame is not an `http(s)` page, and `invalid_frame` means the path has a non-integer, negative, or fourth-level entry. Frame refs follow the same path: `f0-e3` is the third control in the first child frame.
@@ -112,7 +133,9 @@ Resources return errors as JSON instead of failing the request. The message desc
 - The domain allowlist is checked before an action and again immediately after `zen_tabs_open`, but a redirect that happens later can move a tab outside the list. Reads recheck the tab URL.
 - The audit log redacts sensitive values and long strings, but a bounded preview of the summarized argument JSON can remain. Resource reads are logged as `resource:<uri>` entries without arguments.
 - Private-window exclusion is implemented but not covered by the automated live suite. Treat it as a best-effort boundary.
-- No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside closed shadow roots. Frames are reachable only through their prefixed refs or `framePath`, never with selector.
+- No screenshot, download handling, file upload, or arbitrary in-page automation. `zen_click` and `zen_type` send one native input to one resolved control; they cannot run a script or work inside closed shadow roots. Semantic targets also search open shadow roots; CSS selectors stay in the top document's light DOM. Frames are reachable only through their frame-prefixed refs, never with selectors or semantic targets.
+- Semantic structure and classification are deterministic heuristics, not an accessibility-tree or a model call. Shadow content is composed into the parent tree for ancestry, but canvas, closed shadow roots, and child-frame content are not modelled. Treat the label as a hint and the regions as observations. A selector-scoped model can be complete for its subtree while omitting frames and other page areas, so read `limitations` before assuming it covers the page. A `main` region can have a null `heading` when the heading belongs to a nested `<article>`; follow `primaryRegion` and `parent` links instead of taking the first `h1`.
+- Browser events are observed, bounded, and deduplicated. A burst, a long pause, or a lost cursor can drop observations, and same-document navigation may not produce a document event. `dialog` reports lifecycle only: prompt text is never read, and dialogs from private windows are not observed.
 - Wait probes and action effects observe the current document only. They cannot see iframes that are not reachable, closed shadow roots, canvas, or cross-origin state changes that do not alter the probed document. Text matching uses `innerText` with a `textContent` fallback and is not a substitute for reading the page.
 - No per-action approval cards. Approval is per server session, and Pause is the global stop switch. Use read-only mode and the domain allowlist for additional guardrails.
 - macOS and Linux builds pass CI but have not had a live Zen launch verified. Windows is the only live-tested platform.

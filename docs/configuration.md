@@ -75,6 +75,7 @@ Files inside the data directory:
 | `sessions.json` | Saved window snapshots |
 | `templates.json` | User space templates |
 | `audit.jsonl` | Audit log, rotated to `audit.jsonl.1` at 5 MB |
+| `update.json` | Newest release the update banner already prompted for |
 | `agent-profile/` | Default dedicated Zen profile |
 
 Session and template files are written atomically with owner-only permissions. The directory is created `0700` and files `0600` where the platform supports POSIX modes. A symlink at the target is refused rather than followed. On Windows the permission bits are best effort; the files are still readable by the same user.

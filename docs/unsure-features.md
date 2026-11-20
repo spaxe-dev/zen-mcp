@@ -5,11 +5,12 @@ approved for implementation. Each item is tracked with the `needs-decision`
 label on the repo, and none of them should be scheduled until the decision
 criteria at the end of its section are answered.
 
-Approved ideas live in GitHub issues #1 through #5 and the candidate ideas in
-this document are issues #6 through #8. Everything is triaged on the
-[Zen MCP Roadmap](https://github.com/users/spaxe-dev/projects/3) board:
-approved work starts in **Backlog**, and every item in this document sits in
-**Needs decision**.
+Approved ideas live in GitHub issues #1 through #4. Issue #5 (evidence
+context and card actions) is still in **Backlog** and is not approved. The
+candidate ideas in this document are issues #6 through #8. Everything is
+triaged on the [Zen MCP Roadmap](https://github.com/users/spaxe-dev/projects/3)
+board, and every item in this document sits in **Needs decision**. Read issue
+state, not board columns: the board can lag.
 
 | Candidate | Source idea | Proposed tool | New bridge operation | Read-only | Privacy risk | Size | Tracking |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -253,7 +254,7 @@ and visual UI states.
 - Should it redact form fields or password inputs, and how?
 - Should evidence cards ever include a screenshot?
 
-## Approved elsewhere
+## Tracked elsewhere
 
 These ideas are approved and tracked in GitHub issues:
 
@@ -265,5 +266,8 @@ These ideas are approved and tracked in GitHub issues:
   across open tabs.
 - [#4](https://github.com/spaxe-dev/zen-mcp/issues/4): offset and `nextOffset`
   for long reads.
+
+Still undecided:
+
 - [#5](https://github.com/spaxe-dev/zen-mcp/issues/5): evidence context and
-  card actions.
+  card actions. Open in **Backlog**; no implementation is approved.

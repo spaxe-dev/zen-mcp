@@ -4,7 +4,7 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-11-20
 
 ### Added
 
@@ -30,6 +30,113 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   limitations. `npm run check:skill` validates the skill against the live tool
   surface: tool and prompt names, example arguments, enum values, links, the
   token budget, and a denylist of parked capabilities.
+- `zen_read_page` accepts `format: "snapshot"`: a bounded view with up to 100
+  controls (200 via `maxElements`), 80 outline headings, a 4,000-character text
+  preview, and a control ref for each element. Controls report `valuePresent`,
+  `autocomplete`, `selected` and `form` where that state exists, never a value
+  or length.
+  `snapshotId`, `elementsTotal`, `snapshotComplete`, `framesComplete`,
+  `textTruncated`, `elementsTruncated`, `outlineTruncated` and a bounded
+  `limitations` list separate collection completeness from output truncation.
+- Element refs are now held in a bounded server-side registry keyed by tab and
+  frame path and backed by Marionette WebElements. A ref resolves to the same
+  DOM node, is rejected with `element_not_found` after the node is removed,
+  replaced or navigated, and a new read replaces the refs of the document it
+  read. Reads no longer write attributes into the page.
+- `zen_click` and `zen_type` accept a semantic `target` object: one of a ref,
+  role+name, text, label, placeholder or selector, with exact or contains
+  matching where it applies. One shared resolver searches the document and open
+  shadow roots, refuses ambiguity with up to five candidates instead of picking
+  the first, and re-validates the element's document, visibility and actionability
+  immediately before input. Failures use `invalid_target`, `stale_reference`,
+  `document_changed`, `target_not_found`, `target_ambiguous`,
+  `target_not_actionable` or `unsupported_operation`.
+- Click and type failures now carry structured details in
+  `structuredContent.error`: `category`, `retryable`, `stateChanged`,
+  `recovery` and bounded `details`. The legacy top-level `ref`/`selector`
+  shortcuts keep their existing codes. No other tool advertises an error
+  variant, so its structured output is unchanged.
+- Action effects now include `navigation`, `documentReplaced`, `readyState`,
+  `attribution: "observed_after_action_not_proven"` and a bounded `delta` of
+  added, removed or state-changed controls (10 each), headings and alerts
+  (5 each), and text length. A replaced document is not diffed across pages.
+- `zen_type` reports `observed: { compared, matchesInput, sensitive }` after
+  typing. It never returns the value or its length, and sensitive fields are
+  not read back.
+- `zen_read_page` accepts `format: "semantic"`: a deterministic, agent-readable
+  model of the top document with landmarks, heading hierarchy, sections,
+  repeated collections, forms and controls, tables, dialogs and a
+  confidence-labelled classification (`article`, `search-results`, `product`,
+  `listing`, `dashboard`, `login`, `form`, `documentation`, `discussion` or
+  `generic`). Regions carry stable refs shared with snapshot and interactive
+  reads, and `coverage` plus bounded `limitations` distinguish a complete model
+  from a truncated one. Field values and hidden text are never included, and
+  every label records whether it was observed or inferred.
+- `zen_events` now reports browser observations alongside control events:
+  tab opened, closed and selected; navigation started, committed, completed,
+  redirected, failed and same-document; document replacement; and dialog shown
+  and hidden. Each event carries an id, timestamp, tab or document identity and
+  a source. The buffer caps at 200 events, browser kinds expire after 10
+  minutes, repeats are deduplicated for 2 seconds, and `missed`, `dropped` and
+  `filtered` count events the cursor can no longer read or the policy refused.
+- `zen_wait_for` adds four conditions: `document` (identity unchanged or
+  changed against a supplied baseline), `newTab`, `tabClosed` and `dialog`.
+  Selector waits accept `state: "visible"` or `"enabled"`, `until: "absent"`
+  works for text, URL and title as well as selectors, and the result reports
+  the current `documentId`, `newTabId` or `limitation`.
+
+### Changed
+
+- Page reads return compact JSON instead of indented JSON, which cuts delivered
+  context by roughly half without changing the data. Snapshot and semantic
+  controls omit state that carries no information: `value` (never returned in
+  those formats), a false `valuePresent`, and null `autocomplete`, `selected`
+  or `form`. Semantic regions omit `label` when it equals `heading`, zero
+  counts and absent relation fields. Semantic reads also drop the duplicate
+  top-level `outline` (headings stay in `semantic.headings`) and report the
+  child-frame caveat only when a child frame exists.
+- Pause now hides buffered browser observations from `zen_events` as well as
+  suppressing new ones, so a transition that happened before the pause is not
+  served afterwards. Control events still arrive.
+- Dialog observation skips private windows, matching the best-effort privacy
+  rule for private browsing.
+- `urlContains` arguments are redacted in the audit log like `url`, so a
+  credential or token embedded in a wait query is not persisted.
+- Wait results only return the final title, URL and frame URL when they still
+  match the domain allowlist, and a wait stops probing when the tab closes or
+  navigates off-list.
+- `zen_click` and `zen_type` accept refs from snapshot or interactive reads.
+- The sensitive-field classifier now covers password, file, email, telephone,
+  payment, one-time-code, verification-code and account-like fields. The
+  interactive format omits values for those fields, and snapshot reads omit
+  every value. The legacy interactive format still returns values for fields
+  it does not classify as sensitive.
+- Existing `element_not_found` responses are preserved for ref and selector
+  misses, including stale refs, with unchanged error codes.
+
+### Fixed
+
+- Click and type structured output declares `title`, which the runtime already
+  returned, and now validates it as a required success field.
+- The action output schemas now describe what the runtime already returned:
+  the resolved `target`, the full `effect` (including `navigation`,
+  `documentReplaced`, `readyState` and `attribution`), a typed `delta` instead
+  of an untyped record, `framePath`/`frameUrl` for frame actions, and the
+  structured `error` with `recovery` and bounded `details`. Declared fields are
+  advisory, so existing payloads stay valid.
+- The semantic-target input no longer repeats each field's name in a
+  per-field description; the parent description lists the strategies, which
+  keeps click and type inside the core context budget.
+- Wait enums for conditions, element states and `until` are defined once and
+  shared by the calculator, server schema and structured-output schema.
+- `document_changed` and `document_id` waits no longer resolve to a
+  navigation's initial about:blank placeholder. During a cross-process
+  navigation the placeholder briefly held an identity and was replaced moments
+  later, so a wait could match it and a follow-up wait for that identity could
+  never match. The placeholder now reports no identity, and the wait resolves
+  on the committed document.
+- Semantic page regions now declare `labelSource` and `itemKind`, which the
+  runtime already returned, with their exact values.
 
 ## [0.5.0] - 2026-11-10
 
@@ -222,6 +329,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.6.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.4.0
 [0.3.3]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.3.3

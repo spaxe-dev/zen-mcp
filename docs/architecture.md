@@ -66,6 +66,7 @@ Space and folder operations use Zen's own JS APIs (`gZenWorkspaces`, `gZenFolder
 | Sessions | `<data>/sessions.json` | Yes |
 | Templates | `<data>/templates.json` | Yes |
 | Audit log | `<data>/audit.jsonl` and `.1` | Yes |
+| Update prompt state | `<data>/update.json` | Yes |
 | Default agent profile | `<data>/agent-profile/` | Yes |
 | Consent, pause, watches, evidence tracking, tab mapping | Server or bridge memory | No |
 

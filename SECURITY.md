@@ -7,10 +7,10 @@ handled privately.
 
 | Version | Supported |
 | --- | --- |
-| 0.3.x | Yes |
-| 0.2.x and older | No |
+| 0.6.x | Yes |
+| 0.5.x and older | No |
 
-Only the latest 0.3 release receives security fixes. Upgrade before reporting
+Only the latest 0.6 release receives security fixes. Upgrade before reporting
 a problem that may already be fixed.
 
 ## Reporting a vulnerability

@@ -28,8 +28,8 @@ npm test
 ```
 
 Unit tests live in `test/unit/` and run without a browser. Keep them fast and
-deterministic. At the time of writing `npm test` runs 186 tests: 181 pass on
-Windows and 5 POSIX-specific tests are skipped there.
+deterministic. At the time of writing `npm test` runs 460 tests: 452 pass on
+Windows and 8 POSIX-specific tests are skipped there.
 
 ## Live suite
 
@@ -41,7 +41,7 @@ The integration suite in `test/integration/` starts a real Zen that Zen MCP
 launches itself. It covers three files: `mcp.e2e.test.ts` (the MCP server over
 stdio), `zen.e2e.test.ts` (spaces, tabs, reads, evidence, sessions, and
 templates), and `security.e2e.test.ts` (ownership, lockdown, consent, pause,
-and policy), with 34 test declarations in six groups. The evidence tests check
+and policy), with 61 test declarations in six groups. The evidence tests check
 exact, ambiguous, context-assisted, missing, and cleared matches; background and
 focused verification; batch verification with opened and reused tabs; literal
 search in one tab and across tabs; the real overlay and scroll position in the

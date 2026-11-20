@@ -15,8 +15,10 @@ Formats:
 - `metadata`: title, description, canonical URL, Open Graph tags, and language.
 - `outline`: the heading tree.
 - `interactive`: visible controls with stable refs, for `zen_click` and `zen_type`.
+- `snapshot`: a bounded control view with refs, an outline, a short text preview, and completeness flags. Only `zen_read_page` accepts it.
+- `semantic`: landmarks, heading hierarchy, sections, collections, forms, tables, dialogs, and a confidence-labelled page classification. Only `zen_read_page` accepts it.
 
-A separate `selector` option limits any format to one CSS-selected element. When `selector` is supplied and the element is missing, the read returns `selector_not_found` instead of falling back to the whole page. Text, Markdown, and the structured list formats read the rendered light DOM of one document. Shadow roots, canvas, images, SVG, and form controls are not included in those formats. `interactive` is the exception: it scans form controls and controls inside open shadow roots, and at the top level it also collects controls from child frames.
+A separate `selector` option limits any format to one CSS-selected element. When `selector` is supplied and the element is missing, the read returns `selector_not_found` instead of falling back to the whole page. Text, Markdown, and the structured list formats read the rendered light DOM of one document. Shadow roots, canvas, images, SVG, and form controls are not included in those formats. `interactive`, `snapshot`, and `semantic` are the exceptions: they scan form controls and controls inside open shadow roots, and the first two also collect controls from child frames at the top level.
 
 Iframes are read through `framePath`, an array of child frame indexes such as `[0]` or `[0,1]`. Every read result lists reachable http(s) frames under `frames`, each with its path, URL, and name, so the agent can drill in without guessing. A frame read returns that frame's document as `title`, `url`, `text`, and the other formats; `framePath` echoes the target. Frame paths are capped at three levels and listing stops after 20 frames; omitted frames are counted in `limitation`. Frames outside the domain allowlist and non-http(s) frames are never listed, read, or driven.
 
@@ -36,6 +38,48 @@ zen_read_page { tabId: "42", maxChars: 24000, offset: 24000 }
 
 Offsets are positions in the extracted text, not the raw HTML. They stay stable while the page is unchanged. If the page changes between calls, earlier offsets can shift, so start again from offset 0 when the content has changed.
 
+### Snapshot reads
+
+`format: "snapshot"` is the bounded view for deciding what to act on. It returns a text preview capped at 4,000 characters, up to 100 controls by default (`maxElements` raises the cap to 200), and up to 80 outline headings of 160 characters each. Each control carries a `ref`, its identifying fields, and `valuePresent`, `autocomplete`, `selected`, and `form` when those carry information; absent state is omitted rather than sent as `null` or `false`. Values are never returned, not even a length. The same script omits values before they leave the page, and coercion drops any that arrive anyway.
+
+Snapshot results separate collection from output:
+
+| Field | Meaning |
+| --- | --- |
+| `snapshotId` | Identifies the read that produced the current refs. |
+| `elementsTotal` | Controls found before the output cap. |
+| `snapshotComplete` | True when every reachable frame was scanned and nothing was skipped or failed. |
+| `framesComplete` | Collection completeness across frames. Unreadable or unlisted frames make it false. |
+| `textTruncated`, `elementsTruncated`, `outlineTruncated` | Output caps applied to this result. |
+| `limitations` | Up to five short explanations, including ignored `offset` and `maxChars` on snapshot. |
+
+Output caps never make `snapshotComplete` false. A selector-scoped snapshot reports complete collection for its subtree and a limitation saying frames were not included. `offset` is ignored; use `format: "text"` to page through the rest.
+
+### Semantic reads
+
+`format: "semantic"` answers "what kind of page is this and how is it organized?" without asking the agent to infer structure from a text dump. It models the top document and returns:
+
+| Field | Meaning |
+| --- | --- |
+| `classification`, `confidence`, `signals` | One of `article`, `search-results`, `product`, `listing`, `dashboard`, `login`, `form`, `documentation`, `discussion`, or `generic`, with a 0 to 1 score and up to six observed reasons. |
+| `regions` | Up to 40 landmarks and sections with a role, label, label source, parent id, and control, link, and item counts where applicable. A field that restates another or carries no information is omitted: `label` when it equals `heading`, zero counts, and absent relations. Roles include `main`, `banner`, `navigation`, `complementary`, `contentinfo`, `search`, `form`, `table`, `dialog`, `article`, `section`, and `list`. |
+| `headings` | Up to 40 headings in document order, with level, text, and a ref. |
+| `collections` | Up to 12 repeated structures (cards, links, table results) with a count and up to three samples. |
+| `dialogs` | Up to five observed dialogs, including modal state, without their text. |
+| `coverage` | `complete`, node and shadow-root counts, region/control/link/heading/table/image counts, and truncation flags. |
+
+A region reports only a numeric `controls` count, omitted when zero; the
+actionable control objects themselves never sit inside `semantic`. They come
+back in the read's top-level `elements` array, the same list snapshot and
+interactive reads use. A semantic read collects 100 controls by default;
+`maxElements` raises the cap to 120. Refs are shared with the other formats.
+
+Classification uses semantic HTML and accessibility signals first, then conservative heuristics: landmarks, heading patterns, repeated same-tag structures, tables, forms, prices, search controls, and code blocks. It does not read class names. When the top two scores are close, confidence is capped, so a weak classification stays visibly weak. A region label reports whether it came from an accessible name, a `legend` or `caption`, a heading, or inference. Field values, selected text, and hidden or `aria-hidden` subtrees never enter the model. `coverage.complete` is false when any cap was hit, the element scan was truncated, a child frame exists, or the frame list was truncated; `limitations` names the reason. Read a child frame separately with `framePath` for its own model.
+
+Refs in the semantic model share the registry used by snapshot and interactive reads. The registry is replaced by the next read of the same document, so after a navigation or document replacement, run a fresh read instead of reusing a ref.
+
+A region's `heading` is the heading that the region itself introduces. When the heading sits inside a nested landmark such as an `<article>`, it labels that child, not the parent, so a `main` region can have `heading: null`. Start from `primaryRegion` and follow `parent` links to the child region that owns the heading. Several `h1` elements may exist; document order is not a reliable way to choose the page's main heading.
+
 ### Interactive elements
 
 `format: "interactive"` returns `elements`, a list of up to 200 visible controls found in the selected scope. Each element carries:
@@ -45,24 +89,45 @@ Offsets are positions in the extracted text, not the raw HTML. They stay stable 
 | `ref` | Short stable target such as `e12`, or a frame-prefixed ref such as `f0-e3` or `f0.1-e2`, valid only for the current page state. |
 | `tag`, `role`, `type` | Element identity, including `input` types and ARIA roles. |
 | `label` | Accessible name from `aria-label`, `aria-labelledby`, labels, text, placeholder, or name. |
-| `value` | Current value for text, select, and similar controls. Always `null` for password inputs. |
+| `value` | Current value for non-sensitive editable controls in the legacy interactive format. Omitted in snapshot and semantic reads and for sensitive fields. |
 | `placeholder`, `href` | Optional attributes that help identify a target. |
 | `disabled`, `checked`, `readOnly` | State flags, with `checked` only for checkboxes and radios. |
-| `sensitive` | True for password inputs. |
+| `sensitive` | True for password, file, email, telephone, payment, one-time-code, and account-like fields. False positives are accepted. |
 | `editable` | True when `zen_type` can reasonably target the element. |
 | `framePath`, `frameUrl` | Present for controls inside a frame, so the agent can tell where they live. |
 
 The scan covers links, buttons, inputs other than hidden ones, textareas, selects, summaries, contenteditable regions, elements with a non-negative tabindex, and common ARIA roles. It skips elements that are not visible. At the top level it also scans child frames and merges their controls into the same list, with refs prefixed by the frame path. The 200-element cap applies across the whole list; `elementsTruncated: true` and a limitation report when it was reached, and `selector` narrows the scan to the top document without scanning frames. Up to 10 frames are scanned per read; unread frames are counted in `limitation`. Interactive reads do not return page text, so their `text`, `length`, and `offset` are empty or zero.
 
-`zen_click` and `zen_type` take the `tabId` plus exactly one of `ref` or `selector`. A ref is resolved through the fixed script that assigned it, including open shadow roots and the frame encoded in its prefix; a selector is resolved in the top document's light DOM. Refs are cleared by the next interactive read of the tab and are invalid after a navigation. When resolution fails, the call returns `element_not_found`; run a fresh interactive read rather than guessing a ref.
+`zen_click` and `zen_type` take the `tabId` plus exactly one target: a `target` object with one strategy (`ref`, role+name, `text`, `label`, `placeholder`, or `selector`), or the top-level `ref`/`selector` shortcuts. One shared resolver handles all of them. A ref is a Marionette element handle held server-side by the bridge; reads never add attributes to the page. It resolves to the same DOM node, including open shadow roots and the frame encoded in its prefix. Semantic strategies are searched across the document and open shadow roots, bounded to 6,000 nodes and six matches; a scan that hits the limit is refused instead of guessing. Two matches fail with `target_ambiguous` and up to five candidates. A selector is resolved in the top document's light DOM. A new snapshot or interactive read replaces the refs of the document it read, one tab plus one frame path, so refs in other frames stay usable until their own read. A removed, replaced, or navigated element and a ref from an older read return `element_not_found` through the shortcuts and `stale_reference` through `target.ref`; run a fresh read rather than guessing a ref.
 
-`zen_click` refuses a disabled target, checks the tab URL, the frame URL, and an anchor's `href` against the domain allowlist, then sends a native click. `zen_type` refuses disabled or read-only targets and file inputs, can clear the field first, and caps text at 10,000 characters. It reports `typed` (a character count), never the text, and adds a limitation when the target is a password field. Frame actions report `framePath` and the frame's current `frameUrl`. Neither tool evaluates agent-supplied JavaScript, and both are blocked in read-only mode because they change page state.
+Every target is re-validated immediately before the action: the element must still belong to the same document root and be visible and actionable. A semantic ref never falls back to resolving by selector or label.
 
-Both results include `effect`. Before the action the bridge hashes the acted-on document's URL, title, rendered text, element count, and non-password form values; after the action it polls for up to 1.2 seconds and compares. The effect says which of those changed and how long it watched. It is an observation, not proof that the click or typed text caused the change. When the document could not be signed, `effect.probeFailed` is true and `changed` is false.
+`zen_click` refuses a hidden, disabled, or unsupported target, checks the tab URL, the frame URL, and an anchor's `href` against the domain allowlist, then sends a native click. `zen_type` refuses hidden, disabled, read-only, and non-editable targets and file inputs, can clear the field first, and caps text at 10,000 characters. It reports `typed` (a character count), never the text. After typing it compares the field with the input and returns `observed: { compared, matchesInput, sensitive }` without the value or its length; sensitive fields report `compared: false`. Frame actions report `framePath` and the frame's current `frameUrl`. Neither tool evaluates agent-supplied JavaScript, and both are blocked in read-only mode because they change page state.
+
+Both results include `effect`. Before the action the bridge hashes the acted-on document's URL, title, rendered text, element count, and non-password form values, and records bounded control, heading, and alert descriptors. After the action it polls for up to 1.2 seconds and compares. The effect says which of those changed and how long it watched, plus `navigation`, `documentReplaced`, `readyState`, and `delta` with added, removed, or changed controls (10 each), headings and alerts (5 each), and the text length delta. It is an observation, not proof that the click or typed text caused the change. When the document was replaced, the old and new pages are not diffed; `delta.limitation` says so. When the document could not be signed, `effect.probeFailed` is true and `changed` is false.
 
 ### Waiting for state
 
-`zen_wait_for` waits for one condition in one tab without changing the page. Use it after an action whose effect was inconclusive, or before an action that depends on content arriving. The conditions are a selector being present, text appearing (or with `until: "absent"`, disappearing), the document URL containing a string, and the title containing a string. Provide exactly one. The default timeout is 5000 ms, the maximum is 30000 ms, and the default poll interval is 250 ms. A timeout returns `matched: false` with a limitation rather than throwing. Pass `frame_path` to probe a frame; each poll re-resolves the frame and rechecks the allowlist. The probe is fixed server code and returns only the URL, title, ready state, and match flag, never page text.
+`zen_wait_for` waits for exactly one condition in one tab without changing the page. Use it after an action whose effect was inconclusive, or before an action that depends on content arriving:
+
+- `selector`, optionally with `state: "visible"` or `"enabled"`.
+- `text`, `url_contains`, or `title_contains`; these three and `selector` support `until: "absent"`.
+- `document_id` to wait for a specific identity, or `document_changed` to wait until the identity differs from the identity when the wait started.
+- `new_tab` for a tab opened after the wait started, and `tab_closed` for a tab this session knew that is now gone.
+- `dialog` for a dialog shown after the wait started. Dialog text is never read.
+
+The default timeout is 5000 ms, the maximum is 30000 ms, and `timeout_ms: 0` performs one check. The default poll interval is 250 ms. A timeout returns `matched: false` with a limitation rather than throwing. Wait results include the tab's current `url`, `title`, and `documentId`, plus `newTabId` when one matched. A tab that closes during a wait is reported as closed, not as a timeout or a success. Document conditions apply to the top document only and reject `frame_path`; an empty identity, a navigation's initial about:blank placeholder, or a disconnected tab never counts as a match, so a change resolves on the committed document. `frame_path` probes re-resolve the frame and recheck the allowlist on every poll, and the top-document URL is rechecked before every page probe. If the page leaves the allowlist mid-wait, the wait ends unmatched and echoes no URL or title. The probe is fixed server code and returns only the URL, title, ready state, and match flag, never page text.
+
+### Browser events
+
+`zen_events { after: cursor, waitSeconds: 25 }` returns observed transitions alongside control events. Browser events carry `source: "browser"`:
+
+- `tab`: `opened`, `closed`, `selected`.
+- `navigation`: `started`, `committed`, `completed`, `failed`, `redirect`, `same_document`.
+- `document`: `replaced`.
+- `dialog`: `shown`, `hidden` (a lifecycle observation only; the prompt text is never read).
+
+Each event has a monotonic `id`, a timestamp, `windowId`, and `tabId`/`documentId`/`url` where known. Sequence ids are the only cursor, so pass the last `cursor` back as `after`; ids are never reused. The buffer holds 200 events. Browser observations expire after 10 minutes; control events (Stop, Pause, Resume, watch, question) do not expire but share the cap. Repeated events within a 2-second window are collapsed. `missed` counts issued ids the cursor can no longer read; `oldestCursor` is the oldest retained id. `filtered` counts navigation and document events dropped because the URL was not allowed. While paused, new browser observations are dropped and buffered ones are hidden, so only control events such as pause and resume are returned. Events are evidence that a transition happened, not proof of what caused it, so confirm important outcomes with a read or a wait.
 
 A click is a real input event. It can submit a form, start a download, open a dialog, navigate, or make a purchase. The allowlist covers the tab URL before the action, the frame URL, an anchor target, and the tab URL after the action; it cannot predict what an in-page script does in between.
 
