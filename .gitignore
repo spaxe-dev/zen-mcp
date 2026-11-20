@@ -6,3 +6,11 @@ dist/
 *.log
 *.tgz
 .DS_Store
+
+# Local agent state, scratch work and generated media. These are private and
+# must never be committed. `agents/` is intentionally absent so its presence
+# stays visible in `git status`.
+.cache/
+.qoder/
+.tmp/
+videos/
