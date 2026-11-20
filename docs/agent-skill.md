@@ -66,18 +66,17 @@ under your home directory. The CLI can symlink (default) or copy (`--copy`).
 
 ### Verified install
 
-The repository layout was verified with `skills@1.9.0` from a local checkout:
+Verified with `skills@1.9.0` against both a local checkout and the published
+GitHub source:
 
 ```sh
-npx skills add /path/to/zen-mcp --skill zen-mcp -a opencode -y --copy
+npx skills add spaxe-dev/zen-mcp --skill zen-mcp -a opencode -y --copy
 ```
 
 Result: `Found 1 skill`, installed `.agents/skills/zen-mcp/` with `SKILL.md`,
-all seven references, and `evals/tasks.md`; `npx skills list` reported the
-skill as tracked. The GitHub source uses the same discovery rule
-(`skills/<name>/SKILL.md`) and was not run against the remote because the skill
-is not published yet. Treat the remote command as the intended path, not a
-tested one, until this lands on `main`.
+the seven references, and `evals/tasks.md`. `npx skills list` reported the skill
+as tracked with source `spaxe-dev/zen-mcp`, and `skills-lock.json` recorded the
+GitHub source and commit. The local-path form behaves the same.
 
 ## Supported agents
 
