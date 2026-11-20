@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs test/unit",
     "test:zen": "node scripts/run-tests.mjs test/integration --test-concurrency=1",
+    "check:skill": "node scripts/check-skill.mjs",
     "prepack": "npm run build"
   },
   "keywords": [

@@ -4,6 +4,20 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A consumer agent skill in `skills/zen-mcp/`, installable with
+  `npx skills add spaxe-dev/zen-mcp`. It teaches a connected agent the
+  background-first workflow, the space/folder/tab/ref/evidence model, targeted
+  reads, evidence verification, tab etiquette, and recovery. `SKILL.md` stays
+  under 2,000 tokens and links to seven references plus an evaluation set.
+- `docs/agent-skill.md` covers installation, updates, supported clients, and
+  limitations. `npm run check:skill` validates the skill against the live tool
+  surface: tool and prompt names, example arguments, enum values, links, the
+  token budget, and a denylist of parked capabilities.
+
 ## [0.5.0] - 2026-11-10
 
 ### Added

@@ -172,6 +172,24 @@ Any MCP client:
 
 If `zen-mcp` is not on `PATH`, use the absolute path to `dist/cli.js` as `command` and keep `args` as `["serve"]`. Running the CLI with no command also starts the server.
 
+### Install the agent skill
+
+The repository also ships an agent skill that teaches a connected agent to use these tools well: background research in spaces, source comparisons, evidence checks, tab triage, and cleanup.
+
+```sh
+npx skills add spaxe-dev/zen-mcp
+```
+
+The skill installs from GitHub, not from the npm package, and needs the [skills CLI](https://skills.sh) (Node.js 22.20 or newer). It is separate from the server: configure Zen MCP first, then install the skill for your agent.
+
+```sh
+npx skills add spaxe-dev/zen-mcp --skill zen-mcp -a claude-code
+npx skills update zen-mcp      # update later
+npx skills list                # confirm what is installed
+```
+
+See [docs/agent-skill.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/agent-skill.md) for manual installs, supported clients, what the skill contains, and troubleshooting. The development rules in `AGENTS.md` are for working on this repository, not for using it.
+
 ### Approve the browser once
 
 On the first tool call, Zen MCP launches its own Zen window with a dedicated agent profile. The call waits for an approval card in Zen. Click **Allow this session**, then call the tool again if the first call timed out.
