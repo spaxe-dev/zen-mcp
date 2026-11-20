@@ -1,0 +1,768 @@
+{
+  "harness": "scripts/agent-eval.mjs",
+  "llm": false,
+  "deterministic": true,
+  "policy": "No LLM evaluation; deterministic policies only.",
+  "generatedAt": "2026-11-20T17:44:15.820Z",
+  "gitCommit": "c43cc58",
+  "serverVersion": "0.6.0",
+  "platform": "win32",
+  "headless": true,
+  "tasks": [
+    {
+      "id": "article-main-heading",
+      "title": "Find the main article heading, not the aside decoy",
+      "old": {
+        "id": "article-main-heading",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 2103,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 2103,
+            "compactChars": 2103
+          }
+        ],
+        "ambiguous": true,
+        "wrongSelections": 1,
+        "recovered": null,
+        "facts": {
+          "heading": "Editor's picks"
+        },
+        "expected": {
+          "heading": "The Tidal Power Ledger"
+        },
+        "error": null,
+        "ms": 56
+      },
+      "new": {
+        "id": "article-main-heading",
+        "mode": "new",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 3587,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 3587,
+            "compactChars": 3587
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 1,
+        "recovered": null,
+        "facts": {
+          "heading": "Editor's picks"
+        },
+        "expected": {
+          "heading": "The Tidal Power Ledger"
+        },
+        "error": null,
+        "ms": 51
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 1484
+      }
+    },
+    {
+      "id": "nav-sections",
+      "title": "Identify the section navigation landmark and its link count",
+      "old": {
+        "id": "nav-sections",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 2103,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 2103,
+            "compactChars": 2103
+          }
+        ],
+        "ambiguous": true,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "nav": null,
+          "links": null
+        },
+        "expected": {
+          "nav": "Sections",
+          "links": 3
+        },
+        "error": null,
+        "ms": 52
+      },
+      "new": {
+        "id": "nav-sections",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 1,
+        "contextChars": 3587,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 3587,
+            "compactChars": 3587
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "nav": "Sections",
+          "links": 3
+        },
+        "expected": {
+          "nav": "Sections",
+          "links": 3
+        },
+        "error": null,
+        "ms": 50
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 1484
+      }
+    },
+    {
+      "id": "search-results-count",
+      "title": "Find the result count, card count and pagination landmark",
+      "old": {
+        "id": "search-results-count",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 3805,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 3805,
+            "compactChars": 3805
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "total": "1,240",
+          "cards": 5,
+          "pagination": null
+        },
+        "expected": {
+          "total": "1,240",
+          "cards": 5,
+          "pagination": "Pagination"
+        },
+        "error": null,
+        "ms": 49
+      },
+      "new": {
+        "id": "search-results-count",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 1,
+        "contextChars": 5559,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 5559,
+            "compactChars": 5559
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "total": "1,240",
+          "cards": 5,
+          "pagination": "Pagination"
+        },
+        "expected": {
+          "total": "1,240",
+          "cards": 5,
+          "pagination": "Pagination"
+        },
+        "error": null,
+        "ms": 51
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 1754
+      }
+    },
+    {
+      "id": "product-add-to-cart",
+      "title": "Choose the Add to cart control for the Nimbus card",
+      "old": {
+        "id": "product-add-to-cart",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 3,
+        "contextChars": 2171,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 1319,
+            "compactChars": 1319
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 596,
+            "compactChars": 596
+          },
+          {
+            "name": "zen_read_page",
+            "format": "text",
+            "chars": 256,
+            "compactChars": 256
+          }
+        ],
+        "ambiguous": true,
+        "wrongSelections": 1,
+        "recovered": null,
+        "facts": {
+          "picked": "aurora"
+        },
+        "expected": {
+          "picked": "nimbus"
+        },
+        "error": null,
+        "ms": 329
+      },
+      "new": {
+        "id": "product-add-to-cart",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 3,
+        "contextChars": 2867,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 2015,
+            "compactChars": 2015
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 596,
+            "compactChars": 596
+          },
+          {
+            "name": "zen_read_page",
+            "format": "text",
+            "chars": 256,
+            "compactChars": 256
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "picked": "nimbus"
+        },
+        "expected": {
+          "picked": "nimbus"
+        },
+        "error": null,
+        "ms": 208
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 696
+      }
+    },
+    {
+      "id": "dashboard-page-type",
+      "title": "Read the incidents value and classify the dashboard",
+      "old": {
+        "id": "dashboard-page-type",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 1277,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 1277,
+            "compactChars": 1277
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "incidents": "7",
+          "type": null
+        },
+        "expected": {
+          "incidents": "7",
+          "type": "dashboard"
+        },
+        "error": null,
+        "ms": 17
+      },
+      "new": {
+        "id": "dashboard-page-type",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 1,
+        "contextChars": 2047,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 2047,
+            "compactChars": 2047
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "incidents": "7",
+          "type": "dashboard"
+        },
+        "expected": {
+          "incidents": "7",
+          "type": "dashboard"
+        },
+        "error": null,
+        "ms": 17
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 770
+      }
+    },
+    {
+      "id": "login-form",
+      "title": "Detect the login form and its submit control",
+      "old": {
+        "id": "login-form",
+        "mode": "old",
+        "success": true,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 861,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "interactive",
+            "chars": 861,
+            "compactChars": 861
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "password": true,
+          "email": true,
+          "submit": "Sign in",
+          "type": null
+        },
+        "expected": {
+          "password": true,
+          "email": true,
+          "submit": "Sign in",
+          "type": "login"
+        },
+        "error": null,
+        "ms": 14
+      },
+      "new": {
+        "id": "login-form",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 1,
+        "contextChars": 1674,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 1674,
+            "compactChars": 1674
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "password": true,
+          "email": true,
+          "submit": "Sign in",
+          "type": "login"
+        },
+        "expected": {
+          "password": true,
+          "email": true,
+          "submit": "Sign in",
+          "type": "login"
+        },
+        "error": null,
+        "ms": 16
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 813
+      }
+    },
+    {
+      "id": "docs-heading",
+      "title": "Find the documentation heading, not the code-block example",
+      "old": {
+        "id": "docs-heading",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 1,
+        "contextChars": 492,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "text",
+            "chars": 492,
+            "compactChars": 492
+          }
+        ],
+        "ambiguous": true,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "heading": "Configure the bridge",
+          "level": null,
+          "type": null
+        },
+        "expected": {
+          "heading": "Configure the bridge",
+          "level": 2,
+          "type": "documentation"
+        },
+        "error": null,
+        "ms": 10
+      },
+      "new": {
+        "id": "docs-heading",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 1,
+        "contextChars": 1320,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 1320,
+            "compactChars": 1320
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "heading": "Configure the bridge",
+          "level": 2,
+          "type": "documentation"
+        },
+        "expected": {
+          "heading": "Configure the bridge",
+          "level": 2,
+          "type": "documentation"
+        },
+        "error": null,
+        "ms": 17
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 828
+      }
+    },
+    {
+      "id": "modal-dialog",
+      "title": "Open and identify the modal dialog on a discussion page",
+      "old": {
+        "id": "modal-dialog",
+        "mode": "old",
+        "success": false,
+        "complete": false,
+        "toolCalls": 4,
+        "contextChars": 5601,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 1829,
+            "compactChars": 1829
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 748,
+            "compactChars": 748
+          },
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 2283,
+            "compactChars": 2283
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 741,
+            "compactChars": 741
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "dialog": null,
+          "modal": null,
+          "posts": 4
+        },
+        "expected": {
+          "dialog": "Report post",
+          "modal": true,
+          "posts": 4
+        },
+        "error": null,
+        "ms": 355
+      },
+      "new": {
+        "id": "modal-dialog",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 4,
+        "contextChars": 8041,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 2956,
+            "compactChars": 2956
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 748,
+            "compactChars": 748
+          },
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 3596,
+            "compactChars": 3596
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 741,
+            "compactChars": 741
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": null,
+        "facts": {
+          "dialog": "Report post",
+          "modal": true,
+          "posts": 4
+        },
+        "expected": {
+          "dialog": "Report post",
+          "modal": true,
+          "posts": 4
+        },
+        "error": null,
+        "ms": 379
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 2440
+      }
+    },
+    {
+      "id": "stale-ref-recovery",
+      "title": "Recover when a shadow-root ref goes stale after a mutation",
+      "old": {
+        "id": "stale-ref-recovery",
+        "mode": "old",
+        "success": true,
+        "complete": true,
+        "toolCalls": 6,
+        "contextChars": 4145,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 1235,
+            "compactChars": 1235
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 608,
+            "compactChars": 608
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 142,
+            "compactChars": 142
+          },
+          {
+            "name": "zen_read_page",
+            "format": "snapshot",
+            "chars": 1235,
+            "compactChars": 1235
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 601,
+            "compactChars": 601
+          },
+          {
+            "name": "zen_read_page",
+            "format": "text",
+            "chars": 324,
+            "compactChars": 324
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": true,
+        "facts": {
+          "stale": true,
+          "recovered": true,
+          "saved": true
+        },
+        "expected": {
+          "stale": true,
+          "recovered": true,
+          "saved": true
+        },
+        "error": null,
+        "ms": 1426
+      },
+      "new": {
+        "id": "stale-ref-recovery",
+        "mode": "new",
+        "success": true,
+        "complete": true,
+        "toolCalls": 6,
+        "contextChars": 4663,
+        "calls": [
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 1492,
+            "compactChars": 1492
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 608,
+            "compactChars": 608
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 142,
+            "compactChars": 142
+          },
+          {
+            "name": "zen_read_page",
+            "format": "semantic",
+            "chars": 1492,
+            "compactChars": 1492
+          },
+          {
+            "name": "zen_click",
+            "format": null,
+            "chars": 605,
+            "compactChars": 605
+          },
+          {
+            "name": "zen_read_page",
+            "format": "text",
+            "chars": 324,
+            "compactChars": 324
+          }
+        ],
+        "ambiguous": false,
+        "wrongSelections": 0,
+        "recovered": true,
+        "facts": {
+          "stale": true,
+          "recovered": true,
+          "saved": true
+        },
+        "expected": {
+          "stale": true,
+          "recovered": true,
+          "saved": true
+        },
+        "error": null,
+        "ms": 2487
+      },
+      "delta": {
+        "toolCalls": 0,
+        "contextChars": 518
+      }
+    }
+  ],
+  "totals": {
+    "old": {
+      "tasks": 9,
+      "success": 2,
+      "complete": 1,
+      "toolCalls": 19,
+      "contextChars": 22558,
+      "ambiguous": 4,
+      "wrongSelections": 2,
+      "recovered": 1,
+      "recoveryTasks": 1
+    },
+    "new": {
+      "tasks": 9,
+      "success": 8,
+      "complete": 8,
+      "toolCalls": 19,
+      "contextChars": 33345,
+      "ambiguous": 0,
+      "wrongSelections": 1,
+      "recovered": 1,
+      "recoveryTasks": 1
+    }
+  },
+  "regressions": []
+}

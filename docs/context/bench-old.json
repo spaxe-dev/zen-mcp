@@ -1,0 +1,188 @@
+{
+  "label": "old",
+  "server": ".tmp/bench-old/dist/cli.js",
+  "generatedAt": "2026-11-20T10:59:06.827Z",
+  "startupMs": 803,
+  "launchMs": 3835,
+  "initialContext": {
+    "tools": 53,
+    "definitionChars": 90519,
+    "instructionsChars": 7453,
+    "combinedChars": 97972,
+    "tokens": 22274
+  },
+  "tasks": [
+    {
+      "name": "one-page",
+      "ok": true,
+      "ms": 270,
+      "calls": [
+        {
+          "tool": "zen_tabs_open",
+          "ms": 214,
+          "chars": 880,
+          "tokens": 321,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_page",
+          "ms": 53,
+          "chars": 632,
+          "tokens": 202,
+          "ok": true
+        }
+      ],
+      "callCount": 2,
+      "resultChars": 1512,
+      "resultTokens": 523
+    },
+    {
+      "name": "multi-source",
+      "ok": true,
+      "ms": 280,
+      "calls": [
+        {
+          "tool": "zen_tabs_open",
+          "ms": 237,
+          "chars": 2170,
+          "tokens": 773,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_pages",
+          "ms": 38,
+          "chars": 2403,
+          "tokens": 724,
+          "ok": true
+        }
+      ],
+      "callCount": 2,
+      "resultChars": 4573,
+      "resultTokens": 1497
+    },
+    {
+      "name": "compare",
+      "ok": true,
+      "ms": 245,
+      "calls": [
+        {
+          "tool": "zen_tabs_open",
+          "ms": 204,
+          "chars": 1527,
+          "tokens": 548,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_page",
+          "ms": 28,
+          "chars": 624,
+          "tokens": 188,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_page",
+          "ms": 10,
+          "chars": 747,
+          "tokens": 221,
+          "ok": true
+        }
+      ],
+      "callCount": 3,
+      "resultChars": 2898,
+      "resultTokens": 957
+    },
+    {
+      "name": "verify",
+      "ok": true,
+      "ms": 392,
+      "calls": [
+        {
+          "tool": "zen_show_evidence",
+          "ms": 391,
+          "chars": 485,
+          "tokens": 172,
+          "ok": true
+        }
+      ],
+      "callCount": 1,
+      "resultChars": 485,
+      "resultTokens": 172
+    },
+    {
+      "name": "cleanup-audit",
+      "ok": true,
+      "ms": 14,
+      "calls": [
+        {
+          "tool": "zen_tabs_audit",
+          "ms": 13,
+          "chars": 875,
+          "tokens": 360,
+          "ok": true
+        }
+      ],
+      "callCount": 1,
+      "resultChars": 875,
+      "resultTokens": 360
+    },
+    {
+      "name": "interact",
+      "ok": true,
+      "ms": 534,
+      "calls": [
+        {
+          "tool": "zen_tabs_open",
+          "ms": 179,
+          "chars": 871,
+          "tokens": 317,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_page",
+          "ms": 15,
+          "chars": 961,
+          "tokens": 294,
+          "ok": true
+        },
+        {
+          "tool": "zen_type",
+          "ms": 168,
+          "chars": 436,
+          "tokens": 158,
+          "ok": true
+        },
+        {
+          "tool": "zen_click",
+          "ms": 149,
+          "chars": 415,
+          "tokens": 149,
+          "ok": true
+        },
+        {
+          "tool": "zen_wait_for",
+          "ms": 9,
+          "chars": 216,
+          "tokens": 88,
+          "ok": true
+        },
+        {
+          "tool": "zen_read_page",
+          "ms": 10,
+          "chars": 320,
+          "tokens": 114,
+          "ok": true
+        }
+      ],
+      "callCount": 6,
+      "resultChars": 3219,
+      "resultTokens": 1120
+    }
+  ],
+  "totals": {
+    "taskMs": 1735,
+    "calls": 15,
+    "resultChars": 13562,
+    "succeeded": 6,
+    "failed": 0
+  }
+}

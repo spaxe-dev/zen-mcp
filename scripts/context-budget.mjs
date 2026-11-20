@@ -405,7 +405,8 @@ for (const result of Object.values(measured)) {
 const snapshot = {
   generatedAt: new Date().toISOString(),
   gitCommit: gitCommit(),
-  serverVersion: "0.5.0",
+  serverVersion: JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
+    .version,
   tokenizer: tokenizer.name,
   surfaces: measured,
 };
