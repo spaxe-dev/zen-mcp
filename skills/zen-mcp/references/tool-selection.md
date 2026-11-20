@@ -6,6 +6,27 @@ between read formats, or when a parameter name does not match what you expected.
 Every tool below exists in Zen MCP 0.5.0. Names and parameters are taken from
 the registered schemas. Defaults are server-side unless noted.
 
+## Surfaces and discovery
+
+The server starts on one of three surfaces: `research` (17 tools, the default),
+`core` (38) or `full` (55). Surface membership only changes what `tools/list`
+returns; every tool remains callable through the gateway.
+
+- `zen_tools_search({ query })` searches names, summaries, categories and
+  aliases. `category` narrows it.
+- `zen_tools_search({ name })` returns one tool's full description and input
+  schema. Use it before a gateway call.
+- `zen_tools_use({ tool, arguments })` validates and invokes any tool with its
+  normal policy, audit, progress and result shape.
+- Add `publish: true` to `zen_tools_use` to register the tool in `tools/list`
+  for clients that honor `notifications/tools/list_changed`. Clients that cache
+  the list can keep using the gateway.
+- `zen://capabilities` is the full catalogue: surfaces, categories, summaries,
+  prompts and resources.
+
+Nothing is permanently hidden. If a step in this reference names a tool that is
+not in `tools/list`, search for it and invoke it through the gateway.
+
 ## Orientation and connection
 
 | Tool | Parameters | Notes |

@@ -34,6 +34,8 @@
     "test": "node scripts/run-tests.mjs test/unit",
     "test:zen": "node scripts/run-tests.mjs test/integration --test-concurrency=1",
     "check:skill": "node scripts/check-skill.mjs",
+    "context:budget": "node scripts/context-budget.mjs --surface research --surface core --surface full",
+    "context:check": "node scripts/context-budget.mjs --surface research --surface core --surface full --check docs/context/budget.json",
     "prepack": "npm run build"
   },
   "keywords": [

@@ -63,6 +63,7 @@ const CONFIG_KEYS = [
   "auditLog",
   "watchMinIntervalSeconds",
   "launchArgs",
+  "toolSurface",
 ] as const;
 
 type ConfigKey = (typeof CONFIG_KEYS)[number];
@@ -686,6 +687,14 @@ function configSet(key: string, rawValue: string): void {
       break;
     case "launchArgs":
       parsed = value ? value.split(/\s+/).filter(Boolean) : [];
+      break;
+    case "toolSurface":
+      parsed = value.toLowerCase();
+      if (!["research", "core", "full"].includes(parsed as string)) {
+        console.error("toolSurface must be research, core or full.");
+        process.exitCode = 1;
+        return;
+      }
       break;
   }
 

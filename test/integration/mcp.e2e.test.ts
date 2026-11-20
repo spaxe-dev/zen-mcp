@@ -67,6 +67,8 @@ const EXPECTED_TOOLS = [
   "zen_template_apply",
   "zen_template_delete",
   "zen_template_save",
+  "zen_tools_search",
+  "zen_tools_use",
   "zen_type",
   "zen_wait_for",
   "zen_watch_add",
@@ -567,6 +569,7 @@ describe(
         "zen://tabs",
         "zen://questions",
         "zen://watches",
+        "zen://capabilities",
       ]) {
         assert.ok(uris.includes(uri), `missing resource ${uri}`);
       }

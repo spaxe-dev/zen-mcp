@@ -10,7 +10,8 @@ import { TOOL_OUTPUT_SCHEMAS } from "../../src/mcp/output-schemas.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
 
-const TOOL_COUNT = 53;
+const TOOL_COUNT = 55;
+const NO_OUTPUT_SCHEMA = new Set(["zen_tools_use"]);
 
 interface Harness {
   client: Client;
@@ -32,6 +33,7 @@ async function createHarness(
     auditLog: false,
     autoLaunch: false,
     dataDir,
+    toolSurface: "full",
     ...overrides,
   };
   const runtime = new ZenRuntime({ config });
@@ -102,11 +104,19 @@ describe("structured tool results", () => {
       );
       assert.deepEqual(
         tools.map((tool) => tool.name).sort(),
-        Object.keys(TOOL_OUTPUT_SCHEMAS).sort(),
-        "every registered tool needs an entry in TOOL_OUTPUT_SCHEMAS"
+        [...Object.keys(TOOL_OUTPUT_SCHEMAS), ...NO_OUTPUT_SCHEMA].sort(),
+        "every registered tool needs an output schema or a documented exemption"
       );
 
       for (const tool of tools) {
+        if (NO_OUTPUT_SCHEMA.has(tool.name)) {
+          assert.equal(
+            tool.outputSchema,
+            undefined,
+            `${tool.name} proxies another tool and must not declare a fixed output schema`
+          );
+          continue;
+        }
         assert.ok(tool.outputSchema, `${tool.name} has no outputSchema`);
         assert.equal(
           tool.outputSchema.type,

@@ -28,13 +28,20 @@ const AUTO_LAUNCH_TOOLS = new Set([
   "zen_tabs_audit",
 ]);
 
-const EXEMPT_TOOLS = new Set(AUTO_LAUNCH_TOOLS);
+const EXEMPT_TOOLS = new Set([...AUTO_LAUNCH_TOOLS, "zen_tools_use"]);
+
+/**
+ * zen_tools_use routes to another tool and enforces that tool's policy in the
+ * inner handler. It is not itself in MUTATING_TOOLS, but its hint is false
+ * because it can reach a mutating capability.
+ */
 
 async function registeredTools() {
   const config = {
     ...DEFAULT_CONFIG,
     auditLog: false,
     autoLaunch: false,
+    toolSurface: "full" as const,
   };
   const runtime = new ZenRuntime({ config });
   const server = createZenMcpServer(runtime, config);

@@ -1,6 +1,8 @@
 # Tools, resources, and prompts
 
-Zen MCP exposes 53 tools over MCP. Every tool declares an `outputSchema`. The project is pre-1.0, so the tool surface can change between releases.
+Zen MCP exposes 55 tools over MCP. The default `research` surface lists 17 of them; `core` lists 38 and `full` lists all 55. Every listed tool declares an `outputSchema` except `zen_tools_use`, which returns the target tool's result unchanged. The project is pre-1.0, so the tool surface can change between releases.
+
+Capabilities outside the active surface are discoverable and callable: `zen_tools_search` finds a tool and returns its schema, `zen_tools_use` invokes it with normal policy and audit, and `zen://capabilities` lists everything. See [configuration.md](configuration.md#tool-surface) for the `toolSurface` setting.
 
 For read formats and Evidence Mode behavior, see [reading-and-evidence.md](reading-and-evidence.md). For policy settings, see [configuration.md](configuration.md) and [security.md](security.md).
 

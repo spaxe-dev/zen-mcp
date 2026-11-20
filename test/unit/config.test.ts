@@ -22,6 +22,7 @@ const OVERRIDE_ENV = [
   "ZEN_MCP_AUDIT_LOG",
   "ZEN_MCP_ALLOWED_DOMAINS",
   "ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS",
+  "ZEN_MCP_TOOL_SURFACE",
 ] as const;
 
 describe("config", () => {
@@ -53,6 +54,7 @@ describe("config", () => {
     assert.equal(config.useDefaultProfile, false);
     assert.equal(config.requireConsent, true);
     assert.equal(config.consentTimeoutSeconds, 90);
+    assert.equal(config.toolSurface, "research");
     assert.deepEqual(config.launchArgs, []);
   });
 
@@ -71,6 +73,7 @@ describe("config", () => {
     process.env.ZEN_MCP_REQUIRE_CONSENT = "0";
     process.env.ZEN_MCP_CONSENT_TIMEOUT_SECONDS = "30";
     process.env.ZEN_MCP_LAUNCH_ARGS = "--headless  --new-instance";
+    process.env.ZEN_MCP_TOOL_SURFACE = "full";
     try {
       const config = loadConfig();
       assert.equal(config.zenPath, "/custom/zen");
@@ -79,6 +82,7 @@ describe("config", () => {
       assert.equal(config.useDefaultProfile, true);
       assert.equal(config.requireConsent, false);
       assert.equal(config.consentTimeoutSeconds, 30);
+      assert.equal(config.toolSurface, "full");
       assert.deepEqual(config.launchArgs, ["--headless", "--new-instance"]);
     } finally {
       for (const name of OVERRIDE_ENV) delete process.env[name];
@@ -101,6 +105,19 @@ describe("config", () => {
     } finally {
       delete process.env.ZEN_MCP_READ_ONLY;
       delete process.env.ZEN_MCP_AUDIT_LOG;
+    }
+  });
+
+  it("rejects an unrecognized tool surface", () => {
+    writeFileSync(configPath, "{}", "utf8");
+    process.env.ZEN_MCP_TOOL_SURFACE = "wide";
+    try {
+      assert.throws(
+        () => loadConfig(),
+        /Invalid toolSurface "wide": use "research", "core" or "full"/
+      );
+    } finally {
+      delete process.env.ZEN_MCP_TOOL_SURFACE;
     }
   });
 

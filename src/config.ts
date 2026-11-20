@@ -5,6 +5,7 @@ import {
   atomicWritePrivate,
   readFileTextBounded,
 } from "./utils/safe-file.js";
+import type { ToolSurface } from "./mcp/catalog.js";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 
@@ -44,6 +45,8 @@ export interface ZenMcpConfig {
   watchMinIntervalSeconds: number;
   /** Extra command-line arguments passed when Zen MCP starts Zen. */
   launchArgs: string[];
+  /** Tool surface exposed in tools/list. Research is the default. */
+  toolSurface: ToolSurface;
 }
 
 export const DEFAULT_CONFIG: ZenMcpConfig = {
@@ -60,6 +63,7 @@ export const DEFAULT_CONFIG: ZenMcpConfig = {
   autoAttachWindows: true,
   watchMinIntervalSeconds: 15,
   launchArgs: [],
+  toolSurface: "research",
 };
 
 export function configFilePath(): string {
@@ -93,6 +97,7 @@ export function loadConfig(): ZenMcpConfig {
   const envConsent = process.env.ZEN_MCP_REQUIRE_CONSENT;
   const envConsentTimeout = process.env.ZEN_MCP_CONSENT_TIMEOUT_SECONDS;
   const envLaunchArgs = process.env.ZEN_MCP_LAUNCH_ARGS;
+  const envToolSurface = process.env.ZEN_MCP_TOOL_SURFACE;
 
   const fileReadOnly = fileSafetyBoolean(
     fileConfig.readOnly,
@@ -219,6 +224,10 @@ export function loadConfig(): ZenMcpConfig {
       "autoAttachWindows",
       DEFAULT_CONFIG.autoAttachWindows
     ),
+    toolSurface: parseToolSurface(
+      envToolSurface ?? fileConfig.toolSurface,
+      DEFAULT_CONFIG.toolSurface
+    ),
   };
 }
 
@@ -289,6 +298,27 @@ function boundedInt(
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+/**
+ * Tool surfaces choose what `tools/list` exposes; they never remove tools from
+ * the gateway. An unknown value fails closed instead of silently widening or
+ * narrowing the surface.
+ */
+function parseToolSurface(value: unknown, fallback: ToolSurface): ToolSurface {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") {
+    throw new Error(
+      `Invalid toolSurface at ${configFilePath()}: use "research", "core" or "full".`
+    );
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "research" || normalized === "core" || normalized === "full") {
+    return normalized;
+  }
+  throw new Error(
+    `Invalid toolSurface "${value}": use "research", "core" or "full".`
+  );
 }
 
 export function saveConfig(updates: Partial<ZenMcpConfig>): string {

@@ -8,6 +8,19 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Configurable tool surfaces. The default `research` surface exposes 17 tools
+  for orienting, background research, reads, evidence and handover. `core`
+  exposes 38 and `full` exposes all 55. The new `toolSurface` key and
+  `ZEN_MCP_TOOL_SURFACE` environment variable choose one at startup.
+- A discovery gateway: `zen_tools_search` finds any capability by keyword,
+  category or name and returns its input schema, and `zen_tools_use` invokes a
+  tool outside the active surface with the same validation, read-only,
+  allowlist, pause and audit behavior. `publish: true` adds it to `tools/list`.
+  The `zen://capabilities` resource is the complete machine-readable catalogue.
+- Context measurement and gates: `npm run context:budget` reports per-tool and
+  per-surface cost, `npm run context:check` enforces the 17-tool default,
+  the 1,500-character instruction budget, 400-character descriptions and
+  surface growth limits in CI.
 - A consumer agent skill in `skills/zen-mcp/`, installable with
   `npx skills add spaxe-dev/zen-mcp`. It teaches a connected agent the
   background-first workflow, the space/folder/tab/ref/evidence model, targeted

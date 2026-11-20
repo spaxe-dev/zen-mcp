@@ -59,6 +59,7 @@ export function testConfig(): ZenMcpConfig {
     launchTimeoutMs: 60_000,
     marionettePort: Number(process.env.ZEN_MCP_TEST_MARIONETTE_PORT ?? 2828),
     launchArgs: TEST_LAUNCH_ARGS,
+    toolSurface: "full",
   };
 }
 
@@ -114,6 +115,7 @@ export function testServerEnv(): Record<string, string> {
     ZEN_MCP_ALLOWED_DOMAINS: "",
     ZEN_MCP_AUDIT_LOG: "1",
     ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS: "5",
+    ZEN_MCP_TOOL_SURFACE: "full",
   };
 }
 

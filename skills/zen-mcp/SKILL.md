@@ -40,6 +40,7 @@ Before opening a URL: `zen_history_search({ query, domain })`, `zen_bookmarks_se
 - `zen_template_apply` with `research`, `github-triage`, `news`, or `docs` beats hand-building a layout.
 - `zen_launch` only after a tool reports Zen unreachable or the session was lost. With autoLaunch on, ordinary tools start the browser.
 - `zen_config` is local, needs no browser, and explains a block.
+- Default surface: Research. For anything else use `zen_tools_search`, then `zen_tools_use`; `publish:true` lists it too.
 
 The first call may start Zen and raise a consent card; on timeout, ask the user to approve and retry once.
 

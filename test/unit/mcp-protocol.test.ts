@@ -30,6 +30,7 @@ async function createHarness(
     auditLog: false,
     autoLaunch: false,
     dataDir,
+    toolSurface: "full",
     ...overrides,
   };
   const runtime = new ZenRuntime({ config });
@@ -367,6 +368,7 @@ describe("resources", () => {
         "zen://tabs": "Zen tabs",
         "zen://questions": "Open questions",
         "zen://watches": "Page watches",
+        "zen://capabilities": "Zen capabilities",
       });
     } finally {
       await harness.close();

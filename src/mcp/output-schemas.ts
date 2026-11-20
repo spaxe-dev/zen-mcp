@@ -106,6 +106,17 @@ const tabSchema = z.looseObject({
   splitView: z.boolean().optional(),
 });
 
+/** The identity of a freshly opened tab; full state belongs to zen_tabs_list. */
+const openedTabSchema = z.looseObject({
+  id: z.string(),
+  title: z.string(),
+  url: z.string(),
+  spaceId: z.string().nullable(),
+  pinned: z.boolean(),
+  folderId: z.string().nullable(),
+  requestedUrl: z.string().optional(),
+});
+
 const folderInfoSchema = z.looseObject({
   id: z.string(),
   label: z.string(),
@@ -153,12 +164,8 @@ const pageMetadataSchema = z.looseObject({
   description: z.string().nullable(),
   canonical: z.string().nullable(),
   lang: z.string().nullable(),
-  author: z.string().nullable(),
   published: z.string().nullable(),
   siteName: z.string().nullable(),
-  image: z.string().nullable(),
-  og: z.record(z.string(), z.string()),
-  twitter: z.record(z.string(), z.string()),
 });
 
 const pageElementSchema = z.looseObject({
@@ -168,15 +175,9 @@ const pageElementSchema = z.looseObject({
   type: z.string().nullable(),
   label: z.string(),
   value: z.string().nullable(),
-  placeholder: z.string().nullable(),
-  href: z.string().nullable(),
-  disabled: z.boolean(),
-  checked: z.boolean().nullable(),
-  readOnly: z.boolean(),
   sensitive: z.boolean(),
   editable: z.boolean(),
   framePath: z.array(z.number()).optional(),
-  frameUrl: z.string().nullable().optional(),
 });
 
 const pageFrameSchema = z.looseObject({
@@ -243,6 +244,25 @@ const pageReadShape = {
 };
 
 const pageReadSchema = z.looseObject(pageReadShape);
+
+/**
+ * Batch reads return the same page object, but repeating the full interactive
+ * and metadata schemas once per entry dominates the tool definition. Keep the
+ * stable page envelope here; extra fields remain valid because the object is
+ * loose.
+ */
+const pageReadSummarySchema = z.looseObject({
+  title: z.string(),
+  url: z.string(),
+  text: z.string().optional(),
+  markdown: z.string().optional(),
+  format: readFormatSchema.optional(),
+  truncated: z.boolean().optional(),
+  length: z.number().optional(),
+  offset: z.number().optional(),
+  nextOffset: z.number().nullable().optional(),
+  limitation: z.string().optional(),
+});
 
 const evidenceFailureSchema = z.looseObject({
   code: z.string(),
@@ -441,7 +461,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
   },
   zen_tabs_open: {
     space: spaceSchema,
-    tabs: z.array(tabSchema),
+    tabs: z.array(openedTabSchema),
     background: z.boolean(),
   },
   zen_tabs_close: {
@@ -537,7 +557,7 @@ export const TOOL_OUTPUT_SCHEMAS = {
         ok: z.boolean(),
         title: z.string().optional(),
         url: z.string().optional(),
-        page: pageReadSchema.optional(),
+        page: pageReadSummarySchema.optional(),
         error: z.string().optional(),
       })
     ),
@@ -728,6 +748,9 @@ export const TOOL_OUTPUT_SCHEMAS = {
     ownership: z.string(),
     autoLaunch: z.boolean(),
     autoAttachWindows: z.boolean(),
+    toolSurface: z.string().optional(),
+    exposedToolCount: z.number().optional(),
+    availableToolCount: z.number().optional(),
     askTimeoutSeconds: z.number(),
     consentTimeoutSeconds: z.number(),
     watchMinIntervalSeconds: z.number(),
@@ -795,6 +818,35 @@ export const TOOL_OUTPUT_SCHEMAS = {
   zen_notify: {
     delivered: z.boolean(),
     windowId: z.string().optional(),
+  },
+
+  /* Capability discovery */
+  zen_tools_search: {
+    query: z.string(),
+    category: z.string().nullable(),
+    total: z.number(),
+    tools: z.array(
+      z.looseObject({
+        name: z.string(),
+        summary: z.string(),
+        category: z.string(),
+        surfaces: z.array(z.string()),
+        exposed: z.boolean(),
+        mutating: z.boolean(),
+      })
+    ),
+    tool: z
+      .looseObject({
+        name: z.string(),
+        summary: z.string(),
+        category: z.string(),
+        surfaces: z.array(z.string()),
+        exposed: z.boolean(),
+        mutating: z.boolean(),
+        description: z.string().optional(),
+        inputSchema: z.unknown().optional(),
+      })
+      .optional(),
   },
 
   /* Session snapshots */

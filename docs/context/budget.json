@@ -1,0 +1,40 @@
+{
+  "researchToolMin": 16,
+  "researchToolMax": 19,
+  "instructionsMaxChars": 1500,
+  "firstParagraphMaxChars": 400,
+  "minDefaultReductionPct": 60,
+  "minManifestTools": 55,
+  "baseline": "docs/context/baseline-0.5.0.json",
+  "requireManifest": "zen://capabilities",
+  "requiredResearchTools": [
+    "zen_status",
+    "zen_spaces_list",
+    "zen_space_create",
+    "zen_tabs_list",
+    "zen_tabs_open",
+    "zen_read_page",
+    "zen_read_pages",
+    "zen_search_tabs",
+    "zen_show_evidence",
+    "zen_show_evidence_batch",
+    "zen_progress",
+    "zen_events",
+    "zen_tools_search",
+    "zen_tools_use"
+  ],
+  "surfaces": {
+    "research": {
+      "toolCount": 17,
+      "definitionCharsMax": 35200
+    },
+    "core": {
+      "toolCount": 38,
+      "definitionCharsMax": 65000
+    },
+    "full": {
+      "toolCount": 55,
+      "definitionCharsMax": 84500
+    }
+  }
+}

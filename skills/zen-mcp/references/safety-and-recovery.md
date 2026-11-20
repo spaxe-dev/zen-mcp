@@ -21,6 +21,9 @@ The server enforces policy, not the model:
 - **Audit log.** Append-only JSONL with digested sensitive arguments.
 - **Fixed operations only.** There is no agent-supplied JavaScript, no script
   body, no dynamic method name, and no attach mode.
+- **Discovery gateway.** `zen_tools_use` delegates to the target tool's own
+  handler, which applies pause, read-only mode, the allowlist and audit under
+  the target's name. Loading or invoking a hidden tool never weakens policy.
 
 Your job is to work inside those controls and report them accurately. Never try
 to route around a block with a different tool, a different URL form, or a

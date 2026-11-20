@@ -99,6 +99,7 @@ Session and template files are written atomically with owner-only permissions. T
 | `auditLog` | `true` | Append tool calls to `audit.jsonl` |
 | `watchMinIntervalSeconds` | `15` | Lower bound for watch polling (1 to 3,600) |
 | `launchArgs` | `[]` | Extra arguments passed when Zen MCP starts Zen |
+| `toolSurface` | `research` | Tools exposed in `tools/list`: `research`, `core` or `full` |
 
 Numeric file values outside their range are clamped when loaded. `config set` rejects them instead, so use it when you want a validation error.
 
@@ -107,6 +108,20 @@ Policy keys are validated by type. `readOnly`, `requireConsent`, `useDefaultProf
 ### Marionette port
 
 Current Zen builds listen on 2828. The launcher passes `-marionette` without a port, so Zen does not follow `marionettePort`; the setting only changes the port the server tries to reach. Leave it at `2828` unless you know your Zen build supports another port. If another process owns 2828, quit that process; changing the setting usually makes the launch fail.
+
+### Tool surface
+
+`toolSurface` chooses how many tool definitions the client pays for at startup:
+
+| Value | Tools | Intended use |
+| --- | --- | --- |
+| `research` | 17 | Default. Orienting, background sources, reads, search, evidence, progress, notification. |
+| `core` | 38 | Adds page interaction, layout, folders, audit, watches and persistence. |
+| `full` | 55 | Every tool, for clients that want the complete list up front. |
+
+Surfaces only change `tools/list`. Every tool stays callable through
+`zen_tools_use`, and `zen_tools_search` returns its schema on demand. An unknown
+value stops startup instead of silently choosing a surface.
 
 ## Environment variables
 
@@ -127,6 +142,7 @@ Environment variables override the file for that process. They are never written
 | `ZEN_MCP_ALLOWED_DOMAINS` | Comma-separated domain allowlist |
 | `ZEN_MCP_AUDIT_LOG` | `1`, `true`, `yes`, or `on` enables the audit log |
 | `ZEN_MCP_WATCH_MIN_INTERVAL_SECONDS` | Lower bound for watch polling |
+| `ZEN_MCP_TOOL_SURFACE` | `research`, `core`, or `full`; controls the tools exposed in `tools/list` |
 | `ZEN_MCP_NO_UPDATE_CHECK` | `1`, `true`, `yes`, or `on` skips the npm release check and the banner notice |
 | `ZEN_MCP_LOG` | `debug`, `info`, `warn`, or `error` |
 | `ZEN_MCP_BRIDGE_SCRIPT` | Override the bundled `bridge.js` path; `doctor` warns when set |
@@ -142,6 +158,7 @@ zen-mcp config set readOnly true
 zen-mcp config set allowedDomains "github.com, docs.example.com"
 zen-mcp config set launchArgs "--width 1600 --height 1000"
 zen-mcp config set auditLog false
+zen-mcp config set toolSurface core
 ```
 
 Accepted values:
@@ -150,6 +167,7 @@ Accepted values:
 - Numbers: whole numbers within the range in the table above.
 - `allowedDomains`: comma-separated hosts. A leading `*.` or `.` is normalized away.
 - `launchArgs`: whitespace-separated arguments.
+- `toolSurface`: `research`, `core` or `full`. An unknown value stops startup.
 - Paths: an empty string clears the value.
 
 Unknown keys are rejected with the list of valid keys.

@@ -226,6 +226,16 @@ With the normal profile, quit Zen completely before the agent launches it. The s
 
 Do not point `profilePath` at your normal profile unless that is the tradeoff you want. The profile lock check makes a conflict fail fast, but it does not make sharing a profile private.
 
+## Tool surfaces and discovery
+
+By default the server exposes a 17-tool **Research** surface: status, spaces, background tabs, reads and search, evidence, progress, events, configuration, notification, and two discovery tools. Set `toolSurface` to `core` (38 tools) or `full` (all 55) when a client needs the whole surface up front.
+
+Capabilities outside the active surface remain available. `zen_tools_search` finds them by keyword, category, or exact name and returns the input schema; `zen_tools_use` invokes one with normal validation, policy, audit, and result shape. `zen_tools_use({ publish: true })` adds a tool to `tools/list` when the client honors tool list changes. The `zen://capabilities` resource lists every tool, and `npm run context:check` enforces the context budget.
+
+```sh
+zen-mcp config set toolSurface full
+```
+
 ## Safety at a glance
 
 | Control | Default | What it does | Limits |
