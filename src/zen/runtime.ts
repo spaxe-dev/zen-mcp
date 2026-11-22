@@ -11,6 +11,7 @@ import {
   type ProgressResult,
 } from "../bridge/host.js";
 import { dataDirPath, type ZenMcpConfig } from "../config.js";
+import { SKILL_INSTALL_COMMAND } from "../onboard/skill-offer.js";
 import type {
   AnswersResult,
   AskResult,
@@ -255,14 +256,25 @@ export class ZenRuntime {
     this.#logger.info(
       `installing ${PACKAGE_NAME}@latest with ${manager} from the browser bar`
     );
-    const code = await runInstaller(command, args, { stdio: "ignore" });
+    // The package manager runs the new version's postinstall. A server owns
+    // stdout for MCP, so never let that nested offer prompt there.
+    process.env.ZEN_MCP_SKILL_DEFER = "1";
+    let code: number;
+    try {
+      code = await runInstaller(command, args, { stdio: "ignore" });
+    } finally {
+      delete process.env.ZEN_MCP_SKILL_DEFER;
+    }
     if (code !== 0) {
       return {
         ok: false,
         message: `${command} ${args.join(" ")} exited with code ${code}.`,
       };
     }
-    return { ok: true };
+    return {
+      ok: true,
+      message: `Update installed. To add the agent skill, run: ${SKILL_INSTALL_COMMAND}`,
+    };
   }
 
   async start(): Promise<void> {

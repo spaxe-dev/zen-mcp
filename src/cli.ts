@@ -21,6 +21,7 @@ import {
   SelectionCancelled,
   type PickerResult,
 } from "./onboard/picker.js";
+import { offerSkillInstall } from "./onboard/skill-offer.js";
 import { createTheme } from "./onboard/theme.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
 import { createLogger } from "./utils/logger.js";
@@ -348,7 +349,15 @@ async function update(options: {
   }
   const { command, args } = updateCommand(manager);
   console.log(`Running: ${command} ${args.join(" ")}`);
-  const code = await runInstaller(command, args);
+  // The package manager runs the new version's postinstall. Suppress that
+  // nested offer; this process asks once the install has finished.
+  process.env.ZEN_MCP_SKILL_DEFER = "1";
+  let code: number;
+  try {
+    code = await runInstaller(command, args);
+  } finally {
+    delete process.env.ZEN_MCP_SKILL_DEFER;
+  }
   if (code !== 0) {
     console.error(`Installer exited with code ${code}.`);
     console.error(`Install manually: ${command} ${args.join(" ")}`);
@@ -359,6 +368,7 @@ async function update(options: {
     "Installed. Restart any MCP client that runs `zen-mcp serve` to load " +
       "the new version."
   );
+  await offerSkillInstall();
 }
 
 async function setup(options: {
@@ -434,6 +444,7 @@ async function setup(options: {
   console.log(
     "Run `zen-mcp onboard` to add Zen MCP to a supported MCP client."
   );
+  await offerSkillInstall();
 }
 
 async function onboard(options: {
@@ -575,6 +586,7 @@ async function onboard(options: {
     );
   }
   if (failed > 0) process.exitCode = 1;
+  await offerSkillInstall();
 }
 
 function configShow(): void {

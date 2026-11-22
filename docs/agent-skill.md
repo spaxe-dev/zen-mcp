@@ -64,6 +64,15 @@ Project installs land in the agent's project skills directory, for example
 `.agents/skills/zen-mcp/` or `.claude/skills/zen-mcp/`. Global installs land
 under your home directory. The CLI can symlink (default) or copy (`--copy`).
 
+### Automatic offer
+
+Since 0.6.1, a fresh `npm install`, `zen-mcp setup`, `zen-mcp onboard`, and a
+successful `zen-mcp update` ask whether to install the skill for you. Answering
+yes runs the same `npx skills add` command shown above; answering no prints it
+for later. CI, other non-interactive sessions and
+`ZEN_MCP_NO_SKILL_PROMPT=1` skip the offer. The npm package still does not
+contain the skill files: the CLI installs them from this GitHub repository.
+
 ### Verified install
 
 Verified with `skills@1.9.0` against both a local checkout and the published
@@ -145,7 +154,7 @@ the skill links to those files by relative path.
 - It assumes Zen MCP tools are exposed under their real names (`zen_status`,
   `zen_read_page`, and so on). A client that renames tools will break the
   references.
-- It is written for Zen MCP 0.6.0. The tool surface can change before 1.0.
+- It is written for Zen MCP 0.6.1. The tool surface can change before 1.0.
 - The evaluation scenarios in `evals/tasks.md` require a live browser, a free
   Marionette port, and a human to approve consent. They are not run in CI.
 - The skill describes the hosted server's behavior, including known limits such

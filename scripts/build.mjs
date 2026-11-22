@@ -27,6 +27,17 @@ await build({
 
 await build({
   ...shared,
+  entryPoints: [join(root, "src/onboard/skill-offer-cli.ts")],
+  outfile: join(dist, "skill-offer.js"),
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  packages: "external",
+  sourcemap: false,
+});
+
+await build({
+  ...shared,
   entryPoints: [join(root, "src/bridge/entry.ts")],
   outfile: join(dist, "bridge.js"),
   platform: "browser",

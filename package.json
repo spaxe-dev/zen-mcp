@@ -1,6 +1,6 @@
 {
   "name": "@spaxe-dev/zen-mcp",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "An agent harness for Zen Browser. Native spaces, background research tabs, and in-browser questions.",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/postinstall.mjs"
   ],
   "publishConfig": {
     "access": "public"
@@ -36,6 +37,7 @@
     "check:skill": "node scripts/check-skill.mjs",
     "context:budget": "node scripts/context-budget.mjs --surface research --surface core --surface full",
     "context:check": "node scripts/context-budget.mjs --surface research --surface core --surface full --check docs/context/budget.json",
+    "postinstall": "node scripts/postinstall.mjs",
     "prepack": "npm run build"
   },
   "keywords": [

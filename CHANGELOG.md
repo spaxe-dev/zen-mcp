@@ -4,6 +4,24 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-22
+
+### Added
+
+- A consumer skill offer on the install and setup paths. A fresh `npm install`,
+  `zen-mcp setup`, `zen-mcp onboard`, and a successful `zen-mcp update` now ask
+  whether to install the `zen-mcp` agent skill. Answering yes runs
+  `npx skills add spaxe-dev/zen-mcp --skill zen-mcp`; answering no prints that
+  command so it can be run later. The browser banner's Update button reports
+  the command in its result instead of prompting in a terminal. CI,
+  non-interactive sessions and `ZEN_MCP_NO_SKILL_PROMPT=1` skip the offer, and
+  a declined or failed skill install never fails the surrounding command.
+
+### Fixed
+
+- The README's test counts now match the current suite: eight skipped unit
+  tests and 61 live integration declarations.
+
 ## [0.6.0] - 2026-11-20
 
 ### Added
@@ -329,6 +347,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.6.1]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.1
 [0.6.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.4.0
