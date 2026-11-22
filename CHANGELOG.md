@@ -4,6 +4,18 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-11-22
+
+### Fixed
+
+- The skill offer now appears during `npm install -g @spaxe-dev/zen-mcp`.
+  npm runs lifecycle scripts without a TTY on stdin/stdout and buffers their
+  output, so the 0.6.1 offer silently skipped itself. The install script now
+  opens the controlling terminal directly (`CONIN$`/`CONOUT$` on Windows,
+  `/dev/tty` on POSIX), asks there, and times out after 30 seconds so an
+  unattended install cannot hang. CI and `ZEN_MCP_NO_SKILL_PROMPT=1` still skip
+  the offer.
+
 ## [0.6.1] - 2026-11-22
 
 ### Added
@@ -347,6 +359,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.6.2]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.2
 [0.6.1]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.1
 [0.6.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.5.0

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 import { describe, it } from "node:test";
+import {
+  offerOnConsole,
+  type OfferConsole,
+} from "../../src/onboard/skill-offer-cli.js";
 import {
   offerSkillInstall,
   SKILL_INSTALL_COMMAND,
@@ -113,5 +118,51 @@ describe("skill install offer", () => {
     assert.equal(await h.offer(), "skipped");
     assert.equal(h.asks(), 1);
     assert.equal(h.installs(), 1);
+  });
+});
+
+function fakeConsole(answer: string) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const written: string[] = [];
+  output.on("data", (chunk) => written.push(String(chunk)));
+  const terminal: OfferConsole = {
+    input,
+    output,
+    close() {
+      input.end();
+      output.end();
+    },
+  };
+  input.write(`${answer}\n`);
+  return { terminal, text: () => written.join("") };
+}
+
+describe("skill install offer on the install-script console", () => {
+  it("asks on the console and installs on yes", async () => {
+    const c = fakeConsole("y");
+    let installs = 0;
+    const result = await offerOnConsole(
+      c.terminal,
+      { install: async () => (installs += 1, 0) },
+      { env: {} }
+    );
+    assert.equal(result, "installed");
+    assert.equal(installs, 1);
+    assert.match(c.text(), /Install the zen-mcp skill/);
+  });
+
+  it("prints the later command on no", async () => {
+    const c = fakeConsole("n");
+    const result = await offerOnConsole(c.terminal, {}, { env: {} });
+    assert.equal(result, "declined");
+    assert.ok(c.text().includes(SKILL_INSTALL_COMMAND));
+  });
+
+  it("skips in CI without asking", async () => {
+    const c = fakeConsole("y");
+    const result = await offerOnConsole(c.terminal, {}, { env: { CI: "1" } });
+    assert.equal(result, "skipped");
+    assert.equal(c.text(), "");
   });
 });

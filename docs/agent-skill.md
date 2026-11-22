@@ -154,7 +154,7 @@ the skill links to those files by relative path.
 - It assumes Zen MCP tools are exposed under their real names (`zen_status`,
   `zen_read_page`, and so on). A client that renames tools will break the
   references.
-- It is written for Zen MCP 0.6.1. The tool surface can change before 1.0.
+- It is written for Zen MCP 0.6.2. The tool surface can change before 1.0.
 - The evaluation scenarios in `evals/tasks.md` require a live browser, a free
   Marionette port, and a human to approve consent. They are not run in CI.
 - The skill describes the hosted server's behavior, including known limits such
