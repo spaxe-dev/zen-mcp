@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, it } from "node:test";
 import {
+  openConsole,
   offerOnConsole,
   type OfferConsole,
 } from "../../src/onboard/skill-offer-cli.js";
 import {
+  installerEnv,
   offerSkillInstall,
   SKILL_INSTALL_COMMAND,
   type SkillOfferDeps,
@@ -20,7 +25,11 @@ function harness(
   let installs = 0;
   const deps: SkillOfferDeps = {
     isInteractive: overrides.isInteractive ?? (() => true),
-    print: overrides.print ?? ((line: string) => printed.push(line)),
+    print:
+      overrides.print ??
+      ((line: string) => {
+        printed.push(line);
+      }),
     ask: async (question) => {
       asks += 1;
       return overrides.ask ? overrides.ask(question) : "n";
@@ -45,7 +54,7 @@ describe("skill install offer", () => {
   it("uses the documented skills command", () => {
     assert.equal(
       SKILL_INSTALL_COMMAND,
-      "npx skills add spaxe-dev/zen-mcp --skill zen-mcp"
+      "npx skills add spaxe-dev/zen-mcp --skill zen-mcp --global --yes"
     );
   });
 
@@ -164,5 +173,60 @@ describe("skill install offer on the install-script console", () => {
     const result = await offerOnConsole(c.terminal, {}, { env: { CI: "1" } });
     assert.equal(result, "skipped");
     assert.equal(c.text(), "");
+  });
+});
+
+describe("installer environment", () => {
+  it("drops npm's global mode and keeps everything else", () => {
+    const clean = installerEnv({
+      PATH: "/bin",
+      npm_config_global: "true",
+      NPM_CONFIG_GLOBAL: "true",
+      npm_config_prefix: "/prefix",
+    });
+    assert.deepEqual(clean, { PATH: "/bin", npm_config_prefix: "/prefix" });
+  });
+});
+
+describe("console handle", () => {
+  function consoleFile() {
+    const dir = mkdtempSync(join(tmpdir(), "zen-console-"));
+    const path = join(dir, "tty");
+    writeFileSync(path, "");
+    return { dir, path };
+  }
+
+  it("closes a real console twice without throwing", () => {
+    const { dir, path } = consoleFile();
+    try {
+      const terminal = openConsole(path);
+      assert.ok(terminal);
+      // Streams close their descriptor on destroy even with autoClose:false,
+      // so a second close previously threw EBADF and failed the npm install.
+      terminal.close();
+      terminal.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("delivers output through the descriptor before closing", async () => {
+    const { dir, path } = consoleFile();
+    try {
+      const terminal = openConsole(path);
+      assert.ok(terminal);
+      const result = await offerOnConsole(
+        terminal,
+        { ask: async () => "n" },
+        { env: {} }
+      );
+      terminal.close();
+      assert.equal(result, "declined");
+      const text = readFileSync(path, "utf8");
+      assert.match(text, /No problem/);
+      assert.ok(text.includes(SKILL_INSTALL_COMMAND));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

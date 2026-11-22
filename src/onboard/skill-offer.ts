@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 
 /** The documented command, shown when the offer is declined or unavailable. */
 export const SKILL_INSTALL_COMMAND =
-  "npx skills add spaxe-dev/zen-mcp --skill zen-mcp";
+  "npx skills add spaxe-dev/zen-mcp --skill zen-mcp --global --yes";
 
 export type SkillOfferResult =
   | "installed"
@@ -14,7 +14,7 @@ export type SkillOfferResult =
 export interface SkillOfferDeps {
   isInteractive: () => boolean;
   ask: (question: string) => Promise<string>;
-  print: (line: string) => void;
+  print: (line: string) => void | Promise<void>;
   install: () => Promise<number>;
 }
 
@@ -44,6 +44,23 @@ async function defaultAsk(question: string): Promise<string> {
   }
 }
 
+/**
+ * npm copies its config into lifecycle scripts, including
+ * npm_config_global=true for `npm install -g`. A nested `npx` that inherits it
+ * skips the temporary install's bin directory when its cache is cold, fails
+ * with `sh: skills: command not found` and exits 127. The installer therefore
+ * runs with that one variable removed; everything else is inherited.
+ */
+export function installerEnv(
+  env: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() !== "npm_config_global") clean[key] = value;
+  }
+  return clean;
+}
+
 /** Runs the documented skills CLI. Arguments are fixed; no agent input is shell-quoted. */
 function defaultInstall(): Promise<number> {
   return new Promise((resolve) => {
@@ -51,8 +68,21 @@ function defaultInstall(): Promise<number> {
     try {
       child = spawn(
         process.platform === "win32" ? "npx.cmd" : "npx",
-        ["-y", "skills", "add", "spaxe-dev/zen-mcp", "--skill", "zen-mcp"],
-        { stdio: "inherit", shell: process.platform === "win32" }
+        [
+          "-y",
+          "skills",
+          "add",
+          "spaxe-dev/zen-mcp",
+          "--skill",
+          "zen-mcp",
+          "--global",
+          "--yes",
+        ],
+        {
+          stdio: "inherit",
+          shell: process.platform === "win32",
+          env: installerEnv(),
+        }
       );
     } catch {
       resolve(1);
@@ -96,7 +126,7 @@ export async function offerSkillInstall(
 
   const later = `Install it later with:\n  ${SKILL_INSTALL_COMMAND}`;
   if (!resolved.isInteractive()) {
-    if (!options.quietWhenNonInteractive) resolved.print(later);
+    if (!options.quietWhenNonInteractive) await resolved.print(later);
     return "skipped";
   }
 
@@ -104,15 +134,15 @@ export async function offerSkillInstall(
     "Install the zen-mcp skill for your agent? [y/N] "
   );
   if (!/^\s*y(es)?\s*$/i.test(answer)) {
-    resolved.print(`No problem. ${later}`);
+    await resolved.print(`No problem. ${later}`);
     return "declined";
   }
 
   const code = await resolved.install();
   if (code !== 0) {
-    resolved.print(`Skill install failed (exit ${code}). ${later}`);
+    await resolved.print(`Skill install failed (exit ${code}). ${later}`);
     return "failed";
   }
-  resolved.print("Skill installed. Restart your agent so it loads the skill.");
+  await resolved.print("Skill installed. Restart your agent so it loads the skill.");
   return "installed";
 }

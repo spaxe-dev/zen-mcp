@@ -42,19 +42,24 @@ or not the skill is installed.
 ## Install
 
 ```sh
-npx skills add spaxe-dev/zen-mcp
+npx skills add spaxe-dev/zen-mcp --skill zen-mcp --global --yes
 ```
 
-The CLI finds `skills/zen-mcp/SKILL.md`, asks which agents to install for, and
-offers a project install (default) or a global one (`-g`). This repository ships
-exactly one skill, so `--skill zen-mcp` is optional but unambiguous:
+`--global` installs at user scope, so the skill is available in every project,
+and `--yes` skips the CLI's own prompts. This is the command the automatic
+offer runs. This repository ships exactly one skill, so `--skill zen-mcp` is
+optional but unambiguous.
+
+Without those flags the CLI asks which agents to install for and offers a
+project install (default) or a global one (`-g`):
 
 ```sh
 npx skills add spaxe-dev/zen-mcp --skill zen-mcp -a claude-code -a opencode
 npx skills add spaxe-dev/zen-mcp --skill zen-mcp -g -a codex
 ```
 
-Non-interactive:
+Non-interactive: `--yes` installs for detected agents, or for all known agents
+when none are detected:
 
 ```sh
 npx skills add spaxe-dev/zen-mcp --skill zen-mcp -a claude-code -y
@@ -68,8 +73,9 @@ under your home directory. The CLI can symlink (default) or copy (`--copy`).
 
 Since 0.6.1, a fresh `npm install`, `zen-mcp setup`, `zen-mcp onboard`, and a
 successful `zen-mcp update` ask whether to install the skill for you. Answering
-yes runs the same `npx skills add` command shown above; answering no prints it
-for later. CI, other non-interactive sessions and
+yes runs the first `npx skills add` command shown above (global scope, no extra
+prompts); answering no prints it for later. CI, other non-interactive sessions
+and
 `ZEN_MCP_NO_SKILL_PROMPT=1` skip the offer. The npm package still does not
 contain the skill files: the CLI installs them from this GitHub repository.
 
@@ -154,7 +160,7 @@ the skill links to those files by relative path.
 - It assumes Zen MCP tools are exposed under their real names (`zen_status`,
   `zen_read_page`, and so on). A client that renames tools will break the
   references.
-- It is written for Zen MCP 0.6.2. The tool surface can change before 1.0.
+- It is written for Zen MCP 0.6.3. The tool surface can change before 1.0.
 - The evaluation scenarios in `evals/tasks.md` require a live browser, a free
   Marionette port, and a human to approve consent. They are not run in CI.
 - The skill describes the hosted server's behavior, including known limits such

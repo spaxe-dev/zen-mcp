@@ -28,7 +28,7 @@ npm test
 ```
 
 Unit tests live in `test/unit/` and run without a browser. Keep them fast and
-deterministic. At the time of writing `npm test` runs 460 tests: 452 pass on
+deterministic. At the time of writing `npm test` runs 488 tests: 480 pass on
 Windows and 8 POSIX-specific tests are skipped there.
 
 ## Live suite

@@ -13,7 +13,7 @@
 
 Zen MCP is an MCP server that lets an AI agent work inside [Zen Browser](https://zen-browser.app) using Zen's own spaces, folders, and tabs. The agent can research in background tabs, read and search pages without switching what you are looking at, ask you a question in a small in-browser card, and show the evidence behind an answer.
 
-Status: **0.6.2, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
+Status: **0.6.3, pre-1.0.** Windows is the only platform with a live-tested Zen launch. The public API, tools, and configuration keys can still change. See [Current maturity](#current-maturity-and-platform-support) and [Known limitations](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/troubleshooting.md#known-limitations).
 
 ## What it does
 
@@ -100,9 +100,13 @@ icon that reopens the offer.
 After a fresh install, after `zen-mcp setup` or `zen-mcp onboard`, and after a
 successful `zen-mcp update`, Zen MCP asks whether you want to install the
 consumer agent skill. Answering yes runs
-`npx skills add spaxe-dev/zen-mcp --skill zen-mcp`; answering no prints that
-command so you can install it later. The offer is skipped in CI and other
-non-interactive sessions; set `ZEN_MCP_NO_SKILL_PROMPT=1` to disable it. The
+`npx skills add spaxe-dev/zen-mcp --skill zen-mcp --global --yes`; answering no
+prints that command so you can install it later. The flags install at user
+scope and skip the skills CLI's own prompts (the offer already asked). During
+npm installs the question is
+asked on the console the install was started from, on Windows and POSIX. The
+offer is skipped in CI and other non-interactive sessions; set
+`ZEN_MCP_NO_SKILL_PROMPT=1` to disable it. The
 browser banner's **Update** button shows the command in its result instead of
 prompting in a terminal.
 
@@ -115,7 +119,7 @@ npx @spaxe-dev/zen-mcp setup
 Each GitHub release also attaches a package tarball and `SHA256SUMS`:
 
 ```sh
-npm install -g ./zen-mcp-0.6.2.tgz
+npm install -g ./zen-mcp-0.6.3.tgz
 zen-mcp setup
 ```
 
@@ -187,7 +191,7 @@ If `zen-mcp` is not on `PATH`, use the absolute path to `dist/cli.js` as `comman
 The repository also ships an agent skill that teaches a connected agent to use these tools well: background research in spaces, source comparisons, evidence checks, tab triage, and cleanup.
 
 ```sh
-npx skills add spaxe-dev/zen-mcp
+npx skills add spaxe-dev/zen-mcp --skill zen-mcp --global --yes
 ```
 
 The skill installs from GitHub, not from the npm package, and needs the [skills CLI](https://skills.sh) (Node.js 22.20 or newer). It is separate from the server: configure Zen MCP first, then install the skill for your agent.

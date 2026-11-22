@@ -4,6 +4,39 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-11-22
+
+### Fixed
+
+- The install-time skill offer now appears on Windows during
+  `npm install -g @spaxe-dev/zen-mcp`. Node cannot open `\\.\CONIN$` or
+  `\\.\CONOUT$` because libuv resolves those names as relative file paths, so
+  the 0.6.2 attempt silently skipped itself. The Windows offer now asks
+  through a short generated cmd script that reads and writes the console the
+  install was started from. The installer runs with captured output that is
+  replayed to that console, because cmd stores raw CR/LF bytes when a nested
+  batch inherits a redirected console handle. The 30-second answer timeout,
+  CI skip, `ZEN_MCP_NO_SKILL_PROMPT=1` and the one-offer-per-process guard are
+  unchanged. POSIX still uses `/dev/tty`.
+- On macOS and Linux, a completed install-time offer crashed the postinstall
+  with `EBADF` and could leave the process alive: closing the terminal streams
+  closed their descriptors first, and an async read stuck on a console that
+  never sent input could not be cancelled by closing it. The offer now reads
+  the terminal synchronously with a nonblocking descriptor, writes straight to
+  it, and closes it best effort, so `npm install` exits 0 after asking,
+  declining or timing out.
+- The skill offer now asks for `--global --yes`. The previous command let the
+  skills CLI prompt for install scope and target agents, which could stall the
+  Windows installer's non-interactive child, and its default project scope
+  pointed at the package directory inside `node_modules`. Global scope installs
+  where the user's agents look, and `--yes` keeps the CLI from asking again.
+- The skill installer now drops `npm_config_global` before spawning `npx`. npm
+  exports that variable into lifecycle scripts during `npm install -g`, and an
+  `npx` that inherits it with a cold cache skips the temporary install's bin
+  directory, fails with `sh: skills: command not found` and reports "Skill
+  install failed (exit 127)". The rest of the environment is inherited
+  unchanged.
+
 ## [0.6.2] - 2026-11-22
 
 ### Fixed
@@ -359,6 +392,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes for 0.1.0 and 0.2.0 are not recorded here. See the release notes on
 GitHub.
 
+[0.6.3]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.3
 [0.6.2]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.2
 [0.6.1]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.1
 [0.6.0]: https://github.com/spaxe-dev/zen-mcp/releases/tag/v0.6.0
