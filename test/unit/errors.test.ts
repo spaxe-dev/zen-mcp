@@ -32,6 +32,9 @@ describe("structured error metadata", () => {
   it("maps policy and browser failures without inventing success", () => {
     assert.equal(errorMetadata("read_only").category, "permission");
     assert.equal(errorMetadata("domain_not_allowed").category, "permission");
+    assert.equal(errorMetadata("policy_stale").category, "permission");
+    assert.equal(errorMetadata("policy_unavailable").category, "permission");
+    assert.equal(errorMetadata("policy_missing").category, "permission");
     assert.equal(errorMetadata("bridge_timeout").category, "browser");
     assert.equal(errorMetadata("target_not_actionable").category, "not_actionable");
     assert.equal(errorMetadata("unsupported_operation").category, "unsupported");

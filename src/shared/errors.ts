@@ -119,11 +119,39 @@ export function errorMetadata(
     case "domain_not_allowed":
     case "paused":
     case "cancelled":
+    case "policy_invalid":
+    case "policy_stale":
+    case "policy_unavailable":
+    case "policy_missing":
+    case "restricted":
+    case "capability_denied":
+    case "mode_denied":
+    case "permanently_denied":
+    case "internal_page":
+    case "site_blocked":
+    case "site_rule_denied":
+    case "site_default_denied":
+    case "unscoped_url":
       return {
         category: "permission",
         retryable: false,
         stateChanged: false,
-        recovery: "Adjust policy or ask the user before retrying.",
+        recovery:
+          "Adjust the Zen MCP policy or ask the user before retrying.",
+      };
+    case "invalid_url":
+      return {
+        category: "invalid_target",
+        retryable: false,
+        stateChanged: false,
+        recovery: "Use an http(s) URL.",
+      };
+    case "unknown_capability":
+      return {
+        category: "internal",
+        retryable: false,
+        stateChanged: false,
+        recovery: "Update Zen MCP or fix the policy registry.",
       };
     case "browser_disconnected":
     case "bridge_unavailable":

@@ -1,4 +1,5 @@
 import type { EvidenceMatchMethod } from "./evidence.js";
+import type { PolicySnapshot } from "./policy.js";
 import type { PageTargetSpec } from "./target.js";
 
 export const BRIDGE_PATH = "/bridge";
@@ -264,6 +265,15 @@ export interface BridgeRequest {
   id: string;
   method: string;
   params?: unknown;
+  /** Revision the server believes is current; the bridge rejects stale work. */
+  policyRevision?: number;
+  /** Canonical policy digest paired with `policyRevision`. */
+  policyDigest?: string;
+}
+
+export interface PolicyUpdateMessage {
+  type: "policy.update";
+  policy: PolicySnapshot;
 }
 
 export interface BridgeResponse {
@@ -291,6 +301,7 @@ export type ServerToBridge =
   | ConsentUiMessage
   | CancelConsentUiMessage
   | BannerUiMessage
+  | PolicyUpdateMessage
   | ShutdownMessage
   | BridgeRequest;
 
@@ -1523,3 +1534,48 @@ export interface BridgeMethodMap {
 }
 
 export type BridgeMethod = keyof BridgeMethodMap;
+
+/**
+ * Every bridge operation the dispatcher accepts, in one runtime list. The
+ * policy registry and the coverage tests enumerate this; the type below makes
+ * a new `BridgeMethodMap` entry fail to compile until it is listed here.
+ */
+export const BRIDGE_METHODS = [
+  "status",
+  "spaces.list",
+  "spaces.create",
+  "spaces.switch",
+  "spaces.delete",
+  "tabs.list",
+  "tabs.open",
+  "tabs.close",
+  "tabs.select",
+  "tabs.pin",
+  "tabs.read",
+  "tabs.click",
+  "tabs.type",
+  "tabs.waitFor",
+  "tabs.evidence",
+  "tabs.evidenceClear",
+  "tabs.findText",
+  "folders.list",
+  "folders.create",
+  "folders.addTabs",
+  "essentials.add",
+  "essentials.remove",
+  "containers.list",
+  "glance.open",
+  "split.open",
+  "split.close",
+  "history.search",
+  "history.recentlyClosed",
+  "bookmarks.search",
+  "clipboard.write",
+] as const satisfies readonly BridgeMethod[];
+
+type MissingBridgeMethod = Exclude<
+  BridgeMethod,
+  (typeof BRIDGE_METHODS)[number]
+>;
+const BRIDGE_METHODS_EXHAUSTIVE: Record<MissingBridgeMethod, never> = {};
+void BRIDGE_METHODS_EXHAUSTIVE;
