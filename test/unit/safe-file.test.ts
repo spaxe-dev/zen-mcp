@@ -60,7 +60,7 @@ describe("bounded file reads", () => {
       try {
         writeFileSync(target, "secret", "utf8");
         symlinkSync(target, link);
-        assert.throws(() => readFileTextBounded(link, 64));
+        assert.throws(() => readFileTextBounded(link, 64), /symbolic link/i);
         assert.equal(readFileSync(target, "utf8"), "secret");
       } finally {
         rmSync(dir, { recursive: true, force: true });

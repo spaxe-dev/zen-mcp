@@ -98,8 +98,13 @@ export function readFileTextBounded(file: string, maxBytes: number): string {
   let fd: number | undefined;
   try {
     const before = lstatSync(file);
-    if (before.isSymbolicLink() || !before.isFile()) {
-      throw new Error(`${file} is not a regular non-link file.`);
+    if (before.isSymbolicLink()) {
+      throw new Error(
+        `${file} is a symbolic link; only regular files may be read.`
+      );
+    }
+    if (!before.isFile()) {
+      throw new Error(`${file} is not a regular file.`);
     }
     const noFollow = constants.O_NOFOLLOW ?? 0;
     fd = openSync(file, constants.O_RDONLY | noFollow);
