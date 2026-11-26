@@ -21,13 +21,18 @@ import {
   type GuardOptions,
 } from "../../src/mcp/guard.js";
 import { hostOf, isUrlAllowed } from "../../src/shared/url-policy.js";
+import { createPolicy } from "../../src/shared/policy.js";
+import {
+  fullPolicySnapshot,
+  legacyPolicySnapshot,
+  snapshotOfPolicy,
+} from "./policy-fixtures.js";
 
 const BASE_TMP = existsSync("D:/tmp") || existsSync("D:\\tmp") ? "D:/tmp" : tmpdir();
 
 function options(overrides: Partial<GuardOptions> = {}): GuardOptions {
   return {
-    readOnly: false,
-    allowedDomains: [],
+    policy: fullPolicySnapshot(),
     auditLog: true,
     dataDir: BASE_TMP,
     ...overrides,
@@ -210,22 +215,33 @@ describe("ToolGuard.check", () => {
 
   after(() => rmSync(tempDir, { recursive: true, force: true }));
 
-  it("blocks mutating tools in read-only mode and names the tool", () => {
-    const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
+  it("blocks legacy read-only restrictions and names the tool", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: legacyPolicySnapshot({ readOnly: true }),
+        dataDir: tempDir,
+      })
+    );
     try {
       guard.check("zen_tabs_open", { urls: ["https://example.com"] });
-      assert.fail("expected read-only rejection");
+      assert.fail("expected a restricted capability");
     } catch (error) {
       assert.equal(error instanceof ToolGuardError, true);
       const guardError = error as ToolGuardError;
-      assert.equal(guardError.code, "read_only");
+      assert.equal(guardError.code, "restricted");
+      assert.equal(guardError.capability, "nav.open");
       assert.match(guardError.message, /zen_tabs_open/);
-      assert.match(guardError.message, /read-only/);
+      assert.match(guardError.message, /permanently restricted/);
     }
   });
 
-  it("allows reads, status and answers in read-only mode", () => {
-    const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
+  it("keeps reads, status and diagnostics available under legacy read-only", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: legacyPolicySnapshot({ readOnly: true }),
+        dataDir: tempDir,
+      })
+    );
     for (const tool of [
       "zen_status",
       "zen_tabs_list",
@@ -235,110 +251,218 @@ describe("ToolGuard.check", () => {
       "zen_containers_list",
       "zen_answers",
       "zen_events",
-      "zen_audit",
+      "zen_audit_tail",
       "zen_watch_list",
     ]) {
       assert.doesNotThrow(() => guard.check(tool), tool);
     }
   });
 
-  it("blocks on-screen cards in read-only mode", () => {
-    const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
-    for (const tool of ["zen_progress", "zen_ask", "zen_notify"]) {
-      assert.throws(
-        () => guard.check(tool),
-        (error: unknown) =>
-          error instanceof ToolGuardError && error.code === "read_only",
-        tool
-      );
-    }
-  });
-
-  it("blocks watch changes in read-only mode", () => {
-    const guard = new ToolGuard(options({ readOnly: true, dataDir: tempDir }));
-    for (const tool of ["zen_watch_add", "zen_watch_remove"]) {
-      assert.throws(
-        () => guard.check(tool),
-        (error: unknown) =>
-          error instanceof ToolGuardError && error.code === "read_only",
-        tool
-      );
-    }
-  });
-
-  it("allows mutations when read-only mode is off", () => {
-    const guard = new ToolGuard(options({ dataDir: tempDir }));
-    assert.doesNotThrow(() => guard.check("zen_tabs_close", { tabIds: ["1"] }));
-  });
-
-  it("rejects URLs outside the allowlist with domain and list in the message", () => {
+  it("blocks on-screen cards and watch changes under legacy read-only", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["github.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ readOnly: true }),
+        dataDir: tempDir,
+      })
+    );
+    for (const tool of [
+      "zen_progress",
+      "zen_ask",
+      "zen_notify",
+      "zen_watch_add",
+      "zen_watch_remove",
+    ]) {
+      assert.throws(
+        () => guard.check(tool),
+        (error: unknown) =>
+          error instanceof ToolGuardError && error.code === "restricted",
+        tool
+      );
+    }
+  });
+
+  it("allows every mapped tool in full mode", () => {
+    const guard = new ToolGuard(options({ dataDir: tempDir }));
+    assert.doesNotThrow(() =>
+      guard.check("zen_tabs_close", { tabIds: ["1"] })
+    );
+    assert.doesNotThrow(() =>
+      guard.check("zen_tabs_open", { urls: ["https://example.com"] })
+    );
+  });
+
+  it("denies capabilities above the mode", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: fullPolicySnapshot({ mode: "normal" }),
+        dataDir: tempDir,
+      })
+    );
+    assert.throws(
+      () => guard.check("zen_history_search", { query: "x" }),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "mode_denied"
+    );
+  });
+
+  it("lets an explicit allow override the mode, but not a site rule", () => {
+    const allowed = new ToolGuard(
+      options({
+        policy: fullPolicySnapshot({
+          mode: "normal",
+          capabilities: { "history.read": "allow" },
+        }),
+        dataDir: tempDir,
+      })
+    );
+    assert.doesNotThrow(() =>
+      allowed.check("zen_history_search", { query: "x" })
+    );
+
+    const siteBlocked = new ToolGuard(
+      options({
+        policy: fullPolicySnapshot({
+          mode: "normal",
+          capabilities: { "history.read": "allow" },
+          websites: {
+            default: "allow",
+            allow: [],
+            block: ["example.com"],
+            rules: [],
+          },
+        }),
+        dataDir: tempDir,
+      })
+    );
+    assert.throws(
+      () =>
+        siteBlocked.check("zen_read_page", undefined, ["https://example.com"]),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "site_blocked"
+    );
+  });
+
+  it("denies unknown tools instead of allowing them", () => {
+    const guard = new ToolGuard(options({ dataDir: tempDir }));
+    assert.throws(
+      () => guard.check("zen_not_a_real_tool"),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "unknown_capability"
+    );
+  });
+
+  it("denies browser tools when the policy is invalid", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: {
+          ...fullPolicySnapshot(),
+          source: "invalid",
+          revision: 0,
+          error: "The policy file is not valid JSON.",
+        },
+        dataDir: tempDir,
+      })
+    );
+    assert.throws(
+      () => guard.check("zen_status"),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "policy_invalid"
+    );
+    assert.doesNotThrow(() => guard.check("zen_config"));
+    assert.doesNotThrow(() => guard.check("zen_audit_tail"));
+  });
+
+  it("rejects URLs outside the allowed website list", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["github.com"] }),
+        dataDir: tempDir,
+      })
     );
     assert.doesNotThrow(() =>
       guard.check("zen_tabs_open", { urls: ["https://api.github.com/x"] })
     );
     try {
       guard.check("zen_tabs_open", { urls: ["https://evil.com/x"] });
-      assert.fail("expected domain rejection");
+      assert.fail("expected a site rejection");
     } catch (error) {
       const guardError = error as ToolGuardError;
-      assert.equal(guardError.code, "domain_not_allowed");
+      assert.equal(guardError.code, "site_default_denied");
       assert.match(guardError.message, /evil\.com/);
-      assert.match(guardError.message, /github\.com/);
       assert.match(guardError.message, /zen_tabs_open/);
+      assert.doesNotMatch(guardError.message, /github\.com/);
     }
   });
 
-  it("checks explicit urls and glance urls", () => {
+  it("checks glance urls and explicit urls", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["example.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["example.com"] }),
+        dataDir: tempDir,
+      })
     );
     assert.throws(
       () => guard.check("zen_glance", { url: "https://evil.com" }),
       (error: unknown) =>
-        error instanceof ToolGuardError && error.code === "domain_not_allowed"
+        error instanceof ToolGuardError &&
+        error.code === "site_default_denied"
     );
     assert.throws(
-      () => guard.check("zen_status", undefined, ["https://evil.com"]),
+      () => guard.check("zen_read_page", undefined, ["https://evil.com"]),
       (error: unknown) =>
-        error instanceof ToolGuardError && error.code === "domain_not_allowed"
+        error instanceof ToolGuardError &&
+        error.code === "site_default_denied"
     );
   });
 
-  it("blocks non-http(s) URLs when an allowlist is set", () => {
+  it("denies non-http(s) URLs, including internal pages", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["example.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["example.com"] }),
+        dataDir: tempDir,
+      })
     );
     assert.throws(
-      () => guard.check("zen_glance", { url: "about:blank" }),
+      () => guard.check("zen_glance", { url: "about:preferences" }),
       (error: unknown) => {
         const guardError = error as ToolGuardError;
         return (
-          guardError.code === "domain_not_allowed" &&
-          /about:/.test(guardError.message) &&
-          /example\.com/.test(guardError.message)
+          guardError.code === "internal_page" &&
+          /internal browser pages/.test(guardError.message)
         );
       }
     );
     assert.throws(
       () => guard.check("zen_glance", { url: "file:///C:/secret" }),
       (error: unknown) =>
-        error instanceof ToolGuardError && error.code === "domain_not_allowed"
+        error instanceof ToolGuardError && error.code === "internal_page"
+    );
+  });
+
+  it("allows about:blank only for navigation", () => {
+    const guard = new ToolGuard(options({ dataDir: tempDir }));
+    assert.doesNotThrow(() =>
+      guard.check("zen_tabs_open", { urls: ["about:blank"] })
+    );
+    assert.throws(
+      () => guard.check("zen_glance", { url: "about:blank" }),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "internal_page"
     );
   });
 
   it("rejects unparseable and empty URLs instead of skipping them", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["example.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["example.com"] }),
+        dataDir: tempDir,
+      })
     );
     for (const invalid of ["not a url", "", "   "]) {
       assert.throws(
         () => guard.check("zen_tabs_open", { urls: [invalid] }),
         (error: unknown) =>
-          error instanceof ToolGuardError &&
-          error.code === "domain_not_allowed" &&
-          /not a valid http\(s\) URL/.test(error.message),
+          error instanceof ToolGuardError && error.code === "internal_page",
         invalid
       );
     }
@@ -346,7 +470,10 @@ describe("ToolGuard.check", () => {
 
   it("checks every URL, not just the first 30", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["example.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["example.com"] }),
+        dataDir: tempDir,
+      })
     );
     const urls = Array.from(
       { length: 40 },
@@ -357,14 +484,17 @@ describe("ToolGuard.check", () => {
       () => guard.check("zen_tabs_open", { urls }),
       (error: unknown) =>
         error instanceof ToolGuardError &&
-        error.code === "domain_not_allowed" &&
+        error.code === "site_default_denied" &&
         /evil\.com/.test(error.message)
     );
   });
 
   it("allows scheme-less URLs on an allowed host", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: ["example.com"], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: ["example.com"] }),
+        dataDir: tempDir,
+      })
     );
     assert.doesNotThrow(() =>
       guard.check("zen_tabs_open", { urls: ["example.com/scheme-less"] })
@@ -373,12 +503,53 @@ describe("ToolGuard.check", () => {
 
   it("fails closed when the allowlist has no usable entries", () => {
     const guard = new ToolGuard(
-      options({ allowedDomains: [""], dataDir: tempDir })
+      options({
+        policy: legacyPolicySnapshot({ allowedDomains: [""] }),
+        dataDir: tempDir,
+      })
     );
     assert.throws(
       () => guard.check("zen_tabs_open", { urls: ["https://example.com"] }),
       (error: unknown) =>
-        error instanceof ToolGuardError && error.code === "domain_not_allowed"
+        error instanceof ToolGuardError &&
+        error.code === "site_default_denied"
+    );
+  });
+
+  it("requires a URL for navigation and evidence", () => {
+    const guard = new ToolGuard(options({ dataDir: tempDir }));
+    assert.throws(
+      () => guard.check("zen_show_evidence", { quote: "x" }),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "unscoped_url"
+    );
+    assert.throws(
+      () => guard.check("zen_tabs_open", { urls: [] }),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "unscoped_url"
+    );
+  });
+
+  it("evaluates conditional window focus", () => {
+    const guard = new ToolGuard(
+      options({
+        policy: snapshotOfPolicy(
+          createPolicy({
+            mode: "normal",
+            now: new Date("2026-01-01T00:00:00.000Z"),
+            restrictions: { "window.focus": "deny" },
+          })
+        ),
+        dataDir: tempDir,
+      })
+    );
+    assert.doesNotThrow(() =>
+      guard.check("zen_tab_select", { tabId: "1" })
+    );
+    assert.throws(
+      () => guard.check("zen_tab_select", { tabId: "1", focusWindow: true }),
+      (error: unknown) =>
+        error instanceof ToolGuardError && error.code === "restricted"
     );
   });
 });

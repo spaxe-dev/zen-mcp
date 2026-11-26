@@ -88,9 +88,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "List active watches with tab, mode, interval, expiry, last error, and hit count.",
   zen_watch_remove: "Stop and remove a watch by id.",
   zen_config:
-    "Show effective policy and storage: read-only, allowlist, audit, data directory, surface, launch settings, pause, and consent. Use it to explain a blocked call; it needs no browser.",
+    "Show effective settings and policy: mode, revision, websites, restrictions, audit and storage. Use it to explain a blocked call.",
   zen_audit_tail:
-    "Show the most recent tool calls from the audit log, including blocked calls. Use it to review what ran or why an action was denied.",
+    "Show recent tool calls from the audit log, including blocked calls, to review what ran or why an action was denied.",
   zen_ask:
     "Show a compact question card in Zen with optional choices and freeform text, and wait up to waitSeconds. Pending or deferred leaves it open for zen_answers. Prefer 2-5 concrete options.",
   zen_answers:
@@ -98,13 +98,13 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   zen_notify:
     "Show a small activity card in Zen. With `space`, it gets a button that takes the user there, which is the handover for a finished background job.",
   zen_session_save:
-    "Snapshot the whole window's spaces, tabs, folders, pinned tabs, and essentials as a named session in the local data directory. Use it before a cleanup or risky restore.",
+    "Snapshot the window's spaces, tabs, folders, pins and essentials as a named session. Use it before a cleanup or risky restore.",
   zen_session_list:
-    "List saved session snapshots with creation time, space, tab, and essential counts.",
+    "List sessions with creation time, space, tab, and essential counts.",
   zen_session_restore:
     "Reopen a saved session: spaces matched by name and reused unless newSpaces, duplicate URLs skipped, tabs opened in the background, folders and pins recreated. Partial failures are warnings; maxTabs defaults to 300.",
   zen_session_delete:
-    "Delete a saved session snapshot. It never closes open tabs.",
+    "Delete a saved session. It never closes open tabs.",
   zen_space_templates:
     "List built-in and user space templates, or pass a name for one template's folders and URLs.",
   zen_template_apply:

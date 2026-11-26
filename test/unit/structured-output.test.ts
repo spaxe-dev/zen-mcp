@@ -9,6 +9,10 @@ import { DEFAULT_CONFIG, type ZenMcpConfig } from "../../src/config.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../../src/mcp/output-schemas.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
+import {
+  fullPolicySnapshot,
+  legacyPolicySnapshot,
+} from "./policy-fixtures.js";
 
 const TOOL_COUNT = 55;
 const NO_OUTPUT_SCHEMA = new Set(["zen_tools_use"]);
@@ -37,7 +41,14 @@ async function createHarness(
     ...overrides,
   };
   const runtime = new ZenRuntime({ config });
-  const server = createZenMcpServer(runtime, config);
+  const policy =
+    overrides.readOnly || (overrides.allowedDomains?.length ?? 0) > 0
+      ? legacyPolicySnapshot({
+          readOnly: overrides.readOnly,
+          allowedDomains: overrides.allowedDomains,
+        })
+      : fullPolicySnapshot();
+  const server = createZenMcpServer(runtime, config, policy);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new Client({
@@ -351,6 +362,86 @@ describe("structured tool results", () => {
     }
   });
 
+  it("redacts absolute storage paths in agent-facing output", async () => {
+    const harness = await createHarness();
+    try {
+      const fakeProfile =
+        "C:\\Users\\example\\AppData\\Roaming\\zen\\Profiles\\agent";
+      const session = {
+        ownsBrowser: true,
+        browserPid: 4242,
+        profile: fakeProfile,
+        launchedAt: 1,
+        lockedDown: true,
+        paused: false,
+        consent: "granted" as const,
+      };
+      (harness.runtime as unknown as {
+        sessionInfo: () => typeof session;
+        status: () => Promise<Record<string, unknown>>;
+      }).sessionInfo = () => session;
+      (harness.runtime as unknown as {
+        status: () => Promise<Record<string, unknown>>;
+      }).status = async () => ({
+        appName: "Zen",
+        appVersion: "1.0",
+        platform: "win32",
+        profile: fakeProfile,
+        windowId: "win-1",
+        focused: true,
+        workspacesEnabled: false,
+        activeSpaceId: null,
+        activeTab: null,
+        spaces: [],
+        tabCount: 0,
+        folderCount: 0,
+      });
+
+      const config = structuredOf(await callTool(harness.client, "zen_config"));
+      assert.equal(config.dataDir, "<data>");
+      assert.equal(config.auditPath, "<data>/audit.jsonl");
+      assert.equal(config.profilePath, "<profile>");
+      const policy = config.policy as Record<string, unknown>;
+      assert.equal(policy.path, "<config>/policy.json");
+      assert.equal(policy.source, "file");
+      assert.equal(policy.mode, "full");
+      assert.equal(policy.revision, 1);
+      assert.equal(policy.websites, "default allow; 0 allowed, 0 blocked, 0 rules");
+      assert.deepEqual(policy.restrictions, []);
+      assert.equal(
+        Object.hasOwn(policy, "allowDomains"),
+        false,
+        "the policy summary never exposes host lists"
+      );
+      assert.equal((config.session as Record<string, unknown>).profile, "<profile>");
+
+      const status = structuredOf(await callTool(harness.client, "zen_status"));
+      assert.equal(status.profile, "<profile>");
+
+      const tail = structuredOf(
+        await callTool(harness.client, "zen_audit_tail")
+      );
+      assert.equal(tail.path, "<data>/audit.jsonl");
+
+      const resource = await harness.client.readResource({ uri: "zen://status" });
+      const body = JSON.parse(
+        String((resource.contents[0] as { text?: string }).text ?? "{}")
+      ) as Record<string, unknown>;
+      assert.equal(body.profile, "<profile>");
+
+      for (const payload of [config, status, tail, body]) {
+        assert.equal(
+          JSON.stringify(payload).includes(fakeProfile),
+          false,
+          "the real profile path must never reach agent-facing output"
+        );
+        assert.doesNotMatch(JSON.stringify(payload), /AppData/);
+      }
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("returns policy errors without structuredContent", async () => {
     const harness = await createHarness({ readOnly: true });
     try {
@@ -359,7 +450,7 @@ describe("structured tool results", () => {
       });
       assert.equal(result.isError, true);
       assert.equal(result.structuredContent, undefined);
-      assert.match(textOf(result), /read-only mode/);
+      assert.match(textOf(result), /permanently restricted/);
     } finally {
       await harness.close();
     }

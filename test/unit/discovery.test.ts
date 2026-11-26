@@ -9,6 +9,10 @@ import { DEFAULT_CONFIG, type ZenMcpConfig } from "../../src/config.js";
 import { toolsForSurface } from "../../src/mcp/catalog.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
+import {
+  fullPolicySnapshot,
+  legacyPolicySnapshot,
+} from "./policy-fixtures.js";
 
 interface Harness {
   client: Client;
@@ -25,7 +29,14 @@ async function createHarness(overrides: Partial<ZenMcpConfig> = {}): Promise<Har
     ...overrides,
   };
   const runtime = new ZenRuntime({ config });
-  const server = createZenMcpServer(runtime, config);
+  const policy =
+    overrides.readOnly || (overrides.allowedDomains?.length ?? 0) > 0
+      ? legacyPolicySnapshot({
+          readOnly: overrides.readOnly,
+          allowedDomains: overrides.allowedDomains,
+        })
+      : fullPolicySnapshot();
+  const server = createZenMcpServer(runtime, config, policy);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "zen-mcp-discovery-test", version: "0.0.0" });
   await server.connect(serverTransport);
@@ -127,7 +138,7 @@ describe("discovery gateway", () => {
         arguments: { urls: ["https://example.com"] },
       });
       assert.equal(blocked.isError, true);
-      assert.match(textOf(blocked), /\(read_only\)/);
+      assert.match(textOf(blocked), /\(restricted\)/);
 
       const allowed = await call(harness.client, "zen_tools_use", {
         tool: "zen_tabs_audit",
@@ -147,7 +158,7 @@ describe("discovery gateway", () => {
         arguments: { urls: ["https://not-example.test/page"] },
       });
       assert.equal(blocked.isError, true);
-      assert.match(textOf(blocked), /\(domain_not_allowed\)/);
+      assert.match(textOf(blocked), /\(site_default_denied\)/);
     } finally {
       await harness.close();
     }

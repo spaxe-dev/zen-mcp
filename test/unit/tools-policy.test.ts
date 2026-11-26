@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../../src/config.js";
 import { MUTATING_TOOLS } from "../../src/mcp/guard.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
+import { fullPolicySnapshot } from "./policy-fixtures.js";
 
 /**
  * Tools that may implicitly launch Zen when autoLaunch is on. They do not
@@ -44,7 +45,7 @@ async function registeredTools() {
     toolSurface: "full" as const,
   };
   const runtime = new ZenRuntime({ config });
-  const server = createZenMcpServer(runtime, config);
+  const server = createZenMcpServer(runtime, config, fullPolicySnapshot());
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new Client({

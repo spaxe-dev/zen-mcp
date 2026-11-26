@@ -12,28 +12,42 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { normalizeWebUrl } from "../shared/url-policy.js";
 import {
-  isUrlAllowed,
-  normalizeDomainList,
-  normalizeWebUrl,
-} from "../shared/url-policy.js";
+  capabilitiesForTool,
+  evaluate,
+  type PolicyAuditFields,
+  type PolicyDenyCode,
+  type PolicySnapshot,
+} from "../shared/policy.js";
 import {
   PRIVATE_FILE_MODE,
   ensurePrivateDir,
 } from "../utils/safe-file.js";
 
-export type ToolGuardErrorCode =
-  | "read_only"
-  | "domain_not_allowed"
-  | "invalid_args";
+export type ToolGuardErrorCode = PolicyDenyCode | "invalid_args";
 
 export class ToolGuardError extends Error {
   readonly code: ToolGuardErrorCode;
+  readonly capability?: string;
+  readonly mode?: PolicyAuditFields["mode"];
+  readonly policyRevision?: number;
+  readonly policySource?: PolicyAuditFields["policySource"];
 
-  constructor(code: ToolGuardErrorCode, message: string) {
+  constructor(
+    code: ToolGuardErrorCode,
+    message: string,
+    policy?: PolicyAuditFields
+  ) {
     super(message);
     this.name = "ToolGuardError";
     this.code = code;
+    if (policy) {
+      this.capability = policy.capability;
+      this.mode = policy.mode;
+      this.policyRevision = policy.policyRevision;
+      this.policySource = policy.policySource;
+    }
   }
 }
 
@@ -102,6 +116,11 @@ export interface AuditRecord extends AuditOutcomeFields {
   args?: unknown;
   error?: { code?: string; message: string };
   urls?: string[];
+  /** Primary capability for the call, when the tool is in the registry. */
+  capability?: string;
+  mode?: PolicyAuditFields["mode"];
+  policyRevision?: number;
+  policySource?: PolicyAuditFields["policySource"];
 }
 
 /**
@@ -160,8 +179,7 @@ export function auditOutcomeForResult(
 }
 
 export interface GuardOptions {
-  readOnly: boolean;
-  allowedDomains: string[];
+  policy: PolicySnapshot;
   auditLog: boolean;
   dataDir: string;
 }
@@ -409,67 +427,72 @@ export class ToolGuard {
   private warnedWriteFailure = false;
 
   constructor(options: GuardOptions) {
-    this.options = {
-      ...options,
-      allowedDomains: [...(options.allowedDomains ?? [])],
-    };
+    this.options = { ...options };
     this.auditPath = auditFilePath(options.dataDir);
   }
 
-  /** Throws when read-only or a URL is outside the allowlist. */
+  get policySnapshot(): PolicySnapshot {
+    return this.options.policy;
+  }
+
+  /** Applies a reloaded policy to subsequent tool calls. */
+  setPolicy(snapshot: PolicySnapshot): void {
+    this.options.policy = snapshot;
+  }
+
+  /**
+   * Throws when the capability policy denies the call. Every tool must be in
+   * the registry; an unmapped tool is denied rather than silently allowed.
+   */
   check(
     tool: string,
     args?: Record<string, unknown>,
     urls?: string[]
-  ): void {
-    if (this.options.readOnly && MUTATING_TOOLS.has(tool)) {
+  ): PolicyAuditFields {
+    const capabilities = capabilitiesForTool(tool, args);
+    if (capabilities.length === 0) {
+      const policy = this.#auditFields(tool, args);
       throw new ToolGuardError(
-        "read_only",
-        `Tool "${tool}" changes browser or server state and is disabled in ` +
-          "read-only mode. " +
-          `Set readOnly to false to allow it.`
+        "unknown_capability",
+        `Tool "${tool}" has no capability in the Zen MCP policy registry, so ` +
+          "it is denied. This is a server bug; update Zen MCP.",
+        policy
       );
     }
-
-    const allowedDomains = this.options.allowedDomains;
-    if (allowedDomains.length === 0) {
-      return;
-    }
-
-    const list = normalizeDomainList(allowedDomains).join(", ") || "(none)";
     const candidates = urls ?? extractToolUrls(tool, args);
-    for (const candidate of candidates) {
-      const raw = String(candidate ?? "").trim();
-      const normalized = normalizeWebUrl(raw);
-      if (!normalized) {
-        let scheme = "";
-        try {
-          scheme = new URL(raw).protocol;
-        } catch {
-          scheme = "";
-        }
-        if (scheme) {
-          throw new ToolGuardError(
-            "domain_not_allowed",
-            `Blocked by domain allowlist: "${raw}" uses the "${scheme}" ` +
-              `scheme, which is not http(s). Allowed domains: ${list}.`
-          );
-        }
-        throw new ToolGuardError(
-          "domain_not_allowed",
-          `Blocked by domain allowlist: "${raw}" is not a valid http(s) URL ` +
-            `for "${tool}". Allowed domains: ${list}.`
-        );
-      }
-      if (isUrlAllowed(normalized.href, allowedDomains)) {
+    const fields = this.#auditFields(tool, args);
+    for (const capability of capabilities) {
+      const decision = evaluate(this.options.policy, {
+        capability,
+        urls: candidates,
+      });
+      if (decision.allowed) {
         continue;
       }
+      const detail =
+        decision.site?.reason ??
+        decision.reason ??
+        `Capability "${capability}" is denied.`;
       throw new ToolGuardError(
-        "domain_not_allowed",
-        `Blocked by domain allowlist: domain "${normalized.hostname}" is not ` +
-          `allowed for "${tool}". Allowed domains: ${list}.`
+        decision.site?.code ?? decision.code ?? "capability_denied",
+        `Blocked by Zen MCP policy (${decision.mode} mode) for "${tool}": ${detail}`,
+        fields
       );
     }
+    return fields;
+  }
+
+  #auditFields(
+    tool: string,
+    args?: Record<string, unknown>
+  ): PolicyAuditFields {
+    const capability = capabilitiesForTool(tool, args)[0];
+    return {
+      ...(capability ? { capability } : {}),
+      mode: this.options.policy.policy.mode,
+      policyRevision: this.options.policy.revision,
+      policySource: this.options.policy.source,
+    };
   }
 
   /**

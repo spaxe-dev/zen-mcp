@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,11 +13,16 @@ import {
 import { DEFAULT_CONFIG, type ZenMcpConfig } from "../../src/config.js";
 import { createZenMcpServer } from "../../src/mcp/server.js";
 import { ZenRuntime } from "../../src/zen/runtime.js";
+import {
+  fullPolicySnapshot,
+  legacyPolicySnapshot,
+} from "./policy-fixtures.js";
 
 interface Harness {
   client: Client;
   server: McpServer;
   runtime: ZenRuntime;
+  dataDir: string;
   close: () => Promise<void>;
 }
 
@@ -34,7 +39,14 @@ async function createHarness(
     ...overrides,
   };
   const runtime = new ZenRuntime({ config });
-  const server = createZenMcpServer(runtime, config);
+  const policy =
+    overrides.readOnly || (overrides.allowedDomains?.length ?? 0) > 0
+      ? legacyPolicySnapshot({
+          readOnly: overrides.readOnly,
+          allowedDomains: overrides.allowedDomains,
+        })
+      : fullPolicySnapshot();
+  const server = createZenMcpServer(runtime, config, policy);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new Client({
@@ -47,6 +59,7 @@ async function createHarness(
     client,
     server,
     runtime,
+    dataDir,
     close: async () => {
       await client.close().catch(() => undefined);
       await server.close().catch(() => undefined);
@@ -345,7 +358,7 @@ describe("client logging", () => {
 
       assert.ok(logs.length >= 1, "expected a logging notification");
       const data = logs.map((entry) => String(entry.data)).join("\n");
-      assert.match(data, /zen_space_create \(read_only\)/);
+      assert.match(data, /zen_space_create \(restricted\)/);
       assert.doesNotMatch(data, /do-not-log-this/);
     } finally {
       await harness.close();
@@ -425,6 +438,94 @@ describe("resources", () => {
       await settle();
 
       assert.ok(changes >= 1, "expected a resources/list_changed notification");
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe("schema rejection audit", () => {
+  function auditLines(dataDir: string): Array<Record<string, unknown>> {
+    const text = readFileSync(join(dataDir, "audit.jsonl"), "utf8").trim();
+    return text
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it("audits a schema-invalid call with invalid_args and redacted arguments", async () => {
+    const harness = await createHarness({ auditLog: true });
+    try {
+      const result = await callTool(harness.client, "zen_type", {
+        tabId: 123,
+        text: "do-not-store-this-typed-text",
+      });
+
+      assert.equal(result.isError, true);
+      const payload = JSON.parse(textOf(result)) as Record<string, unknown>;
+      assert.equal(payload.code, "invalid_args");
+
+      const lines = auditLines(harness.dataDir);
+      assert.equal(lines.length, 1);
+      const record = lines[0]!;
+      assert.equal(record.tool, "zen_type");
+      assert.equal(record.ok, false);
+      assert.equal(record.executed, false);
+      assert.equal((record.error as { code?: string }).code, "invalid_args");
+      assert.equal(record.capability, "page.type");
+      assert.equal(record.mode, "full");
+      assert.equal(record.policyRevision, 1);
+      assert.equal(record.policySource, "file");
+      const args = record.args as Record<string, unknown>;
+      assert.equal(args.tabId, 123);
+      assert.match(String(args.text), /^<redacted /);
+      assert.doesNotMatch(
+        JSON.stringify(record),
+        /do-not-store-this-typed-text/
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("audits schema-invalid arguments passed through zen_tools_use", async () => {
+    const harness = await createHarness({ auditLog: true });
+    try {
+      const result = await callTool(harness.client, "zen_tools_use", {
+        tool: "zen_type",
+        arguments: { tabId: 456, text: "hidden-secret-text" },
+      });
+
+      assert.equal(result.isError, true);
+      const lines = auditLines(harness.dataDir);
+      const invalid = lines.find(
+        (line) => line.tool === "zen_type" && line.executed === false
+      );
+      assert.ok(invalid, "expected an invalid_args audit line for zen_type");
+      assert.equal((invalid.error as { code?: string }).code, "invalid_args");
+      assert.doesNotMatch(JSON.stringify(invalid), /hidden-secret-text/);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("does not add an invalid_args record for a valid call", async () => {
+    const harness = await createHarness({ auditLog: true });
+    try {
+      const result = await callTool(harness.client, "zen_audit_tail", {
+        limit: 1,
+      });
+      assert.equal(result.isError, undefined);
+
+      const lines = auditLines(harness.dataDir);
+      assert.equal(lines.length, 1);
+      assert.equal(lines[0]!.tool, "zen_audit_tail");
+      assert.equal(lines[0]!.executed, true);
+      assert.equal(lines[0]!.ok, true);
+      assert.equal(lines[0]!.capability, "audit.read");
+      assert.equal(lines[0]!.mode, "full");
+      assert.equal(lines[0]!.policyRevision, 1);
+      assert.equal(lines[0]!.policySource, "file");
     } finally {
       await harness.close();
     }

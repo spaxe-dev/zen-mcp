@@ -964,6 +964,16 @@ export const TOOL_OUTPUT_SCHEMAS = {
     profileMode: z.enum(["custom", "default", "dedicated"]),
     profilePath: z.string().nullable(),
     requireConsent: z.boolean(),
+    policy: z.object({
+      source: z.enum(["file", "legacy", "default", "invalid"]),
+      mode: z.enum(["restricted", "normal", "permissive", "full"]),
+      revision: z.number().int().min(0),
+      path: z.string(),
+      websites: z.string(),
+      restrictions: z.array(z.string()),
+      error: z.string().optional(),
+      warnings: z.array(z.string()).optional(),
+    }),
     session: sessionInfoSchema,
     ownership: z.string(),
     autoLaunch: z.boolean(),
@@ -997,6 +1007,12 @@ export const TOOL_OUTPUT_SCHEMAS = {
           })
           .optional(),
         urls: z.array(z.string()).optional(),
+        capability: z.string().optional(),
+        mode: z.enum(["restricted", "normal", "permissive", "full"]).optional(),
+        policyRevision: z.number().optional(),
+        policySource: z
+          .enum(["file", "legacy", "default", "invalid"])
+          .optional(),
       })
     ),
   },
