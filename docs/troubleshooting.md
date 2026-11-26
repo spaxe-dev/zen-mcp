@@ -106,8 +106,8 @@ The owned browser disconnected. Because the Marionette listener stays shut, this
 **The corner cards do not appear**
 Only browser windows get the bridge. New windows are attached automatically when `autoAttachWindows` is on; a tool call also injects into a window that does not have it yet. If cards still do not show, run `zen-mcp doctor` and check the bridge line.
 
-**A tool is blocked with `read_only` or `domain_not_allowed`**
-Run `zen_config` to see the effective policy, then `zen_audit_tail` to see the blocked call. Change the config file or an environment variable and restart the server.
+**A tool is blocked with `restricted`, `mode_denied`, `site_blocked` or `policy_invalid`**
+Run `zen_config` for the effective policy summary and `zen_audit_tail` for the blocked call, then `zen-mcp policy show` for the file and source. Use `zen-mcp policy mode` or `policy set` to change it, fix an invalid file, or remove it and run `zen-mcp policy init`. A missing file means `restricted`, not `normal`. Legacy `readOnly` or `allowedDomains` errors (`read_only`, `domain_not_allowed`) still come from the runtime compatibility path; migrate with `zen-mcp policy init`.
 
 **An MCP resource returns `{ "error": ... }`**
 Resources return errors as JSON instead of failing the request. The message describes the bridge or consent failure. Browser-backed resources still go through consent and Pause, so check for a pending approval card or a paused session. `zen://questions` is server-side and stays readable while paused.

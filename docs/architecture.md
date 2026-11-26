@@ -80,4 +80,4 @@ The trust model is described in [security.md](security.md). The short version:
 - The model can send only tool names and structured arguments. Every browser operation is fixed server code.
 - The bridge authenticates both sides over loopback and never listens for inbound connections.
 - Consent and Pause are enforced at the bridge request boundary, not only in the MCP tool layer.
-- Read-only mode, the domain allowlist, and the audit log are enforced by the MCP guard. Resource reads bypass that guard by design.
+- The capability policy is evaluated by the MCP guard from a strict `policy.json`; deny wins, permanent denies cannot be granted, and the legacy read-only flag and domain allowlist remain runtime checks. The audit log records each decision, and resource reads bypass the tool guard by design.

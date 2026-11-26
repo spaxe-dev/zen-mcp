@@ -43,7 +43,9 @@ The bridge is injected into each normal browser window at runtime. It connects o
 
 Both sides share a 256-bit key generated for the server session and passed into chrome only during injection. On every connection, including a reconnect after the socket drops, the server sends a fresh 32-byte nonce, the bridge answers with `HMAC-SHA256(key, "zen-mcp-client-auth-v1:" + nonce)`, and the server verifies that proof with `timingSafeEqual`. The server then sends its own proof over a differently labelled message, so a proof made for one direction cannot be replayed as the other. The handshake must finish within 10 seconds and the protocol and bridge versions must match. Non-loopback connections are rejected.
 
-The bridge exposes a fixed method map. It does not accept scripts from the agent, and it renders its cards in a shadow root in browser chrome, not in page content.
+The key stays inside the bridge closure and is never placed on `window.__zenMcpBridge`. That global exposes only `version`, a non-secret SHA-256-derived `tokenId`, `windowId`, and the `isConnected`, `reconnect` and `destroy` callbacks. The server uses `tokenId` to recognise a bridge left by an earlier session and replace it; reconnects within the same session keep using the closure key, so the handshake is unchanged.
+
+The bridge exposes a fixed method map. Dispatch checks that the requested name is an own property of that map, so inherited names such as `constructor`, `toString` or `__proto__` are rejected as unknown methods. The bridge does not accept scripts from the agent, and it renders its cards in a shadow root in browser chrome, not in page content.
 
 ### Consent
 
@@ -57,9 +59,34 @@ The banner in Zen has a Pause button. Pausing rejects pending bridge requests, h
 
 A command that is already executing in Zen when Pause is pressed may still finish in the browser. The server drops its result and rejects later requests. Pause is held in memory, is not persisted, and does not remove evidence overlays that are already visible.
 
-`readOnly` blocks the complete mutating tool set: `zen_launch` and 31 other tools covering spaces, tabs, folders, pins, essentials, split view, Glance, page clicks and typing, clipboard writes, watches, sessions, templates, tab grouping, evidence operations, and the on-screen progress, question, and notification cards. Reads, lists, status, events, collected answers, and the audit log keep working. A read-only server also refuses to auto-launch Zen, so it never starts a process or creates a profile.
+`readOnly` blocks the complete mutating tool set: `zen_launch` and 31 other tools covering spaces, tabs, folders, pins, essentials, split view, Glance, page clicks and typing, clipboard writes, watches, sessions, templates, tab grouping, evidence operations, and the on-screen progress, question, and notification cards. Reads, lists, status, events, collected answers, and the audit log keep working. A read-only server also refuses to auto-launch Zen, so it never starts a process or creates a profile. When no `policy.json` exists, `readOnly` is translated in memory to deny-only capability restrictions, so the tool set is unchanged.
 
 Read-only mode is not a confidentiality boundary. Session and template listings still return stored URLs, and page reads still return page text. Use Pause when the user wants to stop browser access entirely.
+
+### Capability policy
+
+`policy.json`, beside `config.json`, is the authoritative tool policy. A missing file never widens access: the server runs in `restricted` mode from memory and warns, and `zen-mcp policy init` creates the file explicitly. An invalid file fails closed: every browser capability is denied and only `diagnostics.read`, `audit.read`, `events.read` and `tools.discover` remain available so the agent can report the problem. No startup path writes or rewrites the file.
+
+The four modes are cumulative:
+
+| Mode | What it allows by default |
+| --- | --- |
+| `restricted` | Status, events, tool discovery, config and audit. No browser launch or page access. |
+| `normal` | Reads, navigation, spaces, folders, tabs, pins, tab close, page clicks and typing, layout, watches, session and template reads, and questions. No evidence display, history, bookmarks, clipboard writes, space delete, session or template writes, or downloads. |
+| `permissive` | Adds evidence display, space delete, history, bookmarks, clipboard writes, and session and template writes. |
+| `full` | Everything that is not permanently denied. |
+
+With permanent denies excluded, the current effective capability counts are 5 in `restricted`, 34 in `normal`, 42 in `permissive` and 42 in `full`.
+
+Evaluation is deterministic and follows one order: an invalid policy, an unknown capability, a permanent deny, a permanent restriction, an explicit deny, an explicit allow or the mode, then website rules. A later rule never rescues an earlier deny. Permanent denies cannot be allowed by any mode, override or website rule: they cover downloads, internal privileged pages, cookies, saved passwords, settings, extensions, browsing data, the profile filesystem, DevTools, uploads, software installation and screenshots.
+
+Website rules use the same canonical host matcher as the runtime allowlist. A bare host matches itself and its subdomains; `*.example.com` matches subdomains only. A block entry overrides an allow entry and a rule allow, a rule deny overrides a rule allow, and a non-empty `websites.allow` with `default: "deny"` rejects every other host. Non-`http(s)` URLs are denied; `about:blank` is the only exception, and only for navigation.
+
+`zen-mcp policy init`, `policy show`, `policy set <capability> allow|deny` and `policy mode <mode>` are the writers. They share strict schema validation, revision checks and the atomic owner-only writer. MCP agents have no tool or bridge operation that writes policy, and `zen_config` reports only the source, mode, revision, website summary and restricted capability names with a `<config>/policy.json` placeholder.
+
+Migration is explicit. `policy init` reads the current `config.json` once: a default config becomes `restricted`; `readOnly: true` becomes `permissive` plus a deny restriction on every tool that read-only blocked; a non-empty `allowedDomains` becomes `permissive` plus a website default deny and the normalized allow list. A migrated configuration never gains a capability it did not already have. A valid `policy.json` is authoritative for tools, but the legacy `readOnly` and `allowedDomains` runtime checks remain in place as defense in depth until they are removed from `config.json`; the server warns about this.
+
+Phase 1 evaluates at the MCP tool boundary. Calls identified only by `tabId` (reads, clicks, typing, evidence), tab and history/bookmark listings, and watch polling are not website-filtered by `policy.json` yet; the existing runtime allowlist still enforces `allowedDomains` for those paths. Browser-side policy enforcement is Phase 2.
 
 ### URL policy
 
@@ -110,11 +137,15 @@ Private windows are skipped during bridge injection, and an existing bridge foun
 
 The default is a dedicated agent profile under the Zen MCP data directory. The normal profile is opt-in with `zen-mcp setup --use-default-profile` or `useDefaultProfile`, and it lets the agent read pages where the user is signed in. Before spawning, the server checks the profile lock and fails early if another Zen owns it.
 
+Agent-facing tool and resource output never carries an absolute storage location. `zen_status`, `zen_launch`, `zen_config`, `zen_audit_tail` and `zen://status` return `<profile>`, `<data>` and `<data>/audit.jsonl` placeholders instead of the profile, data directory and audit log paths. The real paths stay available to the operator in `zen-mcp status` and `zen-mcp doctor`; a future explicitly controlled diagnostics capability can expose them to the agent on request.
+
 ### Audit log and persistence
 
 The audit log is `audit.jsonl` in the data directory. It records one JSON line per tool call, including blocked calls, with outcome and duration. Resource reads are recorded as `resource:<uri>` entries with no arguments.
 
-The log separates execution from result. `executed` is `true` when the handler returned a result; policy blocks, Pause, cancellation, and thrown errors record `executed: false` and `ok: false`. `ok` reports whether the tool's structured result succeeded, so a returned result with `ok: false` is logged as `ok: false, executed: true` without changing the tool response. For `zen_show_evidence_batch`, `ok` reflects citation verification rather than execution: a batch with any failed citation is not logged as a success. Batch entries also carry `citationsVerified` and `citationsFailed`, plus `outcome` (`success` when the batch is ok and no citation failed, `partial` when some citations verified, `failed` when none verified). These fields hold counts and status only, never quote text or page content. Records written by older versions may omit `executed` and the citation fields.
+Calls rejected by input schema validation are audited too. A direct call and a call routed through `zen_tools_use` both write an `invalid_args` entry with `ok: false, executed: false` and return a structured `invalid_args` error. The audit line stores the summarized arguments, so sensitive fields such as page text follow the same redaction as any other call and are not written in clear text. The error message names the validation failure without echoing the received values.
+
+The log separates execution from result. `executed` is `true` when the handler returned a result; policy blocks, Pause, cancellation, and thrown errors record `executed: false` and `ok: false`. `ok` reports whether the tool's structured result succeeded, so a returned result with `ok: false` is logged as `ok: false, executed: true` without changing the tool response. Records from the capability policy also carry `capability`, `mode`, `policyRevision` and `policySource` (`file`, `legacy`, `default` or `invalid`), so a block can be traced to the rule set that produced it. These fields never include website lists, URLs, quotes or page content. For `zen_show_evidence_batch`, `ok` reflects citation verification rather than execution: a batch with any failed citation is not logged as a success. Batch entries also carry `citationsVerified` and `citationsFailed`, plus `outcome` (`success` when the batch is ok and no citation failed, `partial` when some citations verified, `failed` when none verified). These fields hold counts and status only, never quote text or page content. Records written by older versions may omit `executed`, the citation fields and the policy fields.
 
 Argument summaries are bounded by depth (3) and array length (20). URLs keep only scheme, host, and path; queries, fragments, and credentials are removed. Long strings and sensitive arguments such as quotes, questions, answers, queries, and page text become a length and SHA-256 digest. If the summarized argument JSON is still larger than 2,048 characters, the log stores `{ truncated, size, preview }`; the preview can contain up to about 1,950 characters of the already summarized JSON. Audit redaction reduces exposure but is not a guarantee that no argument text is ever stored.
 
@@ -124,7 +155,7 @@ Sessions and templates are written atomically with owner-only permissions. The d
 
 ### Resources
 
-MCP resources are not tool calls. They bypass the MCP guard, so they are not filtered by `readOnly` or `allowedDomains`. Each read is written to the audit log as `resource:<uri>` without arguments. Resources backed by live browser state still go through the bridge, so consent and Pause apply. `zen://questions` reports server-side state and remains readable while paused. Errors are returned as a JSON payload with an `error` string instead of failing the resource request.
+MCP resources are not tool calls. They bypass the MCP guard, so they are not filtered by the capability policy, `readOnly` or `allowedDomains`. Each read is written to the audit log as `resource:<uri>` without arguments. Resources backed by live browser state still go through the bridge, so consent and Pause apply. `zen://questions` reports server-side state and remains readable while paused. Errors are returned as a JSON payload with an `error` string instead of failing the resource request.
 
 ## What a local process can and cannot do
 
@@ -140,7 +171,7 @@ It cannot:
 - attach a second Marionette session after lockdown, or make the server attach to a browser it did not start.
 - drive the bridge without the key, replay an earlier handshake, or send commands before authenticating.
 - make the agent run arbitrary JavaScript in chrome or in a page.
-- bypass consent, Pause, read-only mode, or the domain allowlist through the tool surface.
+- bypass consent, Pause, the capability policy, read-only mode, or the domain allowlist through the tool surface.
 - rely on the audit log as a place to recover page text or question answers: sensitive values are digested. A bounded preview of summarized arguments can remain, and resource entries carry no arguments.
 - reach private browsing windows through the bridge on the tested path, but that exclusion is not covered by the automated live suite.
 

@@ -95,8 +95,8 @@ Session and template files are written atomically with owner-only permissions. T
 | `launchTimeoutMs` | `45000` | How long to wait for Marionette after launch (1,000 to 300,000) |
 | `askTimeoutSeconds` | `120` | Default wait for an in-browser answer (1 to 3,600) |
 | `marionettePort` | `2828` | Port the server connects to (1 to 65,535) |
-| `readOnly` | `false` | Block mutating tools and auto-launch |
-| `allowedDomains` | `[]` | Domain allowlist; empty allows everything |
+| `readOnly` | `false` | Legacy compatibility: block mutating tools and auto-launch when no `policy.json` exists |
+| `allowedDomains` | `[]` | Legacy compatibility: domain allowlist when no `policy.json` exists |
 | `auditLog` | `true` | Append tool calls to `audit.jsonl` |
 | `watchMinIntervalSeconds` | `15` | Lower bound for watch polling (1 to 3,600) |
 | `launchArgs` | `[]` | Extra arguments passed when Zen MCP starts Zen |
@@ -105,6 +105,52 @@ Session and template files are written atomically with owner-only permissions. T
 Numeric file values outside their range are clamped when loaded. `config set` rejects them instead, so use it when you want a validation error.
 
 Policy keys are validated by type. `readOnly`, `requireConsent`, `useDefaultProfile`, `auditLog`, `autoLaunch`, and `autoAttachWindows` must be JSON booleans, and `allowedDomains` must be an array of strings. A malformed value stops the server with a config error instead of falling back to a weaker default.
+
+### Capability policy
+
+`policy.json` is the authoritative access policy. It lives beside `config.json` and is managed only by the CLI; MCP agents cannot read or write it. A missing file means `restricted` mode in memory, never `normal`. An invalid file denies every browser capability until it is fixed or removed.
+
+```sh
+zen-mcp policy init
+zen-mcp policy show
+zen-mcp policy show --json
+zen-mcp policy set zen_click allow
+zen-mcp policy mode permissive
+```
+
+`policy init` is the explicit migration step. It refuses to overwrite an existing file and translates the legacy settings once:
+
+- A default `config.json` becomes `restricted`.
+- `readOnly: true` becomes `permissive` plus a permanent deny for every tool that read-only blocked.
+- A non-empty `allowedDomains` becomes `permissive`, `websites.default: "deny"`, and the normalized allow list.
+
+The migration never grants a capability the old configuration did not have. After `policy init`, the policy file is authoritative for tools, but the runtime still applies the legacy `readOnly` and `allowedDomains` checks as defense in depth. The server warns about this: remove those keys from `config.json` when the policy file should be the only rule set.
+
+The modes are cumulative: `restricted`, `normal`, `permissive`, `full`. Explicit `capabilities` entries allow or deny one capability; `restrictions` are deny-only and cannot be removed by raising the mode (only the CLI can remove one). Deny always wins over allow, a permanent deny cannot be enabled at all, and a block entry beats any allow. Website rules accept a bare host (`example.com`, matching subdomains too) or a wildcard (`*.example.com`, subdomains only). Non-`http(s)` URLs are denied; `about:blank` is allowed only for navigation.
+
+Downloads and the other permanently denied capabilities stay denied in `full` mode. The policy summary in `zen_config` reports the source, mode, revision, website summary and restricted capability names, replaces the real file path with `<config>/policy.json`, and never returns the host lists.
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 2,
+  "updatedAt": "2026-11-25T12:00:00.000Z",
+  "writer": "cli",
+  "mode": "normal",
+  "capabilities": { "page.click": "allow" },
+  "restrictions": { "nav.open": "deny" },
+  "websites": {
+    "default": "deny",
+    "allow": ["example.com", "*.docs.example.com"],
+    "block": ["ads.example.com"],
+    "rules": [
+      { "host": "news.example.com", "capabilities": { "page.read": "allow" } }
+    ]
+  }
+}
+```
+
+Phase 1 checks policy at the MCP tool boundary. Website rules apply to calls that carry a URL. Calls addressed only by `tabId`, tab and history/bookmark listings, and watch polling are not site-filtered by `policy.json` yet; the runtime allowlist still enforces `allowedDomains` for those paths until Phase 2 adds browser-side enforcement.
 
 ### Marionette port
 
@@ -166,7 +212,7 @@ Accepted values:
 
 - Booleans: `true` or `false`, also `1`/`0` and `yes`/`no`.
 - Numbers: whole numbers within the range in the table above.
-- `allowedDomains`: comma-separated hosts. A leading `*.` or `.` is normalized away.
+- `allowedDomains`: comma-separated hosts. A leading `*.` or `.` is normalized away. Legacy only when no `policy.json` exists; use `zen-mcp policy init` and website rules for policy-managed hosts.
 - `launchArgs`: whitespace-separated arguments.
 - `toolSurface`: `research`, `core` or `full`. An unknown value stops startup.
 - Paths: an empty string clears the value.
@@ -179,7 +225,7 @@ Unknown keys are rejected with the list of valid keys.
 
 ## Audit log
 
-`audit.jsonl` records one JSON line per tool call, including calls blocked by read-only mode or the allowlist. Each line has a timestamp, tool name, outcome, duration, summarized arguments, redacted URLs, and an error code when present.
+`audit.jsonl` records one JSON line per tool call, including calls blocked by the capability policy, read-only mode or the allowlist. Each line has a timestamp, tool name, outcome, duration, summarized arguments, redacted URLs, and an error code when present. Calls evaluated by the capability policy also record `capability`, `mode`, `policyRevision` and `policySource`; the values are names and counts, never website lists or page content.
 
 - Argument values are summarized to a bounded depth and array length.
 - Strings longer than 500 characters become `sha256:<digest> (N chars)`.

@@ -4,6 +4,73 @@ All notable changes to Zen MCP are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A capability policy at `policy.json` with four cumulative modes
+  (`restricted`, `normal`, `permissive`, `full`), explicit per-capability
+  allow/deny overrides, deny-only permanent restrictions and website
+  allow/block/rule entries. Evaluation is deterministic and deny-first:
+  invalid policy, unknown capability, permanent deny, restriction, explicit
+  deny and website blocks all win over a later allow. Downloads, internal
+  pages, cookies, passwords, settings, extensions, browsing data, profile
+  files, DevTools, uploads, software install and screenshots are permanently
+  denied, including in `full` mode. Tab close, page clicks and typing, and
+  questions are available from `normal`; evidence, history, bookmarks,
+  clipboard writes, space delete and session and template writes start at
+  `permissive`.
+- `zen-mcp policy show [--json]`, `zen-mcp policy set <capability> allow|deny`,
+  `zen-mcp policy mode <mode>` and `zen-mcp policy init`. The CLI shares strict
+  schema and semantic validation, revision-conflict checks, a stale-lock
+  takeover and the atomic owner-only writer. No MCP tool or bridge operation
+  can write policy.
+- `policy init` migrates `readOnly` to deny-only restrictions and
+  `allowedDomains` to a website default deny plus the normalized allow list,
+  without granting access. A missing policy runs `restricted`; an invalid
+  policy fails closed. Legacy `readOnly` and `allowedDomains` keep working in
+  memory only while no policy file exists.
+- `zen_config` reports the policy source, mode, revision, website summary and
+  restricted capability names under a `<config>/policy.json` placeholder.
+  Audit entries record `capability`, `mode`, `policyRevision` and
+  `policySource`.
+- The browser bridge now enforces the same policy independently of the MCP
+  server. It re-reads `policy.json`, rejects work that does not carry the
+  current revision and digest, resolves the actual tab and frame URLs for
+  reads, clicks, typing, waits and evidence, rechecks them after actions and
+  redirects, and hides or skips metadata and stored session and template URLs
+  that the policy would not open.
+
+### Security
+
+- Bridge operations fail closed when the policy file disappears, cannot be
+  read, is invalid, or changes to a lower or rewritten revision. Site checks
+  always use browser-owned URLs, including cross-origin frame URLs, and a
+  preview or opened tab that redirects to a blocked host is closed.
+- Bridge dispatch now accepts only own properties of the fixed operation map.
+  Inherited names such as `constructor`, `__proto__`, `prototype`, `toString`,
+  `valueOf` and `hasOwnProperty` are rejected as unknown methods instead of
+  resolving through the prototype chain.
+- The bridge authentication key is no longer placed on
+  `window.__zenMcpBridge`. The global exposes only the version, a non-secret
+  `tokenId` digest, the window id and the reconnect/destroy callbacks; the key
+  stays inside the bridge closure, so the mutual HMAC handshake and reconnect
+  behaviour are unchanged.
+- Tool calls rejected by input schema validation are now audited as
+  `invalid_args` with `ok: false` and `executed: false`, including calls routed
+  through `zen_tools_use`. Arguments keep the existing sensitive-field
+  redaction, and the error message does not echo received values.
+- Agent-facing tool and resource output now returns `<profile>`, `<data>` and
+  `<data>/audit.jsonl` placeholders instead of absolute profile, data directory
+  and audit log paths. `zen-mcp status` and `zen-mcp doctor` still show the real
+  paths to the operator.
+
+### Fixed
+
+- Corrected the documented version drift in `docs/handoff/surface.md` and
+  `AGENTS.md`, which still described 0.6.0 while the package and registry are
+  at 0.6.3.
+
 ## [0.6.3] - 2026-11-22
 
 ### Fixed

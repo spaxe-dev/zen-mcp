@@ -24,7 +24,7 @@ Status: **0.6.3, pre-1.0.** Windows is the only platform with a live-tested Zen 
 - Shows progress cards with a real **Stop** button, asks questions in Zen chrome, and supports a global **Pause** switch.
 - Verifies citations with Evidence Mode: it reuses or opens the source, finds the quoted passage, marks it with a temporary overlay, and records the match method and confidence.
 - Saves window layouts as sessions and reusable space templates.
-- Enforces policy outside the model with read-only mode, a domain allowlist, an audit log, one-time consent, and an owned-browser boundary.
+- Enforces policy outside the model with a capability policy, four access modes, website rules, an audit log, one-time consent, and an owned-browser boundary.
 
 There are 55 tools, 6 live resources, and 3 prompts. Tool arguments are structured, results are typed, and page content is treated as data, not instructions. The full surface is in [docs/tools.md](https://github.com/spaxe-dev/zen-mcp/blob/main/docs/tools.md).
 
@@ -45,7 +45,7 @@ It is not a general WebDriver replacement. Clicking and typing exist so an agent
 
 **Background first.** Reads, evidence checks, waits, and page actions work on loaded tabs in any space, including spaces that are not currently rendered. `zen_read_page`, `zen_read_pages`, `zen_find_text`, `zen_search_tabs`, and `zen_wait_for` do not select, scroll, or highlight anything unless you ask for it. `zen_click` and `zen_type` act on the tab you name, not on whatever tab is in front; they accept refs or semantic targets, refuse ambiguity, verify typed text without revealing it, and return bounded observed changes.
 
-**You stay in control.** One approval covers the server session. The persistent banner has a Pause button that blocks subsequent browser work. Read-only mode, the domain allowlist, and the audit log add policy the model cannot talk its way around. There are no per-action approval cards.
+**You stay in control.** One approval covers the server session. The persistent banner has a Pause button that blocks subsequent browser work. A capability policy with four modes, per-capability overrides and website rules, plus the audit log, adds policy the model cannot talk its way around. The legacy read-only flag and domain allowlist still work and migrate through `zen-mcp policy init`. There are no per-action approval cards.
 
 **Evidence, not just prose.** A citation can be checked in the browser: the agent supplies the URL, quote, and optional context, and the server matches the passage in fixed code, scrolls to it, and paints an inert overlay. The model never supplies JavaScript.
 
@@ -141,6 +141,8 @@ The installed command is `zen-mcp`. Nothing is installed into Zen itself; the br
 zen-mcp setup      # detects Zen, writes a config, prints an MCP snippet
 zen-mcp onboard    # pick MCP clients and add Zen MCP to their config
 zen-mcp doctor     # config, executable, Marionette, bridge, profile, policy
+zen-mcp policy init
+zen-mcp policy show
 zen-mcp status     # config, profile mode, and port state
 zen-mcp update     # check npm and install the latest release
 ```
