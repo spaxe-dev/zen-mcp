@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -153,6 +153,112 @@ function stubReads(
 function settle(ms = 25): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+describe("audit preflight", () => {
+  it("writes a durable request record before returning the tool outcome", async () => {
+    const harness = await createHarness({ auditLog: true });
+    try {
+      const result = await callTool(harness.client, "zen_audit_tail", {
+        limit: 1,
+      });
+      assert.equal(result.isError, undefined);
+      const entries = readFileSync(join(harness.dataDir, "audit.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { phase?: string; executed: boolean });
+      assert.deepEqual(
+        entries.map((entry) => entry.phase),
+        ["started", "completed"]
+      );
+      assert.equal(entries[1]?.executed, true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("does not invoke a browser handler when the start record cannot be written", async () => {
+    const blocker = join(tmpdir(), `zen-mcp-audit-blocker-${process.pid}`);
+    writeFileSync(blocker, "not a directory", "utf8");
+    const harness = await createHarness({
+      auditLog: true,
+      dataDir: join(blocker, "audit"),
+    });
+    let invoked = false;
+    (harness.runtime as unknown as { status: () => unknown }).status = () => {
+      invoked = true;
+      return { ok: true };
+    };
+    try {
+      const result = await callTool(harness.client, "zen_status");
+      assert.equal(result.isError, true);
+      assert.match(textOf(result), /audit log could not record/i);
+      assert.equal(invoked, false);
+    } finally {
+      await harness.close();
+      rmSync(blocker, { force: true });
+    }
+  });
+});
+
+describe("audit execution truthfulness", () => {
+  it("never reports executed:false for a started operation after cancellation", async () => {
+    const harness = await createHarness({ auditLog: true });
+    try {
+      const handler = toolHandler(harness.server, "zen_space_create");
+      const runtime = harness.runtime as unknown as {
+        connect: () => Promise<void>;
+        hub: { createSpace: () => Promise<unknown> };
+      };
+      runtime.connect = async () => undefined;
+      let release!: (value: unknown) => void;
+      runtime.hub.createSpace = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const controller = new AbortController();
+      const pending = handler(
+        { name: "Audit test" },
+        fabricatedExtra({ signal: controller.signal })
+      );
+      await settle(20);
+      controller.abort();
+      const result = await pending;
+      assert.equal(result.isError, true);
+
+      const entries = readFileSync(join(harness.dataDir, "audit.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const started = entries.find((entry) => entry.phase === "started");
+      const abandoned = entries.find((entry) => entry.phase === "abandoned");
+      assert.ok(started);
+      assert.ok(abandoned);
+      assert.equal(started.executed, false);
+      assert.equal(abandoned.executed, true);
+      assert.equal(abandoned.execution, "outcome_unknown");
+      assert.equal(abandoned.mutation, "unknown");
+      assert.equal(abandoned.operationId, started.operationId);
+
+      release({
+        created: true,
+        space: { id: "space-x", name: "Audit test", active: false, index: 1 },
+        activeSpaceId: null,
+        switched: false,
+      });
+      await settle(25);
+      const settled = readFileSync(join(harness.dataDir, "audit.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((entry) => entry.phase === "settled");
+      assert.ok(settled);
+      assert.equal(settled.executed, true);
+      assert.equal(settled.operationId, started.operationId);
+    } finally {
+      await harness.close();
+    }
+  });
+});
 
 describe("progress notifications", () => {
   it("reports start and finish for a single page read", async () => {
@@ -518,14 +624,19 @@ describe("schema rejection audit", () => {
       assert.equal(result.isError, undefined);
 
       const lines = auditLines(harness.dataDir);
-      assert.equal(lines.length, 1);
-      assert.equal(lines[0]!.tool, "zen_audit_tail");
-      assert.equal(lines[0]!.executed, true);
-      assert.equal(lines[0]!.ok, true);
-      assert.equal(lines[0]!.capability, "audit.read");
-      assert.equal(lines[0]!.mode, "full");
-      assert.equal(lines[0]!.policyRevision, 1);
-      assert.equal(lines[0]!.policySource, "file");
+      assert.equal(lines.length, 2);
+      assert.deepEqual(
+        lines.map((line) => line.phase),
+        ["started", "completed"]
+      );
+      const completed = lines[1]!;
+      assert.equal(completed.tool, "zen_audit_tail");
+      assert.equal(completed.executed, true);
+      assert.equal(completed.ok, true);
+      assert.equal(completed.capability, "audit.read");
+      assert.equal(completed.mode, "full");
+      assert.equal(completed.policyRevision, 1);
+      assert.equal(completed.policySource, "file");
     } finally {
       await harness.close();
     }

@@ -6,11 +6,14 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   MUTATING_TOOLS,
   ToolGuard,
@@ -602,6 +605,51 @@ describe("ToolGuard.audit", () => {
     assert.equal(guard.tail(0).length, 0);
   });
 
+  it("keeps concurrent process writes as complete JSON lines", async () => {
+    const dataDir = join(tempDir, "concurrent");
+    const guardUrl = pathToFileURL(
+      join(process.cwd(), "src", "mcp", "guard.ts")
+    ).href;
+    const policyUrl = pathToFileURL(
+      join(process.cwd(), "src", "shared", "policy.ts")
+    ).href;
+    const source =
+      `const { ToolGuard } = await import(${JSON.stringify(guardUrl)});\n` +
+      `const { createPolicy } = await import(${JSON.stringify(policyUrl)});\n` +
+      "const policy = createPolicy({ mode: 'full' });\n" +
+      "const guard = new ToolGuard({ policy: { policy, source: 'file', revision: 1, digest: 'test', updatedAt: policy.updatedAt, warnings: [] }, auditLog: true, dataDir: process.env.TEST_AUDIT_DIR });\n" +
+      "for (let i = 0; i < 50; i++) guard.audit({ at: new Date().toISOString(), tool: process.env.TEST_WRITER, ok: true, executed: true, durationMs: 1 });\n";
+    const write = (writer: string) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", "--input-type=module", "-e", source],
+          {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              TEST_AUDIT_DIR: dataDir,
+              TEST_WRITER: writer,
+            },
+            stdio: "ignore",
+          }
+        );
+        child.once("error", reject);
+        child.once("close", (code) =>
+          code === 0 ? resolve() : reject(new Error(`writer exited ${code}`))
+        );
+      });
+
+    await Promise.all([write("writer-a"), write("writer-b"), write("writer-c")]);
+    const lines = readFileSync(auditFilePath(dataDir), "utf8")
+      .trim()
+      .split("\n");
+    assert.equal(lines.length, 150);
+    for (const line of lines) {
+      assert.equal(typeof (JSON.parse(line) as AuditRecord).tool, "string");
+    }
+  });
+
   it("skips corrupt lines in the tail", () => {
     const dataDir = join(tempDir, "corrupt");
     mkdirSync(dataDir, { recursive: true });
@@ -785,6 +833,30 @@ describe("ToolGuard.audit", () => {
     assert.deepEqual(guard.tail(), []);
   });
 
+  it(
+    "refuses a symlinked audit log and does not append to its target",
+    { skip: process.platform === "win32" ? "symlink privileges vary" : false },
+    () => {
+      const dataDir = join(tempDir, "audit-link");
+      mkdirSync(dataDir, { recursive: true });
+      const target = join(dataDir, "outside.jsonl");
+      const path = auditFilePath(dataDir);
+      writeFileSync(target, "outside\n", "utf8");
+      symlinkSync(target, path);
+      const guard = new ToolGuard(options({ dataDir }));
+
+      const original = console.error;
+      console.error = () => undefined;
+      try {
+        assert.equal(guard.audit(record()), false);
+      } finally {
+        console.error = original;
+      }
+      assert.equal(readFileSync(target, "utf8"), "outside\n");
+      assert.deepEqual(guard.tail(), []);
+    }
+  );
+
   it("warns to stderr at most once when writing fails", () => {
     const blocker = join(tempDir, "blocked");
     writeFileSync(blocker, "not a directory", "utf8");
@@ -797,8 +869,8 @@ describe("ToolGuard.audit", () => {
       warnings.push(args.map(String).join(" "));
     };
     try {
-      assert.doesNotThrow(() => guard.audit(record()));
-      assert.doesNotThrow(() => guard.audit(record()));
+      assert.equal(guard.audit(record()), false);
+      assert.equal(guard.audit(record()), false);
     } finally {
       console.error = original;
     }

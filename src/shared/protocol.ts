@@ -1455,11 +1455,34 @@ export interface SwitchSpaceResult {
   activeSpaceId: string | null;
 }
 
+export type SpaceDeleteOutcome =
+  | "completed"
+  | "absent_after_timeout"
+  | "pending_unknown"
+  | "unknown"
+  | "not_found"
+  | "failed_before_commit";
+
+export interface DeleteSpaceVerification {
+  checkedAt: string;
+  present: boolean | null;
+  method: "spaces.list";
+}
+
 export interface DeleteSpaceResult {
+  /** False when the outcome is pending or unknown. */
+  ok?: boolean;
+  /** True only when this request delivered a deletion confirmation. */
   deleted: boolean;
   spaceId: string;
   spaceName: string;
   activeSpaceId: string | null;
+
+  outcome: SpaceDeleteOutcome;
+  /** Delivered response, lost confirmation, or not applicable. */
+  confirmation: "delivered" | "lost" | "not_applicable";
+  verifiedAfterTimeout?: boolean;
+  verification?: DeleteSpaceVerification;
 }
 
 export interface CloseTabsResult {

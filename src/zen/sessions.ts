@@ -23,8 +23,13 @@ import type {
 } from "../shared/protocol.js";
 
 const FILE_NAME = "sessions.json";
-const BATCH_SIZE = 30;
-const DEFAULT_MAX_TABS = 300;
+const DEFAULT_BATCH_SIZE = 15;
+const MAX_BATCH_SIZE = 30;
+const DEFAULT_MAX_TABS = 100;
+const RESTORE_MAX_SPACES = 16;
+const RESTORE_MAX_DURATION_MS = 40_000;
+const RESTORE_MAX_FOLDERS = 50;
+const RESTORE_MAX_ESSENTIALS = 20;
 const MAX_NAME_LENGTH = 64;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SESSIONS = 100;
@@ -73,10 +78,47 @@ export type SessionSummary = {
   essentialCount: number;
 };
 
+export interface RestoreBudget {
+  maxSpaces: number;
+  maxTabs: number;
+  maxDurationMs: number;
+  maxBatchSize: number;
+  maxFolders: number;
+  maxEssentials: number;
+}
+
+export type RestoreStopReason =
+  | "client_cancelled"
+  | "duration_budget"
+  | "space_budget"
+  | "tab_budget"
+  | "folder_budget"
+  | "essential_budget"
+  | "space_error"
+  | "none";
+
+export type RestoreOutcome =
+  | "completed"
+  | "partial"
+  | "cancelled"
+  | "budget_exhausted";
+
+export interface RestoreInFlight {
+  operation:
+    | "space.create"
+    | "tabs.open"
+    | "tabs.pin"
+    | "folder.create"
+    | "essentials.add";
+  mayHaveCommitted: "unknown";
+}
+
 export type SessionRestoreOptions = {
   newSpaces?: boolean;
   switchTo?: boolean;
   maxTabs?: number;
+  signal?: AbortSignal;
+  budget?: Partial<RestoreBudget>;
 };
 
 export type SessionRestoreResult = {
@@ -88,6 +130,35 @@ export type SessionRestoreResult = {
   foldersCreated: number;
   essentialsAdded: number;
   warnings: string[];
+  outcome: RestoreOutcome;
+  partial: boolean;
+  cancelled: boolean;
+  budgetExhausted: boolean;
+  stopReason: RestoreStopReason;
+  incomplete: boolean;
+  rollback: "none";
+  createdSpaceIds: string[];
+  skipped: {
+    spaces: number;
+    tabs: number;
+    folders: number;
+    essentials: number;
+    byReason: Record<string, number>;
+  };
+  inFlight?: RestoreInFlight;
+};
+
+export interface SessionRequestOptions {
+  signal?: AbortSignal;
+}
+
+export const DEFAULT_RESTORE_BUDGET: Readonly<RestoreBudget> = {
+  maxSpaces: RESTORE_MAX_SPACES,
+  maxTabs: DEFAULT_MAX_TABS,
+  maxDurationMs: RESTORE_MAX_DURATION_MS,
+  maxBatchSize: DEFAULT_BATCH_SIZE,
+  maxFolders: RESTORE_MAX_FOLDERS,
+  maxEssentials: RESTORE_MAX_ESSENTIALS,
 };
 
 /**
@@ -95,22 +166,43 @@ export type SessionRestoreResult = {
  * does not have to be rebuilt when BridgeHub grows new methods.
  */
 export interface SessionHub {
-  listSpaces(windowId?: string): Promise<SpacesResult>;
-  listTabs(params: TabsListParams, windowId?: string): Promise<TabsResult>;
-  listFolders(windowId?: string): Promise<FoldersResult>;
+  listSpaces(
+    windowId?: string,
+    options?: SessionRequestOptions
+  ): Promise<SpacesResult>;
+  listTabs(
+    params: TabsListParams,
+    windowId?: string,
+    options?: SessionRequestOptions
+  ): Promise<TabsResult>;
+  listFolders(
+    windowId?: string,
+    options?: SessionRequestOptions
+  ): Promise<FoldersResult>;
   createSpace(
     params: CreateSpaceParams,
-    windowId?: string
+    windowId?: string,
+    options?: SessionRequestOptions
   ): Promise<CreateSpaceResult>;
-  openTabs(params: OpenTabsParams, windowId?: string): Promise<OpenTabsResult>;
+  openTabs(
+    params: OpenTabsParams,
+    windowId?: string,
+    options?: SessionRequestOptions
+  ): Promise<OpenTabsResult>;
   createFolder(
     params: CreateFolderParams,
-    windowId?: string
+    windowId?: string,
+    options?: SessionRequestOptions
   ): Promise<CreateFolderResult>;
-  pinTabs(params: PinTabsParams, windowId?: string): Promise<PinTabsResult>;
+  pinTabs(
+    params: PinTabsParams,
+    windowId?: string,
+    options?: SessionRequestOptions
+  ): Promise<PinTabsResult>;
   addEssentials(
     params: EssentialsParams,
-    windowId?: string
+    windowId?: string,
+    options?: SessionRequestOptions
   ): Promise<EssentialsResult>;
 }
 
@@ -124,6 +216,8 @@ export interface SessionStoreOptions {
    * supply no predicate keep the previous behavior.
    */
   allowsUrl?: (url: string) => boolean;
+  /** Monotonic clock seam for deterministic restore-budget tests. */
+  now?: () => number;
 }
 
 interface SessionsFile {
@@ -135,12 +229,14 @@ export class SessionStore {
   readonly #dir: string;
   readonly #hub: SessionHub;
   readonly #allowsUrl: (url: string) => boolean;
+  readonly #now: () => number;
   #warnedInvalid = false;
 
   constructor(options: SessionStoreOptions) {
     this.#dir = options.dir;
     this.#hub = options.hub;
     this.#allowsUrl = options.allowsUrl ?? (() => true);
+    this.#now = options.now ?? (() => performance.now());
   }
 
   /** Absolute path of the sessions file. */
@@ -310,18 +406,178 @@ export class SessionStore {
       throw new Error(`Session "${name.trim()}" not found.`);
     }
 
-    const maxTabs = normalizeMaxTabs(options.maxTabs);
+    const budget: RestoreBudget = {
+      ...DEFAULT_RESTORE_BUDGET,
+      ...(options.budget ?? {}),
+    };
+    const maxTabs = Math.max(
+      0,
+      Math.floor(options.maxTabs ?? budget.maxTabs)
+    );
+    const maxSpaces = Math.max(0, Math.floor(budget.maxSpaces));
+    const maxDurationMs = Math.max(0, budget.maxDurationMs);
+    const batchSize = Math.min(
+      MAX_BATCH_SIZE,
+      Math.max(1, Math.floor(budget.maxBatchSize))
+    );
+    const maxFolders = Math.max(0, Math.floor(budget.maxFolders));
+    const maxEssentials = Math.max(0, Math.floor(budget.maxEssentials));
+    const signal = options.signal;
+    const startedMono = this.#now();
+
     const warnings: string[] = [];
+    const createdSpaceIds: string[] = [];
+    const skipped: SessionRestoreResult["skipped"] = {
+      spaces: 0,
+      tabs: 0,
+      folders: 0,
+      essentials: 0,
+      byReason: {},
+    };
     let spacesCreated = 0;
     let spacesReused = 0;
     let tabsOpened = 0;
     let tabsSkipped = 0;
     let foldersCreated = 0;
     let essentialsAdded = 0;
-    let limitWarned = false;
+    let spacesSkipped = 0;
+    let processedSpaces = 0;
+    let essentialsAttempted = false;
+    let stopReason: RestoreStopReason = "none";
+    let hardStop = false;
+    let incomplete = false;
+    let inFlight: RestoreInFlight | undefined;
 
-    const spacesResult = await this.#hub.listSpaces();
-    const tabsResult = await this.#hub.listTabs({ limit: MAX_TABS_PER_SESSION });
+    const warn = (message: string): void => {
+      if (warnings.length < 50) warnings.push(message);
+    };
+    const skipTabs = (count: number, reason: string): void => {
+      if (count <= 0) return;
+      tabsSkipped += count;
+      skipped.byReason[reason] = (skipped.byReason[reason] ?? 0) + count;
+    };
+    const stopped = (): boolean => {
+      if (signal?.aborted) {
+        if (stopReason === "none") stopReason = "client_cancelled";
+        hardStop = true;
+        return true;
+      }
+      if (this.#now() - startedMono >= maxDurationMs) {
+        if (stopReason === "none") stopReason = "duration_budget";
+        hardStop = true;
+        return true;
+      }
+      return false;
+    };
+    const stopNow = (reason: RestoreStopReason): void => {
+      if (stopReason === "none") stopReason = reason;
+      hardStop = true;
+    };
+    const uncertain = (error: unknown): boolean => {
+      const code = (error as { code?: string })?.code;
+      const name = (error as { name?: string })?.name;
+      return (
+        code === "bridge_timeout" ||
+        code === "bridge_disconnected" ||
+        code === "bridge_unavailable" ||
+        code === "cancelled" ||
+        name === "MarionetteConnectionError"
+      );
+    };
+    const finalize = (): SessionRestoreResult => {
+      if (stopReason === "none" && inFlight) stopReason = "space_error";
+      const cancelled = stopReason === "client_cancelled";
+      const budgetExhausted =
+        stopReason === "duration_budget" ||
+        stopReason === "space_budget" ||
+        stopReason === "tab_budget" ||
+        stopReason === "folder_budget" ||
+        stopReason === "essential_budget";
+      const partial = cancelled || budgetExhausted || incomplete || !!inFlight;
+      const outcome: RestoreOutcome = cancelled
+        ? "cancelled"
+        : budgetExhausted
+          ? "budget_exhausted"
+          : partial
+            ? "partial"
+            : "completed";
+      if (cancelled) {
+        warn(
+          "Restore stopped because the caller cancelled. Completed work is preserved; no rollback was performed."
+        );
+      } else if (budgetExhausted) {
+        warn(
+          "Restore stopped at its resource budget. Completed work is preserved and the remaining session was not applied; no rollback was performed."
+        );
+      }
+      if (inFlight) {
+        warn(
+          `The in-flight ${inFlight.operation} may still have changed the browser. No rollback was attempted.`
+        );
+      }
+      // Count every Space the restore never reached, whatever stopped it. The
+      // earlier per-branch counting could miss Spaces skipped by a mid-space
+      // stop such as the tab budget.
+      if (processedSpaces < snapshot.spaces.length) {
+        const reason = stopReason === "none" ? "space_error" : stopReason;
+        for (let rest = processedSpaces; rest < snapshot.spaces.length; rest += 1) {
+          spacesSkipped += 1;
+          skipTabs(snapshot.spaces[rest]!.tabs.length, reason);
+        }
+      }
+      if (!essentialsAttempted && snapshot.essentials.length > 0) {
+        const reason = stopReason === "none" ? "space_error" : stopReason;
+        skipped.essentials += snapshot.essentials.length;
+        skipped.byReason[reason] =
+          (skipped.byReason[reason] ?? 0) + snapshot.essentials.length;
+      }
+      skipped.spaces = spacesSkipped;
+      skipped.tabs = tabsSkipped;
+      return {
+        name: snapshot.name,
+        spacesCreated,
+        spacesReused,
+        tabsOpened,
+        tabsSkipped,
+        foldersCreated,
+        essentialsAdded,
+        warnings,
+        outcome,
+        partial,
+        cancelled,
+        budgetExhausted,
+        stopReason,
+        incomplete: partial,
+        rollback: "none",
+        createdSpaceIds,
+        skipped,
+        ...(inFlight ? { inFlight } : {}),
+      };
+    };
+
+    if (stopped()) return finalize();
+
+    let spacesResult: SpacesResult;
+    let tabsResult: TabsResult;
+    try {
+      spacesResult = await this.#hub.listSpaces(undefined, { signal });
+      tabsResult = await this.#hub.listTabs(
+        { limit: MAX_TABS_PER_SESSION },
+        undefined,
+        { signal }
+      );
+    } catch (error) {
+      if (signal?.aborted) {
+        stopReason = "client_cancelled";
+        return finalize();
+      }
+      if (uncertain(error)) {
+        stopReason = "space_error";
+        return finalize();
+      }
+      throw error;
+    }
+
     const spacesByName = new Map(
       spacesResult.spaces.map((space) => [space.name.toLowerCase(), space])
     );
@@ -337,7 +593,20 @@ export class SessionStore {
 
     let firstTargetId: string | null = null;
 
-    for (const snapshotSpace of snapshot.spaces) {
+    spaceLoop: for (let index = 0; index < snapshot.spaces.length; index += 1) {
+      if (stopped()) break;
+      if (index >= maxSpaces) {
+        stopNow("space_budget");
+        break;
+      }
+      if (maxTabs - tabsOpened <= 0) {
+        stopNow("tab_budget");
+        break;
+      }
+
+      const snapshotSpace = snapshot.spaces[index]!;
+      processedSpaces = index + 1;
+      let openedInSpace = 0;
       try {
         const existing = spacesByName.get(snapshotSpace.name.toLowerCase());
         let targetId: string;
@@ -355,16 +624,21 @@ export class SessionStore {
           const desiredName = existing
             ? restoredName(snapshotSpace.name, takenNames)
             : snapshotSpace.name;
+          inFlight = { operation: "space.create", mayHaveCommitted: "unknown" };
           const created = await this.#hub.createSpace(
             {
               name: desiredName,
               ...(snapshotSpace.icon ? { icon: snapshotSpace.icon } : {}),
               switchTo: options.switchTo ?? false,
-            }
+            },
+            undefined,
+            { signal }
           );
+          inFlight = undefined;
           targetId = created.space.id;
           targetName = created.space.name;
           takenNames.add(targetName.toLowerCase());
+          createdSpaceIds.push(created.space.id);
           spacesCreated += 1;
         }
 
@@ -374,99 +648,171 @@ export class SessionStore {
           const url = tab.url.trim();
           return url.length > 0 && !seen.has(urlKey(url));
         });
-        tabsSkipped += snapshotSpace.tabs.length - missing.length;
+        const alreadyPresent = snapshotSpace.tabs.length - missing.length;
+        tabsSkipped += alreadyPresent;
+        if (alreadyPresent > 0) {
+          skipped.byReason.already_present =
+            (skipped.byReason.already_present ?? 0) + alreadyPresent;
+        }
 
         const remaining = maxTabs - tabsOpened;
         let toOpen = missing;
         if (missing.length > remaining) {
           toOpen = missing.slice(0, Math.max(0, remaining));
           const overflow = missing.length - toOpen.length;
-          tabsSkipped += overflow;
-          if (!limitWarned) {
-            warnings.push(
-              `Skipped ${overflow} tab(s) because restore is limited to ${maxTabs} tabs.`
-            );
-            limitWarned = true;
-          }
+          skipTabs(overflow, "tab_budget");
+          stopNow("tab_budget");
+          warn(
+            `Skipped ${overflow} tab(s) because restore is limited to ${maxTabs} tabs.`
+          );
         }
 
         const folderTabs = new Map<string, string[]>();
 
-        for (let start = 0; start < toOpen.length; start += BATCH_SIZE) {
-          const batch = toOpen.slice(start, start + BATCH_SIZE);
-          const opened = await this.#hub.openTabs(
-            {
-              urls: batch.map((tab) => tab.url),
-              space: targetId,
-              background: true,
-              switchTo: false,
-            }
-          );
-          tabsOpened += opened.tabs.length;
-
-          const byRequested = mapOpened(opened.tabs);
-          const pinnedIds: string[] = [];
-          for (const tab of batch) {
-            const live = byRequested.get(urlKey(tab.url));
-            if (!live) continue;
-            seen.add(urlKey(live.url));
-            if (live.requestedUrl) seen.add(urlKey(live.requestedUrl));
-            if (tab.pinned && !tab.essential) pinnedIds.push(live.id);
-            if (tab.folder) {
-              const ids = folderTabs.get(tab.folder) ?? [];
-              ids.push(live.id);
-              folderTabs.set(tab.folder, ids);
-            }
+        for (let start = 0; start < toOpen.length; start += batchSize) {
+          if (stopped()) {
+            const left = toOpen.length - start;
+            skipTabs(left, stopReason);
+            break spaceLoop;
           }
+          const batch = toOpen.slice(start, start + batchSize);
+          inFlight = { operation: "tabs.open", mayHaveCommitted: "unknown" };
+          try {
+            const opened = await this.#hub.openTabs(
+              {
+                urls: batch.map((tab) => tab.url),
+                space: targetId,
+                background: true,
+                switchTo: false,
+              },
+              undefined,
+              { signal }
+            );
+            inFlight = undefined;
+            tabsOpened += opened.tabs.length;
+            openedInSpace += opened.tabs.length;
 
-          if (pinnedIds.length > 0) {
-            try {
-              await this.#hub.pinTabs(
-                { tabIds: pinnedIds, pinned: true }
-              );
-            } catch (error) {
-              warnings.push(
-                `Could not pin tabs in "${targetName}": ${messageOf(error)}`
-              );
+            const byRequested = mapOpened(opened.tabs);
+            const pinnedIds: string[] = [];
+            for (const tab of batch) {
+              const live = byRequested.get(urlKey(tab.url));
+              if (!live) continue;
+              seen.add(urlKey(live.url));
+              if (live.requestedUrl) seen.add(urlKey(live.requestedUrl));
+              if (tab.pinned && !tab.essential) pinnedIds.push(live.id);
+              if (tab.folder) {
+                const ids = folderTabs.get(tab.folder) ?? [];
+                ids.push(live.id);
+                folderTabs.set(tab.folder, ids);
+              }
             }
+
+            if (pinnedIds.length > 0) {
+              if (stopped()) {
+                skipTabs(pinnedIds.length, stopReason);
+                break spaceLoop;
+              }
+              inFlight = { operation: "tabs.pin", mayHaveCommitted: "unknown" };
+              try {
+                await this.#hub.pinTabs(
+                  { tabIds: pinnedIds, pinned: true },
+                  undefined,
+                  { signal }
+                );
+                inFlight = undefined;
+              } catch (error) {
+                if (signal?.aborted || uncertain(error)) {
+                  if (signal?.aborted) stopNow("client_cancelled");
+                  else stopNow("space_error");
+                  break spaceLoop;
+                }
+                inFlight = undefined;
+                warn(
+                  `Could not pin tabs in "${targetName}": ${messageOf(error)}`
+                );
+              }
+            }
+          } catch (error) {
+            if (signal?.aborted || uncertain(error)) {
+              if (signal?.aborted) stopNow("client_cancelled");
+              else stopNow("space_error");
+              break spaceLoop;
+            }
+            inFlight = undefined;
+            warn(
+              `Could not open tabs in "${targetName}": ${messageOf(error)}`
+            );
+            incomplete = true;
+            break;
           }
         }
+        if (hardStop) break spaceLoop;
 
         for (const [label, tabIds] of folderTabs) {
           if (tabIds.length === 0) continue;
+          if (stopped()) break spaceLoop;
+          if (foldersCreated >= maxFolders) {
+            skipped.folders += 1;
+            skipped.byReason.folder_budget =
+              (skipped.byReason.folder_budget ?? 0) + 1;
+            if (stopReason === "none") stopReason = "folder_budget";
+            incomplete = true;
+            continue;
+          }
           const collapsed =
             snapshotSpace.folders.find((folder) => folder.label === label)
               ?.collapsed ?? false;
+          inFlight = { operation: "folder.create", mayHaveCommitted: "unknown" };
           try {
             const created = await this.#hub.createFolder(
-              { label, tabIds, space: targetId, collapsed }
+              { label, tabIds, space: targetId, collapsed },
+              undefined,
+              { signal }
             );
+            inFlight = undefined;
             if (created.created) foldersCreated += 1;
           } catch (error) {
-            warnings.push(
+            if (signal?.aborted || uncertain(error)) {
+              if (signal?.aborted) stopNow("client_cancelled");
+              else stopNow("space_error");
+              break spaceLoop;
+            }
+            inFlight = undefined;
+            warn(
               `Could not create folder "${label}" in "${targetName}": ${messageOf(
                 error
               )}`
             );
+            incomplete = true;
           }
         }
+        if (openedInSpace === 0 && hardStop) break spaceLoop;
       } catch (error) {
-        warnings.push(
+        if (signal?.aborted || uncertain(error)) {
+          if (signal?.aborted) stopNow("client_cancelled");
+          else stopNow("space_error");
+          break;
+        }
+        inFlight = undefined;
+        spacesSkipped += 1;
+        skipTabs(snapshotSpace.tabs.length, "space_error");
+        warn(
           `Could not restore space "${snapshotSpace.name}": ${messageOf(error)}`
         );
+        incomplete = true;
       }
     }
 
-    if (snapshot.essentials.length > 0) {
+    if (!hardStop && snapshot.essentials.length > 0) {
+      essentialsAttempted = true;
       const targetId =
         firstTargetId ??
         spacesResult.activeSpaceId ??
         spacesResult.spaces[0]?.id ??
         null;
       if (!targetId) {
-        warnings.push(
-          "Could not restore essentials because no space is available."
-        );
+        warn("Could not restore essentials because no space is available.");
+        incomplete = true;
       } else {
         const essentialUrls = new Set(
           tabsResult.tabs
@@ -481,21 +827,32 @@ export class SessionStore {
         const remaining = Math.max(0, maxTabs - tabsOpened);
         let toOpen = missing;
         if (missing.length > remaining) {
-          tabsSkipped += missing.length - remaining;
           toOpen = missing.slice(0, remaining);
-          if (!limitWarned && toOpen.length < missing.length) {
-            warnings.push(
-              `Skipped ${
-                missing.length - toOpen.length
-              } essential tab(s) because restore is limited to ${maxTabs} tabs.`
-            );
-            limitWarned = true;
-          }
+          skipTabs(missing.length - toOpen.length, "tab_budget");
+          if (stopReason === "none") stopReason = "tab_budget";
+          warn(
+            `Skipped ${missing.length - toOpen.length} essential tab(s) because restore is limited to ${maxTabs} tabs.`
+          );
+          incomplete = true;
         }
 
         const essentialIds: string[] = [];
-        for (let start = 0; start < toOpen.length; start += BATCH_SIZE) {
-          const batch = toOpen.slice(start, start + BATCH_SIZE);
+        for (let start = 0; start < toOpen.length; start += batchSize) {
+          if (stopped()) {
+            skipTabs(toOpen.length - start, stopReason);
+            break;
+          }
+          if (essentialsAdded + essentialIds.length >= maxEssentials) {
+            skipped.essentials += toOpen.length - start;
+            skipped.byReason.essential_budget =
+              (skipped.byReason.essential_budget ?? 0) +
+              (toOpen.length - start);
+            if (stopReason === "none") stopReason = "essential_budget";
+            incomplete = true;
+            break;
+          }
+          const batch = toOpen.slice(start, start + batchSize);
+          inFlight = { operation: "tabs.open", mayHaveCommitted: "unknown" };
           try {
             const opened = await this.#hub.openTabs(
               {
@@ -503,42 +860,60 @@ export class SessionStore {
                 space: targetId,
                 background: true,
                 switchTo: false,
-              }
+              },
+              undefined,
+              { signal }
             );
+            inFlight = undefined;
             tabsOpened += opened.tabs.length;
             essentialIds.push(...opened.tabs.map((tab) => tab.id));
           } catch (error) {
-            warnings.push(
-              `Could not open essential tabs: ${messageOf(error)}`
-            );
+            if (signal?.aborted || uncertain(error)) {
+              if (signal?.aborted) stopNow("client_cancelled");
+              else stopNow("space_error");
+              break;
+            }
+            inFlight = undefined;
+            warn(`Could not open essential tabs: ${messageOf(error)}`);
+            incomplete = true;
           }
         }
 
         if (essentialIds.length > 0) {
-          try {
-            const result = await this.#hub.addEssentials(
-              { tabIds: essentialIds }
-            );
-            essentialsAdded += result.changed;
-          } catch (error) {
-            warnings.push(
-              `Could not add essential tabs: ${messageOf(error)}`
-            );
+          if (stopped()) {
+            skipTabs(essentialIds.length, stopReason);
+          } else if (essentialsAdded >= maxEssentials) {
+            skipped.essentials += essentialIds.length;
+            skipped.byReason.essential_budget =
+              (skipped.byReason.essential_budget ?? 0) + essentialIds.length;
+            if (stopReason === "none") stopReason = "essential_budget";
+            incomplete = true;
+          } else {
+            inFlight = { operation: "essentials.add", mayHaveCommitted: "unknown" };
+            try {
+              const result = await this.#hub.addEssentials(
+                { tabIds: essentialIds },
+                undefined,
+                { signal }
+              );
+              inFlight = undefined;
+              essentialsAdded += result.changed;
+            } catch (error) {
+              if (signal?.aborted || uncertain(error)) {
+                if (signal?.aborted) stopNow("client_cancelled");
+                else stopNow("space_error");
+              } else {
+                inFlight = undefined;
+                warn(`Could not add essential tabs: ${messageOf(error)}`);
+                incomplete = true;
+              }
+            }
           }
         }
       }
     }
 
-    return {
-      name: snapshot.name,
-      spacesCreated,
-      spacesReused,
-      tabsOpened,
-      tabsSkipped,
-      foldersCreated,
-      essentialsAdded,
-      warnings,
-    };
+    return finalize();
   }
 
   delete(name: string): boolean {
@@ -627,13 +1002,6 @@ function validateName(name: string, kind: string): string {
     );
   }
   return display;
-}
-
-function normalizeMaxTabs(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) {
-    return DEFAULT_MAX_TABS;
-  }
-  return Math.max(0, Math.floor(value));
 }
 
 /** Space names that already exist get a " (restored)" suffix. */

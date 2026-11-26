@@ -40,12 +40,14 @@ import type {
   ClickElementResult,
   ContainerInfo,
   CreateSpaceResult,
+  DeleteSpaceResult,
   EventsResult,
   EvidenceClearResult,
   EvidenceOpResult,
   OpenTabsResult,
   PageReadResult,
   ServerToBridge,
+  SpacesResult,
   TextSearchResult,
   TypeTextResult,
   WaitForResult,
@@ -68,6 +70,7 @@ import type { MarionetteClient } from "../zen/marionette.js";
 
 const RESOURCE_ALIAS = "zen-mcp-bridge";
 const CONNECTION_PING_MS = 20_000;
+const MAX_PENDING_AUTH_CONNECTIONS = 16;
 const REQUEST_TIMEOUT_MS = 25_000;
 const RESEND_QUESTION_MAX_AGE_MS = 30 * 60_000;
 const WS_OPEN = 1;
@@ -273,6 +276,7 @@ export class BridgeHub {
   #pingTimer: NodeJS.Timeout | null = null;
 
   readonly #connections = new Map<string, BridgeConnection>();
+  readonly #pendingAuthSockets = new Set<WebSocket>();
   readonly #pendingRequests = new Map<string, PendingRequest>();
   readonly #pendingQuestions = new Map<string, PendingQuestion>();
   readonly #answeredQuestions: AnswerInboxEntry[] = [];
@@ -442,6 +446,11 @@ export class BridgeHub {
       ws.close(AUTH_FAILED_CLOSE_CODE, "loopback only");
       return;
     }
+    if (this.#pendingAuthSockets.size >= MAX_PENDING_AUTH_CONNECTIONS) {
+      ws.close(1008, "too many pending handshakes");
+      return;
+    }
+    this.#pendingAuthSockets.add(ws);
 
     // A fresh nonce per connection makes every proof single-use. A hostile
     // listener that captured an earlier handshake cannot replay it here.
@@ -467,16 +476,27 @@ export class BridgeHub {
     });
 
     ws.on("message", (data, isBinary) => {
-      if (isBinary) return;
+      if (isBinary) {
+        ws.close(1003, "text messages only");
+        return;
+      }
       let message: BridgeToServer | BridgeResponse;
       try {
         message = JSON.parse(data.toString("utf8")) as
           | BridgeToServer
           | BridgeResponse;
       } catch {
+        ws.close(1007, "invalid message");
         return;
       }
-      if (!message || typeof message !== "object") return;
+      if (
+        !message ||
+        typeof message !== "object" ||
+        typeof (message as { type?: unknown }).type !== "string"
+      ) {
+        ws.close(1007, "invalid message");
+        return;
+      }
 
       if (!authenticated) {
         // Nothing but the proof is accepted before the handshake completes.
@@ -499,6 +519,7 @@ export class BridgeHub {
           return;
         }
         authenticated = true;
+        this.#pendingAuthSockets.delete(ws);
         if (
           !sendRaw(ws, {
             type: "auth.confirm",
@@ -657,12 +678,14 @@ export class BridgeHub {
           this.#logger.warn(`bridge error: ${String(message.message)}`);
           return;
         default:
+          ws.close(1003, "unsupported bridge message");
           return;
       }
     });
 
     ws.on("close", () => {
       clearTimeout(handshakeTimer);
+      this.#pendingAuthSockets.delete(ws);
       if (connection && this.#connections.get(connection.windowId) === connection) {
         this.#connections.delete(connection.windowId);
         if (this.#primaryWindowId === connection.windowId) {
@@ -1117,17 +1140,25 @@ export class BridgeHub {
     return this.request("status", undefined, { windowId });
   }
 
-  async listSpaces(windowId?: string) {
-    return this.request("spaces.list", undefined, { windowId });
+  async listSpaces(
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
+  ) {
+    return this.request("spaces.list", undefined, {
+      windowId,
+      signal: options.signal,
+    });
   }
 
   async createSpace(
     params: BridgeMethodMap["spaces.create"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ): Promise<CreateSpaceResult> {
     return this.request("spaces.create", params, {
       windowId,
       timeoutMs: 35_000,
+      signal: options.signal,
     });
   }
 
@@ -1141,26 +1172,176 @@ export class BridgeHub {
     });
   }
 
+  /**
+   * Deletes one explicitly selected Space. The target is resolved to a stable
+   * id first; a timeout is verified with one read-only list and is never
+   * retried. `deleted:true` means the browser delivered a deletion result.
+   */
   async deleteSpace(
     params: BridgeMethodMap["spaces.delete"]["params"],
     windowId?: string
-  ) {
-    return this.request("spaces.delete", params, {
-      windowId,
-      timeoutMs: 30_000,
-    });
+  ): Promise<DeleteSpaceResult> {
+    const requested = String(params?.space ?? "").trim();
+    if (!requested) {
+      throw new BridgeRequestError(
+        "space_not_found",
+        "A stable Space id or name is required.",
+        { outcome: "not_found", retrySafe: false }
+      );
+    }
+
+    let spaces: SpacesResult;
+    try {
+      spaces = await this.request("spaces.list", undefined, { windowId });
+    } catch (error) {
+      throw new BridgeRequestError(
+        "space_delete_failed_before_commit",
+        `The Space could not be resolved before deletion: ${String(
+          (error as Error)?.message ?? error
+        )}`,
+        { outcome: "failed_before_commit", retrySafe: false }
+      );
+    }
+
+    const matches = spaces.spaces.filter(
+      (space) =>
+        space.id === requested ||
+        space.name.toLowerCase() === requested.toLowerCase()
+    );
+    if (matches.length === 0) {
+      throw new BridgeRequestError(
+        "space_delete_not_found",
+        `No Space matches "${requested}". Nothing was deleted.`,
+        { outcome: "not_found", present: false, retrySafe: false }
+      );
+    }
+    if (matches.length > 1) {
+      throw new BridgeRequestError(
+        "space_delete_ambiguous",
+        `More than one Space matches "${requested}". Use the stable Space id. Nothing was deleted.`,
+        { outcome: "failed_before_commit", retrySafe: false }
+      );
+    }
+    const target = matches[0]!;
+
+    try {
+      const result = await this.request(
+        "spaces.delete",
+        { space: target.id },
+        { windowId, timeoutMs: 30_000 }
+      );
+      return {
+        ...result,
+        deleted: true,
+        outcome: "completed",
+        confirmation: "delivered",
+        spaceId: target.id,
+        spaceName: result.spaceName || target.name,
+      };
+    } catch (error) {
+      if (!(error instanceof BridgeRequestError)) throw error;
+      if (error.code === "space_not_found") {
+        throw new BridgeRequestError(
+          "space_delete_not_found",
+          error.message,
+          {
+            outcome: "not_found",
+            spaceId: target.id,
+            spaceName: target.name,
+            present: false,
+            retrySafe: false,
+          }
+        );
+      }
+      if (error.code !== "bridge_timeout") {
+        const beforeCommit =
+          error.code === "paused" ||
+          error.code === "consent_required" ||
+          error.code === "spaces_disabled" ||
+          error.code === "unknown_capability" ||
+          error.code === "domain_not_allowed" ||
+          error.code === "policy_denied";
+        throw new BridgeRequestError(
+          beforeCommit
+            ? "space_delete_failed_before_commit"
+            : "space_delete_unknown",
+          error.message,
+          {
+            outcome: beforeCommit ? "failed_before_commit" : "unknown",
+            spaceId: target.id,
+            spaceName: target.name,
+            present: null,
+            retrySafe: false,
+          }
+        );
+      }
+
+      // The request timed out. Verification is a separate read-only request;
+      // it never retries the deletion and never creates or deletes anything.
+      try {
+        const after = await this.request("spaces.list", undefined, {
+          windowId,
+          timeoutMs: 5_000,
+        });
+        const checkedAt = new Date().toISOString();
+        const present = after.spaces.some((space) => space.id === target.id);
+        if (!present) {
+          return {
+            ok: false,
+            deleted: false,
+            outcome: "absent_after_timeout",
+            confirmation: "lost",
+            verifiedAfterTimeout: true,
+            verification: { checkedAt, present: false, method: "spaces.list" },
+            spaceId: target.id,
+            spaceName: target.name,
+            activeSpaceId: after.activeSpaceId ?? null,
+          };
+        }
+        return {
+          ok: false,
+          deleted: false,
+          outcome: "pending_unknown",
+          confirmation: "lost",
+          verification: { checkedAt, present: true, method: "spaces.list" },
+          spaceId: target.id,
+          spaceName: target.name,
+          activeSpaceId: after.activeSpaceId ?? null,
+        };
+      } catch (verifyError) {
+        return {
+          ok: false,
+          deleted: false,
+          outcome: "unknown",
+          confirmation: "lost",
+          spaceId: target.id,
+          spaceName: target.name,
+          activeSpaceId: null,
+          verification: {
+            checkedAt: new Date().toISOString(),
+            present: null,
+            method: "spaces.list",
+          },
+        };
+      }
+    }
   }
 
   async listTabs(
     params: BridgeMethodMap["tabs.list"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ) {
-    return this.request("tabs.list", params, { windowId });
+    return this.request("tabs.list", params, {
+      windowId,
+      signal: options.signal,
+    });
   }
 
   async openTabs(
     params: BridgeMethodMap["tabs.open"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ): Promise<OpenTabsResult> {
     const requested = Array.isArray(params?.urls) ? params.urls : [];
     for (const url of requested) {
@@ -1169,6 +1350,7 @@ export class BridgeHub {
     const result = await this.request("tabs.open", params, {
       windowId,
       timeoutMs: 35_000,
+      signal: options.signal,
     });
     // A requested URL can redirect somewhere else. Close those tabs instead
     // of leaving the agent with a window into a domain it may not touch.
@@ -1343,17 +1525,25 @@ export class BridgeHub {
     return this.request("tabs.evidenceClear", params, { windowId });
   }
 
-  async listFolders(windowId?: string) {
-    return this.request("folders.list", undefined, { windowId });
+  async listFolders(
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
+  ) {
+    return this.request("folders.list", undefined, {
+      windowId,
+      signal: options.signal,
+    });
   }
 
   async createFolder(
     params: BridgeMethodMap["folders.create"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ) {
     return this.request("folders.create", params, {
       windowId,
       timeoutMs: 30_000,
+      signal: options.signal,
     });
   }
 
@@ -1380,18 +1570,25 @@ export class BridgeHub {
 
   async pinTabs(
     params: BridgeMethodMap["tabs.pin"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ) {
-    return this.request("tabs.pin", params, { windowId, timeoutMs: 30_000 });
+    return this.request("tabs.pin", params, {
+      windowId,
+      timeoutMs: 30_000,
+      signal: options.signal,
+    });
   }
 
   async addEssentials(
     params: BridgeMethodMap["essentials.add"]["params"],
-    windowId?: string
+    windowId?: string,
+    options: { signal?: AbortSignal } = {}
   ) {
     return this.request("essentials.add", params, {
       windowId,
       timeoutMs: 30_000,
+      signal: options.signal,
     });
   }
 

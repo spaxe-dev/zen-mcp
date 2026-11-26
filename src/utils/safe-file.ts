@@ -4,12 +4,13 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
+  constants,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +22,10 @@ export const PRIVATE_FILE_MODE = 0o600;
 /** Creates (or reuses) a data directory that only the current user can read. */
 export function ensurePrivateDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`Refusing to use ${dir}: it is not a regular directory.`);
+  }
   try {
     // mkdirSync does not tighten a directory that already exists.
     chmodSync(dir, PRIVATE_DIR_MODE);
@@ -90,14 +95,41 @@ export function atomicWritePrivate(target: string, text: string): void {
 
 /** Reads a regular file only when it fits the given byte budget. */
 export function readFileTextBounded(file: string, maxBytes: number): string {
-  const stat = statSync(file);
-  if (!stat.isFile()) {
-    throw new Error(`${file} is not a regular file.`);
+  let fd: number | undefined;
+  try {
+    const before = lstatSync(file);
+    if (before.isSymbolicLink() || !before.isFile()) {
+      throw new Error(`${file} is not a regular non-link file.`);
+    }
+    const noFollow = constants.O_NOFOLLOW ?? 0;
+    fd = openSync(file, constants.O_RDONLY | noFollow);
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.ino !== before.ino ||
+      (before.dev !== 0 && stat.dev !== before.dev)
+    ) {
+      throw new Error(`${file} changed while it was being opened.`);
+    }
+    if (stat.size > maxBytes) {
+      throw new Error(
+        `${file} is too large (${stat.size} bytes); the limit is ${maxBytes} bytes.`
+      );
+    }
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = readSync(fd, buffer, total, buffer.length - total, total);
+      if (count === 0) break;
+      total += count;
+    }
+    if (total > maxBytes) {
+      throw new Error(
+        `${file} is too large (more than ${maxBytes} bytes); the limit is ${maxBytes} bytes.`
+      );
+    }
+    return buffer.subarray(0, total).toString("utf8");
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-  if (stat.size > maxBytes) {
-    throw new Error(
-      `${file} is too large (${stat.size} bytes); the limit is ${maxBytes} bytes.`
-    );
-  }
-  return readFileSync(file, "utf8");
 }

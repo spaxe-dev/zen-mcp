@@ -63,8 +63,19 @@ import {
   waitForProcessExit,
   ZenLaunchError,
 } from "./launcher.js";
-import { MarionetteClient } from "./marionette.js";
+import { MarionetteClient, type MarionetteCloseInfo } from "./marionette.js";
 import { readActivePage, readTabPage } from "./page.js";
+import {
+  BrowserLifecycle,
+  type BrowserLifecycleState,
+  type BrowserRecoveryInfo,
+  type LaunchIdentity,
+} from "./lifecycle.js";
+import {
+  SystemProcessProbe,
+  type ProcessIdentity,
+  type ProcessProbe,
+} from "./process-identity.js";
 import {
   checkForUpdate,
   detectPackageManager,
@@ -111,6 +122,7 @@ const MAX_BATCH_CARD_FAILURES = 3;
 export interface ConnectResult {
   launched: boolean;
   injection: InjectionSummary;
+  recovery?: BrowserRecoveryInfo;
 }
 
 export interface ZenRuntimeOptions {
@@ -125,10 +137,22 @@ export interface ZenRuntimeOptions {
   policySnapshot?: PolicySnapshot;
   /** Policy file the browser bridge may re-read. */
   policyPath?: string;
+  /** Test seam for process-start identity probes. */
+  processProbe?: ProcessProbe;
 }
 
 export class ZenAccessError extends Error {
   override name = "ZenAccessError";
+}
+
+export class ZenRecoveryRequiredError extends BridgeRequestError {
+  override name = "ZenRecoveryRequiredError";
+  readonly recovery: BrowserRecoveryInfo;
+
+  constructor(reason: string, recovery: BrowserRecoveryInfo) {
+    super("recovery_required", reason, { recovery });
+    this.recovery = recovery;
+  }
 }
 
 interface Ownership {
@@ -137,6 +161,8 @@ interface Ownership {
   browserPid: number | null;
   profile: string | null;
   launchedAt: number;
+  launchedIdentity?: ProcessIdentity;
+  browserIdentity?: ProcessIdentity;
 }
 
 export interface SessionInfo {
@@ -147,6 +173,8 @@ export interface SessionInfo {
   lockedDown: boolean;
   paused: boolean;
   consent: "none" | "pending" | "granted" | "denied";
+  lifecycle: BrowserLifecycleState;
+  recovery?: BrowserRecoveryInfo;
 }
 
 export interface ShowEvidenceOptions {
@@ -213,9 +241,13 @@ export class ZenRuntime {
   readonly hub: BridgeHub;
   readonly #logger: Logger;
   readonly #checkUpdate: () => Promise<UpdateInfo>;
+  readonly #processProbe: ProcessProbe;
+  readonly #lifecycle: BrowserLifecycle;
 
   #ensurePromise: Promise<ConnectResult> | null = null;
   #closed = false;
+  #closing = false;
+  #lossPending = false;
   #ownership: Ownership | null = null;
   #identityVerified = false;
   #lockedDown = false;
@@ -228,9 +260,14 @@ export class ZenRuntime {
   constructor(options: ZenRuntimeOptions) {
     this.config = options.config;
     this.#logger = options.logger ?? createLogger("runtime");
+    this.#processProbe = options.processProbe ?? new SystemProcessProbe();
+    this.#lifecycle = new BrowserLifecycle(this.#processProbe);
     this.marionette = new MarionetteClient({
       port: options.config.marionettePort,
       logger: this.#logger,
+    });
+    this.marionette.onClose((info) => {
+      void this.#handleMarionetteClose(info);
     });
     this.#checkUpdate =
       options.checkUpdate ?? (() => checkForUpdate({ timeoutMs: 2_500 }));
@@ -324,21 +361,59 @@ export class ZenRuntime {
    * Makes sure Zen is running with agent access, a Marionette session exists
    * and at least one browser window has the Zen MCP bridge attached.
    */
-  connect(options: { allowLaunch?: boolean } = {}): Promise<ConnectResult> {
+  connect(options: {
+    allowLaunch?: boolean;
+    explicitLaunch?: boolean;
+    signal?: AbortSignal;
+  } = {}): Promise<ConnectResult> {
     if (this.#closed) {
       return Promise.reject(new Error("Zen MCP has shut down"));
     }
-    if (!this.#ensurePromise) {
-      // Read-only mode must not spawn a browser or create a profile as a side
-      // effect of a read. zen_launch is blocked there and explicit callers
-      // (the CLI) still pass allowLaunch.
-      const allowLaunch =
-        options.allowLaunch ??
-        (!this.config.readOnly && this.config.autoLaunch);
-      this.#ensurePromise = this.#connectOnce(allowLaunch).finally(() => {
-        this.#ensurePromise = null;
-      });
+    if (options.signal?.aborted) {
+      return Promise.reject(
+        new BridgeRequestError("cancelled", "The request was cancelled by the client.")
+      );
     }
+    // Repeated calls share one connection/relaunch attempt.
+    if (this.#ensurePromise) return this.#ensurePromise;
+    if (this.#lossPending) {
+      return Promise.reject(
+        new ZenRecoveryRequiredError(
+          "Zen MCP is verifying whether the previously owned browser exited. " +
+            "No new browser will be started during verification.",
+          this.#lifecycle.info()
+        )
+      );
+    }
+
+    const explicit = options.explicitLaunch === true;
+    const decision = this.#lifecycle.decision(explicit);
+    if (!decision.allowed) {
+      return Promise.reject(
+        new ZenRecoveryRequiredError(decision.reason, this.#lifecycle.info())
+      );
+    }
+    if (
+      this.#lifecycle.state === "relaunch_in_progress" &&
+      !this.#ensurePromise
+    ) {
+      return Promise.reject(
+        new ZenRecoveryRequiredError(
+          "A browser relaunch is already in progress.",
+          this.#lifecycle.info()
+        )
+      );
+    }
+
+    // Read-only mode must not spawn a browser or create a profile as a side
+    // effect of a read. zen_launch passes allowLaunch; initial callers keep
+    // the configured policy. Explicit recovery is always allowed to launch.
+    const allowLaunch =
+      options.allowLaunch ??
+      (explicit || (!this.config.readOnly && this.config.autoLaunch));
+    this.#ensurePromise = this.#connectOnce(allowLaunch, explicit).finally(() => {
+      this.#ensurePromise = null;
+    });
     return this.#ensurePromise;
   }
 
@@ -355,32 +430,61 @@ export class ZenRuntime {
       lockedDown: this.#lockedDown,
       paused: this.hub.paused,
       consent: this.hub.consentState,
+      lifecycle: this.#lifecycle.state,
+      recovery: this.#lifecycle.info(),
     };
   }
 
-  async #connectOnce(allowLaunch: boolean): Promise<ConnectResult> {
+  async #connectOnce(
+    allowLaunch: boolean,
+    explicitLaunch: boolean
+  ): Promise<ConnectResult> {
     await this.hub.start();
     let launched = false;
 
-    if (!this.marionette.isConnected) {
-      if (this.#ownership) {
-        // The loopback socket is gone and lockdown closed the listener, so this
-        // browser can never be re-attached. It is safe to leave open because no
-        // remote session exists; it is the user's browser to close.
-        this.#logger.warn(
-          "the Marionette session for the owned browser was lost"
-        );
-        this.#ownership = null;
-        this.#lockedDown = false;
-        await this.marionette.disconnect().catch(() => undefined);
-        throw new ZenLaunchError(
-          "Zen MCP lost its Marionette session with the browser it started. " +
-            "Agent access is already closed, but this server cannot re-attach " +
-            "because the port stays shut. Quit that Zen window and call " +
-            "zen_launch again."
+    if (this.#ownership && !this.marionette.isConnected) {
+      await this.#handleOwnedLoss(
+        "the Marionette session for the owned browser was lost"
+      );
+    }
+
+    let state = this.#lifecycle.state;
+    if (state === "lost_process_alive" || state === "lost_process_unknown") {
+      throw new ZenRecoveryRequiredError(
+        "Zen MCP lost the Marionette session and the previous browser may still " +
+          "be running. It will not start another browser or terminate it. Quit " +
+          "that browser, then call zen_launch.",
+        this.#lifecycle.info()
+      );
+    }
+
+    if (state === "confirmed_exited" || state === "recovery_failed") {
+      if (!explicitLaunch) {
+        throw new ZenRecoveryRequiredError(
+          "The previous owned browser is no longer connected. Call zen_launch " +
+            "to start and verify a new browser.",
+          this.#lifecycle.info()
         );
       }
+      await this.#lifecycle.refresh();
+      state = this.#lifecycle.state;
+      if (state === "lost_process_alive" || state === "lost_process_unknown") {
+        throw new ZenRecoveryRequiredError(
+          "The previous browser is still running or its exit cannot be verified. " +
+            "Quit it before calling zen_launch.",
+          this.#lifecycle.info()
+        );
+      }
+      if (state !== "confirmed_exited" && state !== "recovery_failed") {
+        throw new ZenRecoveryRequiredError(
+          "Browser recovery is not safe in the current lifecycle state.",
+          this.#lifecycle.info()
+        );
+      }
+      this.#lifecycle.markRelaunching();
+    }
 
+    if (!this.#ownership) {
       if (await isPortOpen(this.config.marionettePort)) {
         throw new ZenLaunchError(
           `Marionette is listening on port ${this.config.marionettePort}, but ` +
@@ -396,7 +500,14 @@ export class ZenRuntime {
             "server running."
         );
       }
-      await this.#launchOwnedBrowser();
+      try {
+        await this.#launchOwnedBrowser();
+      } catch (error) {
+        if (this.#lifecycle.state === "relaunch_in_progress") {
+          this.#lifecycle.markRelaunchFailed(error);
+        }
+        throw error;
+      }
       launched = true;
     }
 
@@ -421,8 +532,68 @@ export class ZenRuntime {
     }
 
     await this.#ensureConsent();
+    if (this.#ownership && this.#identityVerified && this.#lockedDown) {
+      // Clear a previous recovery record only after the new browser is fully
+      // connected, attached and past consent.
+      this.#lifecycle.markConnected();
+    }
     this.#startAutoAttach();
-    return { launched, injection };
+    return {
+      launched,
+      injection,
+      recovery: this.#lifecycle.info(),
+    };
+  }
+
+  async #captureIdentity(pid: number | null): Promise<ProcessIdentity | undefined> {
+    if (!pid) return undefined;
+    const result = await this.#processProbe.probe(pid);
+    return result.status === "alive" ? result.identity : undefined;
+  }
+
+  async #handleMarionetteClose(info: MarionetteCloseInfo): Promise<void> {
+    if (this.#closed || this.#closing) return;
+    if (!this.#ownership || !this.#identityVerified || !this.#lockedDown) {
+      // Startup losses are handled by #connectOwnedSession's bounded retry.
+      return;
+    }
+    await this.#handleOwnedLoss(
+      `Marionette connection closed${
+        info.error ? ` (${info.error})` : ""
+      }`
+    );
+  }
+
+  /**
+   * Discards the connection object and authentication secrets, then retains
+   * only the minimal process/profile recovery record needed to decide whether
+   * a new launch is safe.
+   */
+  async #handleOwnedLoss(reason: string): Promise<void> {
+    if (this.#closing) return;
+    const ownership = this.#ownership;
+    if (!ownership) return;
+    this.#lossPending = true;
+    this.#ownership = null;
+    this.#identityVerified = false;
+    this.#lockedDown = false;
+    await this.marionette.disconnect().catch(() => undefined);
+    const launch: LaunchIdentity = {
+      launchedPid: ownership.launchedPid,
+      browserPid: ownership.browserPid,
+      profile: ownership.profile,
+      launchedAt: ownership.launchedAt,
+      launchedIdentity: ownership.launchedIdentity,
+      browserIdentity: ownership.browserIdentity,
+    };
+    try {
+      const record = await this.#lifecycle.markLost(launch, reason);
+      this.#logger.warn(
+        `the Marionette session for the owned browser was lost; recovery state ${record.state}`
+      );
+    } finally {
+      this.#lossPending = false;
+    }
   }
 
   /**
@@ -431,12 +602,14 @@ export class ZenRuntime {
    */
   async #launchOwnedBrowser(): Promise<void> {
     const result = await launchZen({ config: this.config, wait: false });
+    const launchedIdentity = await this.#captureIdentity(result.pid);
     const ownership: Ownership = {
       nonce: result.nonce,
       launchedPid: result.pid,
       browserPid: null,
       profile: resolvedProfilePath(this.config),
       launchedAt: Date.now(),
+      ...(launchedIdentity ? { launchedIdentity } : {}),
     };
     this.#ownership = ownership;
 
@@ -518,6 +691,8 @@ export class ZenRuntime {
     }
 
     ownership.browserPid = this.marionette.browserProcessId;
+    const browserIdentity = await this.#captureIdentity(ownership.browserPid);
+    if (browserIdentity) ownership.browserIdentity = browserIdentity;
     this.#identityVerified = true;
 
     try {
@@ -597,12 +772,29 @@ export class ZenRuntime {
    */
   async #closeOwnedBrowser(reason: string): Promise<void> {
     const ownership = this.#ownership;
+    if (!ownership) {
+      // Recovery states deliberately leave the previous process alone. Only a
+      // verified owned browser is ever quit or terminated.
+      if (
+        this.#lifecycle.state === "lost_process_alive" ||
+        this.#lifecycle.state === "lost_process_unknown" ||
+        this.#lifecycle.state === "confirmed_exited" ||
+        this.#lifecycle.state === "recovery_failed"
+      ) {
+        this.#logger.debug(
+          `left the previous browser untouched (${this.#lifecycle.state})`
+        );
+      }
+      return;
+    }
     const verified = this.#identityVerified;
+    const stateBefore = this.#lifecycle.state;
     const browserPid =
       (verified ? this.marionette.browserProcessId : null) ??
-      ownership?.browserPid ??
+      ownership.browserPid ??
       null;
 
+    this.#closing = true;
     this.#ownership = null;
     this.#identityVerified = false;
     this.#lockedDown = false;
@@ -617,7 +809,7 @@ export class ZenRuntime {
         }
         await this.marionette.disconnect().catch(() => undefined);
       }
-      const pid = browserPid ?? ownership?.launchedPid ?? null;
+      const pid = browserPid ?? ownership.launchedPid ?? null;
       if (pid) {
         terminateZenProcess(pid);
         await waitForProcessExit(pid, 3_000);
@@ -626,6 +818,12 @@ export class ZenRuntime {
       // Best effort; the browser is already gone or unreachable.
     } finally {
       await this.marionette.disconnect().catch(() => undefined);
+      this.#closing = false;
+      if (stateBefore === "relaunch_in_progress") {
+        this.#lifecycle.markRelaunchFailed(reason);
+      } else {
+        this.#lifecycle.markNone();
+      }
     }
     if (reason) {
       this.#logger.debug(`closed the agent browser (${reason})`);

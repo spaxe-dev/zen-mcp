@@ -77,6 +77,7 @@ const EXPECTED_TOOLS = [
 ];
 
 const MARKER = "mcp-marker-7";
+const TEST_SPACE_NAME = `MCP Test Space ${process.pid}-${Date.now()}`;
 const EVIDENCE_QUOTE = "The lighthouse keeper checked the lamp at dawn.";
 const REPEATED_QUOTE = "The shared lighthouse sentence appears in two places.";
 const SCROLL_FILLER = "Spacer text for evidence scrolling. ".repeat(60);
@@ -375,22 +376,10 @@ describe(
       assert.equal(status.appName, "Zen");
       assert.ok(status.bridge.connections >= 1);
 
-      // A profile reused across live runs can still hold a test space from a
-      // previous run. Clear only test-owned spaces before creating this one.
-      const existing = await call("zen_spaces_list");
-      for (const stale of existing.spaces) {
-        if (!/^MCP Test Space/.test(stale.name)) continue;
-        if (stale.active) {
-          const other = existing.spaces.find(
-            (entry: any) => !/^MCP Test Space/.test(entry.name)
-          );
-          if (other) await call("zen_space_switch", { space: other.id });
-        }
-        await call("zen_space_delete", { space: stale.id });
-      }
-
+      // Use a unique name so a reused profile cannot collide with an older
+      // test space. Cleanup never infers ownership from a name or prefix.
       const created = await call("zen_space_create", {
-        name: "MCP Test Space",
+        name: TEST_SPACE_NAME,
         icon: "🧪",
       });
       spaceId = created.space.id;
@@ -1885,8 +1874,8 @@ describe(
       assert.ok(restored.tabsOpened >= 2);
 
       // Restoring with newSpaces copies every space in the session. Delete
-      // every copy this run created so a reused profile does not accumulate
-      // "(restored)" spaces on later runs.
+      // only the IDs the restore reported creating; never infer ownership from
+      // names, prefixes or the current Space list.
       const spaces = await call("zen_spaces_list");
       const restoredSpaces = spaces.spaces.filter(
         (entry: any) =>
@@ -1894,11 +1883,12 @@ describe(
       );
       assert.ok(
         restoredSpaces.some((entry: any) =>
-          entry.name.startsWith("MCP Test Space (restored")
+          entry.name.startsWith(`${TEST_SPACE_NAME} (restored`)
         )
       );
-      for (const entry of restoredSpaces) {
-        await call("zen_space_delete", { space: entry.id });
+      const createdIds = new Set<string>(restored.createdSpaceIds ?? []);
+      for (const id of createdIds) {
+        await call("zen_space_delete", { space: id });
       }
 
       const deleted = await call("zen_session_delete", {
@@ -1909,6 +1899,27 @@ describe(
       assert.ok(
         !after.sessions.some((entry: any) => entry.name === "mcp-e2e-session")
       );
+    });
+
+    it("deletes only explicit created space ids, never decoy names", async () => {
+      const suffix = Date.now();
+      const decoy = await call("zen_space_create", {
+        name: `MCP Decoy ${suffix}`,
+      });
+      const created = await call("zen_space_create", {
+        name: `MCP Created ${suffix}`,
+      });
+      try {
+        await call("zen_space_delete", { space: created.space.id });
+        const after = await call("zen_spaces_list");
+        const ids = after.spaces.map((entry: any) => entry.id);
+        assert.ok(ids.includes(decoy.space.id), "the decoy Space must remain");
+        assert.ok(!ids.includes(created.space.id), "the created Space is gone");
+      } finally {
+        await call("zen_space_delete", { space: decoy.space.id }).catch(
+          () => undefined
+        );
+      }
     });
 
     it("saves a space as a template, applies it and deletes it", async () => {

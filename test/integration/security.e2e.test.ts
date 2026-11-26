@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { BridgeRequestError } from "../../src/bridge/host.js";
 import type { ZenMcpConfig } from "../../src/config.js";
@@ -172,6 +174,43 @@ describe(
       assert.equal(session.lockedDown, true);
       assert.equal(session.paused, false);
       assert.ok(browserPid, "the owned browser pid is recorded");
+    });
+
+    it("rejects a second independent MCP process using the owned profile", () => {
+      const runtimeUrl = pathToFileURL(
+        join(process.cwd(), "src", "zen", "runtime.ts")
+      ).href;
+      const helpersUrl = pathToFileURL(
+        join(process.cwd(), "test", "integration", "helpers.ts")
+      ).href;
+      const source = [
+        "const { ZenRuntime } = await import(" + JSON.stringify(runtimeUrl) + ");",
+        "const { testConfig } = await import(" + JSON.stringify(helpersUrl) + ");",
+        "const runtime = new ZenRuntime({ config: { ...testConfig(), requireConsent: false }, bridgeScriptPath: " + JSON.stringify(BRIDGE_SCRIPT) + " });",
+        "await runtime.start();",
+        "try { await runtime.connect({ allowLaunch: true }); console.error('unexpected second owner'); process.exitCode = 2; }",
+        "catch (error) { const message = String(error?.message ?? error); console.log(message); if (!/already open in another browser/i.test(message)) process.exitCode = 3; }",
+        "finally { await runtime.shutdown(); }",
+      ].join("\n");
+      const child = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "--input-type=module", "-e", source],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 20_000,
+          env: {
+            ...process.env,
+            ZEN_MCP_TEST_PROFILE: runtime.config.profilePath,
+          },
+        }
+      );
+      assert.equal(
+        child.status,
+        0,
+        "second process output: " + child.stdout + "\n" + child.stderr
+      );
+      assert.match(child.stdout, /already open in another browser/i);
     });
 
     it("blocks every browser operation while paused and restores them", async () => {

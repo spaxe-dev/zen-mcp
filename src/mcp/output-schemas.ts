@@ -679,10 +679,30 @@ export const TOOL_OUTPUT_SCHEMAS = {
     activeSpaceId: z.string().nullable(),
   },
   zen_space_delete: {
+    ok: z.boolean().optional(),
     deleted: z.boolean(),
     spaceId: z.string(),
     spaceName: z.string(),
     activeSpaceId: z.string().nullable(),
+    outcome: z
+      .enum([
+        "completed",
+        "absent_after_timeout",
+        "pending_unknown",
+        "unknown",
+        "not_found",
+        "failed_before_commit",
+      ])
+      .optional(),
+    confirmation: z.enum(["delivered", "lost", "not_applicable"]).optional(),
+    verifiedAfterTimeout: z.boolean().optional(),
+    verification: z
+      .looseObject({
+        checkedAt: z.string(),
+        present: z.boolean().nullable(),
+        method: z.literal("spaces.list"),
+      })
+      .optional(),
   },
 
   /* Tabs */
@@ -995,6 +1015,28 @@ export const TOOL_OUTPUT_SCHEMAS = {
         tool: z.string(),
         ok: z.boolean().optional(),
         executed: z.boolean().optional(),
+        phase: z
+          .enum(["started", "completed", "abandoned", "settled"])
+          .optional(),
+        operationId: z.string().optional(),
+        execution: z
+          .enum([
+            "rejected_before_execution",
+            "started",
+            "completed",
+            "partial",
+            "failed",
+            "cancelled_before_mutation",
+            "cancelled_after_mutation",
+            "timed_out_running",
+            "outcome_unknown",
+            "connection_lost",
+            "committed_unconfirmed",
+          ])
+          .optional(),
+        mutation: z
+          .enum(["none", "started", "committed", "partial", "unknown"])
+          .optional(),
         durationMs: z.number().optional(),
         citationsVerified: z.number().optional(),
         citationsFailed: z.number().optional(),
@@ -1087,6 +1129,42 @@ export const TOOL_OUTPUT_SCHEMAS = {
     foldersCreated: z.number(),
     essentialsAdded: z.number(),
     warnings: z.array(z.string()),
+    outcome: z
+      .enum(["completed", "partial", "cancelled", "budget_exhausted"])
+      .optional(),
+    partial: z.boolean().optional(),
+    cancelled: z.boolean().optional(),
+    budgetExhausted: z.boolean().optional(),
+    stopReason: z
+      .enum([
+        "client_cancelled",
+        "duration_budget",
+        "space_budget",
+        "tab_budget",
+        "folder_budget",
+        "essential_budget",
+        "space_error",
+        "none",
+      ])
+      .optional(),
+    incomplete: z.boolean().optional(),
+    rollback: z.literal("none").optional(),
+    createdSpaceIds: z.array(z.string()).optional(),
+    skipped: z
+      .looseObject({
+        spaces: z.number(),
+        tabs: z.number(),
+        folders: z.number(),
+        essentials: z.number(),
+        byReason: z.record(z.string(), z.number()),
+      })
+      .optional(),
+    inFlight: z
+      .looseObject({
+        operation: z.string(),
+        mayHaveCommitted: z.literal("unknown"),
+      })
+      .optional(),
   },
   zen_session_delete: {
     name: z.string(),

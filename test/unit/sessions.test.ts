@@ -127,7 +127,13 @@ class FakeHub implements SessionHub {
     addEssentials: [] as EssentialsParams[],
   };
 
+  afterCall?: (name: string) => void;
+
   #nextId = 1;
+
+  #done(name: string): void {
+    this.afterCall?.(name);
+  }
 
   #id(prefix: string): string {
     const id = `${prefix}-new-${this.#nextId}`;
@@ -148,7 +154,7 @@ class FakeHub implements SessionHub {
   }
 
   async listSpaces(_windowId?: string): Promise<SpacesResult> {
-    return {
+    const result = {
       activeSpaceId:
         this.spaces.find((space) => space.active)?.id ??
         this.spaces[0]?.id ??
@@ -156,6 +162,8 @@ class FakeHub implements SessionHub {
       spaces: this.spaces,
       workspacesEnabled: true,
     };
+    this.#done("listSpaces");
+    return result;
   }
 
   async createSpace(
@@ -179,6 +187,7 @@ class FakeHub implements SessionHub {
       for (const space of this.spaces) space.active = false;
     }
     this.spaces.push(info);
+    this.#done("createSpace");
     return {
       created: true,
       space: toSpace(info),
@@ -212,7 +221,7 @@ class FakeHub implements SessionHub {
     if (params.limit !== undefined) {
       tabs = tabs.slice(0, params.limit);
     }
-    return {
+    const result = {
       windowId: "win-1",
       activeSpaceId:
         this.spaces.find((space) => space.active)?.id ??
@@ -221,6 +230,8 @@ class FakeHub implements SessionHub {
       total,
       tabs,
     };
+    this.#done("listTabs");
+    return result;
   }
 
   async openTabs(
@@ -241,6 +252,7 @@ class FakeHub implements SessionHub {
       this.tabs.push(tab);
       return { ...tab, requestedUrl: url };
     });
+    this.#done("openTabs");
     return {
       space: toSpace(space),
       tabs: opened,
@@ -276,6 +288,7 @@ class FakeHub implements SessionHub {
         tab.folderLabel = params.label;
       }
     }
+    this.#done("createFolder");
     return { created: true, folder };
   }
 
@@ -291,6 +304,7 @@ class FakeHub implements SessionHub {
         changed += 1;
       }
     }
+    this.#done("pinTabs");
     return { tabIds: [...params.tabIds], changed };
   }
 
@@ -306,6 +320,7 @@ class FakeHub implements SessionHub {
         changed += 1;
       }
     }
+    this.#done("addEssentials");
     return { tabIds: [...params.tabIds], changed };
   }
 }
@@ -709,7 +724,7 @@ describe("SessionStore", () => {
     assert.equal(hub.spaces.length, 2);
   });
 
-  it("opens missing tabs in batches of 30 and honours maxTabs", async () => {
+  it("opens missing tabs in bounded batches and honours maxTabs", async () => {
     const dir = tempDir();
     const hub = new FakeHub();
     hub.spaces = [makeSpace("space-1", "Bulk", 0)];
@@ -731,13 +746,243 @@ describe("SessionStore", () => {
 
     assert.deepEqual(
       hub.calls.openTabs.map((call) => call.urls.length),
-      [30, 2]
+      [15, 15, 2]
     );
     assert.equal(result.tabsOpened, 32);
     assert.equal(result.tabsSkipped, 3);
     assert.ok(
       result.warnings.some((warning) => /limited to 32/.test(warning))
     );
+  });
+
+  it("returns a cancelled result without mutations when already aborted", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = [makeTab({ url: "https://example.com/a", spaceId: "space-1" })];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.calls.createSpace.length = 0;
+    hub.calls.openTabs.length = 0;
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await store.restore("Bulk", { signal: controller.signal });
+
+    assert.equal(result.outcome, "cancelled");
+    assert.equal(result.cancelled, true);
+    assert.equal(result.tabsOpened, 0);
+    assert.deepEqual(result.createdSpaceIds, []);
+    assert.equal(hub.calls.createSpace.length, 0);
+    assert.equal(hub.calls.openTabs.length, 0);
+  });
+
+  it("stops after cancellation between spaces without another mutation", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [
+      makeSpace("space-1", "One", 0),
+      makeSpace("space-2", "Two", 1),
+    ];
+    hub.tabs = [
+      makeTab({ url: "https://example.com/one", spaceId: "space-1" }),
+      makeTab({ url: "https://example.com/two", spaceId: "space-2" }),
+    ];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.calls.createSpace.length = 0;
+    hub.calls.openTabs.length = 0;
+    const controller = new AbortController();
+    hub.afterCall = (name) => {
+      if (name === "createSpace") controller.abort();
+    };
+
+    const result = await store.restore("Bulk", {
+      newSpaces: true,
+      signal: controller.signal,
+    });
+
+    assert.equal(result.outcome, "cancelled");
+    assert.equal(result.cancelled, true);
+    assert.equal(hub.calls.createSpace.length, 1);
+    assert.equal(hub.calls.openTabs.length, 0);
+    assert.equal(result.createdSpaceIds.length, 1);
+    assert.equal(result.spacesCreated, 1);
+  });
+
+  it("stops between tab batches after cancellation", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = Array.from({ length: 40 }, (_, index) =>
+      makeTab({
+        url: `https://example.com/${index}`,
+        spaceId: "space-1",
+        index,
+      })
+    );
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.tabs = [];
+    hub.calls.openTabs.length = 0;
+    const controller = new AbortController();
+    hub.afterCall = (name) => {
+      if (name === "openTabs") controller.abort();
+    };
+
+    const result = await store.restore("Bulk", { signal: controller.signal });
+
+    assert.equal(result.outcome, "cancelled");
+    assert.equal(hub.calls.openTabs.length, 1);
+    assert.equal(hub.calls.openTabs[0]!.urls.length, 15);
+    assert.equal(result.tabsOpened, 15);
+  });
+
+  it("reports Space budget exhaustion and skips the rest", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [
+      makeSpace("space-1", "One", 0),
+      makeSpace("space-2", "Two", 1),
+      makeSpace("space-3", "Three", 2),
+    ];
+    hub.tabs = [
+      makeTab({ url: "https://example.com/one", spaceId: "space-1" }),
+      makeTab({ url: "https://example.com/two", spaceId: "space-2" }),
+      makeTab({ url: "https://example.com/three", spaceId: "space-3" }),
+    ];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.calls.createSpace.length = 0;
+
+    const result = await store.restore("Bulk", {
+      newSpaces: true,
+      budget: { maxSpaces: 1 },
+    });
+
+    assert.equal(result.outcome, "budget_exhausted");
+    assert.equal(result.budgetExhausted, true);
+    assert.equal(result.partial, true);
+    assert.equal(result.spacesCreated, 1);
+    assert.equal(result.createdSpaceIds.length, 1);
+    assert.equal(result.skipped.spaces, 2);
+    assert.ok((result.skipped.byReason.space_budget ?? 0) > 0);
+    assert.equal(result.rollback, "none");
+  });
+
+  it("reports tab budget exhaustion and preserves created IDs", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = Array.from({ length: 20 }, (_, index) =>
+      makeTab({ url: `https://example.com/${index}`, spaceId: "space-1" })
+    );
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.tabs = [];
+
+    const result = await store.restore("Bulk", { newSpaces: true, maxTabs: 5 });
+
+    assert.equal(result.outcome, "budget_exhausted");
+    assert.equal(result.tabsOpened, 5);
+    assert.ok((result.skipped.byReason.tab_budget ?? 0) > 0);
+    assert.equal(result.createdSpaceIds.length, 1);
+  });
+
+  it("counts Spaces never reached after a mid-Space tab-budget stop", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [
+      makeSpace("space-1", "One", 0),
+      makeSpace("space-2", "Two", 1),
+    ];
+    hub.tabs = [
+      makeTab({ url: "https://example.com/a", spaceId: "space-1" }),
+      makeTab({ url: "https://example.com/b", spaceId: "space-1" }),
+      makeTab({ url: "https://example.com/c", spaceId: "space-1" }),
+      makeTab({ url: "https://example.com/d", spaceId: "space-2" }),
+      makeTab({ url: "https://example.com/e", spaceId: "space-2" }),
+    ];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.tabs = [];
+
+    const result = await store.restore("Bulk", { newSpaces: true, maxTabs: 2 });
+
+    assert.equal(result.outcome, "budget_exhausted");
+    assert.equal(result.stopReason, "tab_budget");
+    assert.equal(result.tabsOpened, 2);
+    assert.equal(result.spacesCreated, 1);
+    assert.equal(result.skipped.spaces, 1);
+    assert.equal(result.skipped.tabs, 3);
+    assert.equal(result.skipped.byReason.tab_budget, 3);
+    assert.equal(result.createdSpaceIds.length, 1);
+  });
+
+  it("reports a duration budget before starting mutations", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = [makeTab({ url: "https://example.com/a", spaceId: "space-1" })];
+    let ticks = 0;
+    const store = new SessionStore({
+      dir,
+      hub,
+      now: () => {
+        ticks += 1;
+        return ticks * 1000;
+      },
+    });
+    await store.save("Bulk");
+    hub.calls.createSpace.length = 0;
+
+    const result = await store.restore("Bulk", {
+      newSpaces: true,
+      budget: { maxDurationMs: 1 },
+    });
+
+    assert.equal(result.outcome, "budget_exhausted");
+    assert.equal(result.stopReason, "duration_budget");
+    assert.equal(result.spacesCreated, 0);
+    assert.equal(result.createdSpaceIds.length, 0);
+    assert.equal(result.skipped.spaces, 1);
+    assert.equal(result.skipped.tabs, 1);
+    assert.equal(hub.calls.createSpace.length, 0);
+  });
+
+  it("does not include reused Spaces in createdSpaceIds", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = [makeTab({ url: "https://example.com/a", spaceId: "space-1" })];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.calls.createSpace.length = 0;
+
+    const result = await store.restore("Bulk", { newSpaces: false });
+
+    assert.equal(result.spacesReused, 1);
+    assert.deepEqual(result.createdSpaceIds, []);
+    assert.equal(hub.calls.createSpace.length, 0);
+  });
+
+  it("reports an uncertain in-flight mutation after a timeout", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Bulk", 0)];
+    hub.tabs = [makeTab({ url: "https://example.com/a", spaceId: "space-1" })];
+    const store = new SessionStore({ dir, hub });
+    await store.save("Bulk");
+    hub.openTabs = async () => {
+      throw Object.assign(new Error("timed out"), { code: "bridge_timeout" });
+    };
+
+    const result = await store.restore("Bulk", { newSpaces: true });
+
+    assert.equal(result.partial, true);
+    assert.equal(result.inFlight?.operation, "tabs.open");
+    assert.equal(result.inFlight?.mayHaveCommitted, "unknown");
+    assert.equal(result.rollback, "none");
   });
 
   it("names the file when sessions.json is corrupt", () => {

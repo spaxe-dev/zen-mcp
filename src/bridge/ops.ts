@@ -1824,6 +1824,8 @@ export function createOps(
       await win.gZenWorkspaces.removeWorkspace(space.uuid);
       return {
         deleted: true,
+        outcome: "completed",
+        confirmation: "delivered",
         spaceId: space.uuid,
         spaceName: space.name,
         activeSpaceId: win.gZenWorkspaces.activeWorkspace ?? null,
@@ -4486,6 +4488,11 @@ export function createOps(
         await policy.refresh();
         policyPreflight(method, params);
         const result = await handler(params as never);
+        // Re-read policy after the operation before releasing data or claiming
+        // success. Postflight then filters/rejects its result against the
+        // newest browser-owned policy snapshot. A committed browser action
+        // cannot be rolled back, but its result must not escape after revoke.
+        await policy.refresh();
         return policyPostflight(method, params, result);
       })();
     },

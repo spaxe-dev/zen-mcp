@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   chmodSync,
+  constants,
   closeSync,
   existsSync,
   fstatSync,
+  fsyncSync,
+  lstatSync,
   openSync,
   readSync,
   renameSync,
-  statSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { normalizeWebUrl } from "../shared/url-policy.js";
@@ -94,6 +96,30 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
 /** Verification outcome of an evidence batch, when the result carries counts. */
 export type AuditOutcome = "success" | "partial" | "failed";
 
+/**
+ * Truthful execution state. A terminal record for a started handler never
+ * reports `executed:false`; `execution` distinguishes how it ended.
+ */
+export type AuditExecution =
+  | "rejected_before_execution"
+  | "started"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled_before_mutation"
+  | "cancelled_after_mutation"
+  | "timed_out_running"
+  | "outcome_unknown"
+  | "connection_lost"
+  | "committed_unconfirmed";
+
+export type AuditMutation =
+  | "none"
+  | "started"
+  | "committed"
+  | "partial"
+  | "unknown";
+
 /** Outcome fields derived from a handler result and stored on the audit line. */
 export interface AuditOutcomeFields {
   /** True when the tool's structured result succeeded. */
@@ -106,11 +132,19 @@ export interface AuditOutcomeFields {
   citationsFailed?: number;
   /** Batch verification outcome when citation counts are present. */
   outcome?: AuditOutcome;
+  /** Correlation id shared by start, terminal and late-settlement records. */
+  operationId?: string;
+  /** Truthful terminal execution state; absent on the durable start record. */
+  execution?: AuditExecution;
+  /** What is known about browser mutation. */
+  mutation?: AuditMutation;
 }
 
 export interface AuditRecord extends AuditOutcomeFields {
   /** ISO timestamp of when the call finished. */
   at: string;
+  /** started is written before a guarded operation; completed records its outcome. */
+  phase?: "started" | "completed" | "abandoned" | "settled";
   tool: string;
   durationMs: number;
   args?: unknown;
@@ -496,12 +530,12 @@ export class ToolGuard {
   }
 
   /**
-   * Appends one JSON line to the audit log. Never throws; a write failure is
-   * reported to stderr once and then stays silent.
+   * Appends one JSON line and reports whether it reached disk. Guarded browser
+   * operations require a durable start record before execution.
    */
-  audit(record: AuditRecord): void {
+  audit(record: AuditRecord): boolean {
     if (!this.options.auditLog) {
-      return;
+      return true;
     }
     try {
       const next: AuditRecord = { ...record };
@@ -529,6 +563,7 @@ export class ToolGuard {
         line = `${JSON.stringify({
           at: next.at,
           tool: next.tool,
+          ...(next.phase ? { phase: next.phase } : {}),
           ok: next.ok,
           executed: next.executed,
           durationMs: next.durationMs,
@@ -546,15 +581,13 @@ export class ToolGuard {
       }
       ensurePrivateDir(dirname(this.auditPath));
       this.#rotateFor(Buffer.byteLength(line, "utf8"));
-      appendFileSync(this.auditPath, line, {
-        encoding: "utf8",
-        mode: PRIVATE_FILE_MODE,
-      });
+      this.#appendAuditLine(line);
       try {
         chmodSync(this.auditPath, PRIVATE_FILE_MODE);
       } catch {
         // Windows does not apply POSIX mode bits the same way.
       }
+      return true;
     } catch (error) {
       if (!this.warnedWriteFailure) {
         this.warnedWriteFailure = true;
@@ -562,6 +595,44 @@ export class ToolGuard {
           `zen-mcp: could not write the audit log at ${this.auditPath}: ${describeError(error)}`
         );
       }
+      return false;
+    }
+  }
+
+  #appendAuditLine(line: string): void {
+    const noFollow = constants.O_NOFOLLOW ?? 0;
+    const fd = openSync(
+      this.auditPath,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | noFollow,
+      PRIVATE_FILE_MODE
+    );
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      const named = lstatSync(this.auditPath, { bigint: true });
+      if (
+        !opened.isFile() ||
+        named.isSymbolicLink() ||
+        !named.isFile() ||
+        opened.ino !== named.ino ||
+        (named.dev !== 0n && opened.dev !== named.dev)
+      ) {
+        throw new Error("The audit log path changed while it was opened.");
+      }
+      const bytes = Buffer.from(line, "utf8");
+      let written = 0;
+      while (written < bytes.length) {
+        const count = writeSync(
+          fd,
+          bytes,
+          written,
+          bytes.length - written
+        );
+        if (count <= 0) throw new Error("The audit log write was incomplete.");
+        written += count;
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
   }
 
@@ -571,7 +642,10 @@ export class ToolGuard {
    */
   #rotateFor(incoming: number): void {
     try {
-      const stat = statSync(this.auditPath);
+      const stat = lstatSync(this.auditPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        throw new Error("The audit log is not a regular file.");
+      }
       if (stat.size + incoming <= MAX_AUDIT_BYTES) return;
       const backup = `${this.auditPath}${AUDIT_BACKUP}`;
       try {
@@ -598,9 +672,21 @@ export class ToolGuard {
     }
     let text: string;
     try {
-      const fd = openSync(this.auditPath, "r");
+      const noFollow = constants.O_NOFOLLOW ?? 0;
+      const fd = openSync(this.auditPath, constants.O_RDONLY | noFollow);
       try {
-        const { size } = fstatSync(fd);
+        const opened = fstatSync(fd, { bigint: true });
+        const named = lstatSync(this.auditPath, { bigint: true });
+        if (
+          !opened.isFile() ||
+          named.isSymbolicLink() ||
+          !named.isFile() ||
+          opened.ino !== named.ino ||
+          (named.dev !== 0n && opened.dev !== named.dev)
+        ) {
+          return [];
+        }
+        const size = Number(opened.size);
         const start = Math.max(0, size - AUDIT_TAIL_BYTES);
         const length = size - start;
         const buffer = Buffer.alloc(length);

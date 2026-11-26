@@ -55,6 +55,7 @@ function createPolicyFileReader(
 ): (() => Promise<PolicyFileObservation>) | undefined {
   if (!path) return undefined;
   let lastSignature: string | null = null;
+  let lastText: string | null = null;
   return async () => {
     const io = (globalThis as { IOUtils?: IOUtilsLike }).IOUtils;
     if (!io || typeof io.stat !== "function" || typeof io.readUTF8 !== "function") {
@@ -74,14 +75,16 @@ function createPolicyFileReader(
     const signature = `${Number(info.lastModified ?? 0)}:${Number(
       info.size ?? 0
     )}`;
-    if (signature === lastSignature) return { status: "unchanged" };
     if (Number(info.size ?? 0) > POLICY_MAX_BYTES) {
       lastSignature = signature;
+      lastText = null;
       return { status: "unreadable" };
     }
     try {
       const text = await io.readUTF8(path, { maxBytes: POLICY_MAX_BYTES });
       lastSignature = signature;
+      if (text === lastText) return { status: "unchanged" };
+      lastText = text;
       return { status: "changed", text };
     } catch {
       return { status: "unreadable" };

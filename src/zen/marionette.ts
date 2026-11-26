@@ -52,6 +52,13 @@ export interface MarionetteClientOptions {
   logger?: Logger;
 }
 
+export interface MarionetteCloseInfo {
+  at: number;
+  hadError: boolean;
+  error?: string;
+  pendingCommands: number;
+}
+
 interface PendingCommand {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -117,6 +124,8 @@ export class MarionetteClient {
   #connecting: Promise<void> | null = null;
   #closed = false;
   #handshakePacket: Record<string, unknown> | null = null;
+  #closeListener: ((info: MarionetteCloseInfo) => void) | null = null;
+  #lastSocketError: Error | null = null;
 
   /** Serializes content-context switching, which is global session state. */
   #contentQueue: Promise<unknown> = Promise.resolve();
@@ -133,6 +142,14 @@ export class MarionetteClient {
 
   get isConnected(): boolean {
     return this.#socket !== null && !this.#socket.destroyed;
+  }
+
+  /** Registers a listener for an unexpected socket close. */
+  onClose(listener: (info: MarionetteCloseInfo) => void): () => void {
+    this.#closeListener = listener;
+    return () => {
+      if (this.#closeListener === listener) this.#closeListener = null;
+    };
   }
 
   get context(): MarionetteContext {
@@ -180,6 +197,7 @@ export class MarionetteClient {
     this.#closed = false;
     this.#handshakePacket = null;
     this.#handshake = null;
+    this.#lastSocketError = null;
     this.#logger.debug(`connecting to ${this.host}:${this.port}`);
     const socket = await this.#openSocket();
     this.#socket = socket;
@@ -187,6 +205,7 @@ export class MarionetteClient {
     socket.on("data", (chunk: Buffer) => this.#onData(chunk));
     socket.on("close", () => this.#onClose(socket));
     socket.on("error", (error: Error) => {
+      this.#lastSocketError = error;
       this.#logger.debug(`socket error: ${error.message}`);
     });
 
@@ -419,6 +438,7 @@ export class MarionetteClient {
     this.#socket = null;
     this.#session = null;
     const error = new MarionetteConnectionError("Marionette connection closed");
+    const pendingCommands = this.#pending.size;
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -429,6 +449,15 @@ export class MarionetteClient {
     if (!this.#closed) {
       this.#logger.debug("Marionette connection closed");
     }
+    const info: MarionetteCloseInfo = {
+      at: Date.now(),
+      hadError: this.#lastSocketError !== null,
+      ...(this.#lastSocketError
+        ? { error: this.#lastSocketError.message }
+        : {}),
+      pendingCommands,
+    };
+    this.#closeListener?.(info);
   }
 
   async setContext(context: MarionetteContext): Promise<void> {

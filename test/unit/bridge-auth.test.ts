@@ -23,15 +23,27 @@ const BRIDGE_SCRIPT = join(process.cwd(), "dist", "bridge.js");
  */
 async function connect(
   port: number
-): Promise<{ ws: WebSocket; next(): Promise<any> }> {
+): Promise<{
+  ws: WebSocket;
+  next(): Promise<any>;
+  closed(): Promise<{ code: number; reason: string }>;
+}> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}${BRIDGE_PATH}`);
   const queue: any[] = [];
   const waiters: Array<(message: any) => void> = [];
+  let closeValue: { code: number; reason: string } | null = null;
+  const closeWaiters: Array<
+    (value: { code: number; reason: string }) => void
+  > = [];
   ws.on("message", (data) => {
     const message = JSON.parse(data.toString("utf8"));
     const waiter = waiters.shift();
     if (waiter) waiter(message);
     else queue.push(message);
+  });
+  ws.on("close", (code, reason) => {
+    closeValue = { code, reason: reason.toString() };
+    for (const resolve of closeWaiters.splice(0)) resolve(closeValue);
   });
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -39,6 +51,10 @@ async function connect(
   });
   return {
     ws,
+    closed: () =>
+      closeValue
+        ? Promise.resolve(closeValue)
+        : new Promise((resolve) => closeWaiters.push(resolve)),
     next: () => {
       const buffered = queue.shift();
       if (buffered) return Promise.resolve(buffered);
@@ -132,6 +148,43 @@ describe("bridge handshake", () => {
     const result = await closed;
     assert.equal(result.code, AUTH_FAILED_CLOSE_CODE);
     assert.equal(hub.connectionCount, 0);
+  });
+
+  it("closes malformed and binary messages before authentication", async () => {
+    const malformed = await connect(port);
+    await malformed.next();
+    const malformedClosed = nextClose(malformed.ws);
+    malformed.ws.send("{");
+    assert.equal((await malformedClosed).code, 1007);
+
+    const binary = await connect(port);
+    await binary.next();
+    const binaryClosed = nextClose(binary.ws);
+    binary.ws.send(Buffer.from([0, 1, 2]));
+    assert.equal((await binaryClosed).code, 1003);
+  });
+
+  it("rejects messages larger than the configured payload ceiling", async () => {
+    const client = await connect(port);
+    await client.next();
+    const closed = nextClose(client.ws);
+    client.ws.send("x".repeat(2 * 1024 * 1024 + 1));
+    assert.equal((await closed).code, 1009);
+  });
+
+  it("bounds the number of simultaneous unauthenticated handshakes", async () => {
+    const pending = [];
+    for (let index = 0; index < 16; index += 1) {
+      const client = await connect(port);
+      await client.next();
+      pending.push(client);
+    }
+    try {
+      const rejected = await connect(port);
+      assert.equal((await rejected.closed()).code, 1008);
+    } finally {
+      for (const client of pending) client.ws.close();
+    }
   });
 });
 

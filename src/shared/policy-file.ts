@@ -8,7 +8,9 @@
 
 import {
   closeSync,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   openSync,
   statSync,
   unlinkSync,
@@ -40,7 +42,6 @@ import {
 } from "./policy.js";
 
 export const POLICY_FILE_NAME = "policy.json";
-export const POLICY_LOCK_STALE_MS = 10_000;
 
 export type PolicyFileErrorCode =
   | "policy_exists"
@@ -199,7 +200,7 @@ export function loadPolicySnapshot(options: {
 function policyFileSignature(file: string): string {
   try {
     const stat = statSync(file);
-    return `${stat.mtimeMs}:${stat.size}`;
+    return `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}:${stat.size}`;
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === "ENOENT"
       ? "missing"
@@ -238,56 +239,64 @@ export function watchPolicySnapshot(options: {
 function acquirePolicyLock(file: string): () => void {
   const lock = policyLockFilePath(file);
   ensurePrivateDir(dirname(lock));
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = openSync(lock, "wx", PRIVATE_FILE_MODE);
+  let fd: number | undefined;
+  let owned: { dev: bigint; ino: bigint } | undefined;
+  try {
+    fd = openSync(lock, "wx", PRIVATE_FILE_MODE);
+    owned = fstatSync(fd, { bigint: true });
+    writeFileSync(
+      fd,
+      JSON.stringify({ pid: process.pid, at: new Date().toISOString() })
+    );
+    fsyncSync(fd);
+  } catch (error) {
+    if (fd !== undefined) {
       try {
-        writeFileSync(
-          fd,
-          JSON.stringify({ pid: process.pid, at: new Date().toISOString() })
-        );
-        fsyncSync(fd);
-      } finally {
         closeSync(fd);
-      }
-      return () => {
-        try {
-          unlinkSync(lock);
-        } catch {
-          // A missing lock is already released.
-        }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
-        throw new PolicyFileError(
-          "io_error",
-          `Could not lock the policy file (${(error as NodeJS.ErrnoException)?.code ?? "unknown error"}).`
-        );
-      }
-      let stale = false;
-      try {
-        stale = Date.now() - statSync(lock).mtimeMs > POLICY_LOCK_STALE_MS;
       } catch {
-        stale = true;
+        // Best effort after a failed lock initialization.
       }
-      if (stale && attempt === 0) {
+      if (owned) {
         try {
-          unlinkSync(lock);
+          const current = lstatSync(lock, { bigint: true });
+          if (current.dev === owned.dev && current.ino === owned.ino) {
+            unlinkSync(lock);
+          }
         } catch {
-          // Another writer may have released or reclaimed it.
+          // Do not remove a replaced lock.
         }
-        continue;
       }
+    }
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
       throw new PolicyFileError(
-        "locked",
-        "Another Zen MCP process is writing the policy file. Try again."
+        "io_error",
+        `Could not lock the policy file (${(error as NodeJS.ErrnoException)?.code ?? "unknown error"}).`
       );
     }
+    throw new PolicyFileError(
+      "locked",
+      "A policy lock already exists. Confirm no writer is active before " +
+        "removing a stale lock and retrying."
+    );
   }
-  throw new PolicyFileError(
-    "locked",
-    "Another Zen MCP process is writing the policy file. Try again."
-  );
+  if (fd === undefined || !owned) {
+    throw new PolicyFileError("io_error", "Could not verify the policy lock.");
+  }
+  return () => {
+    try {
+      const current = lstatSync(lock, { bigint: true });
+      if (
+        current.ino === owned.ino &&
+        (current.dev === 0n || current.dev === owned.dev)
+      ) {
+        unlinkSync(lock);
+      }
+    } catch {
+      // A replaced or missing lock is never removed by this writer.
+    } finally {
+      closeSync(fd);
+    }
+  };
 }
 
 function writeUnderLock(

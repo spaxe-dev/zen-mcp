@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CallToolRequestSchema,
@@ -19,6 +20,8 @@ import {
   MUTATING_TOOLS,
   ToolGuard,
   ToolGuardError,
+  type AuditExecution,
+  type AuditMutation,
   type AuditOutcomeFields,
   type AuditRecord,
 } from "./guard.js";
@@ -444,6 +447,185 @@ export function createZenMcpServer(
   };
 
   /**
+   * Maps a handler result to a truthful execution/mutation state. Existing
+   * `auditOutcomeForResult` remains responsible for evidence-batch counts.
+   */
+  function auditResultFields(
+    tool: string,
+    value: unknown
+  ): AuditOutcomeFields {
+    const base = auditOutcomeForResult(tool, value);
+    const record =
+      value !== null && typeof value === "object"
+        ? (value as Record<string, unknown>)
+        : null;
+    const mutating = MUTATING_TOOLS.has(tool);
+    const execution: AuditExecution =
+      base.ok === false
+        ? "failed"
+        : base.outcome === "partial"
+          ? "partial"
+          : "completed";
+    let mutation: AuditMutation = mutating ? "committed" : "none";
+
+    if (tool === "zen_session_restore" && record) {
+      const outcome = String(record.outcome ?? "");
+      const changed =
+        Number(record.spacesCreated ?? 0) > 0 ||
+        Number(record.tabsOpened ?? 0) > 0 ||
+        Number(record.foldersCreated ?? 0) > 0 ||
+        Number(record.essentialsAdded ?? 0) > 0;
+      const mayHaveMutated = changed || record.inFlight !== undefined;
+      if (outcome === "cancelled") {
+        return {
+          ...base,
+          executed: true,
+          execution: mayHaveMutated
+            ? "cancelled_after_mutation"
+            : "cancelled_before_mutation",
+          mutation: mayHaveMutated ? "unknown" : "none",
+        };
+      }
+      if (outcome === "budget_exhausted") {
+        return {
+          ...base,
+          executed: true,
+          execution: "partial",
+          mutation: changed ? "partial" : "none",
+        };
+      }
+      if (record.partial === true || record.incomplete === true) {
+        return {
+          ...base,
+          executed: true,
+          execution: "partial",
+          mutation: changed ? "partial" : "unknown",
+        };
+      }
+      return {
+        ...base,
+        executed: true,
+        execution: "completed",
+        mutation: changed ? "committed" : "none",
+      };
+    }
+
+    if (tool === "zen_space_delete" && record) {
+      const outcome = String(record.outcome ?? "");
+      if (outcome === "completed") {
+        return {
+          ...base,
+          executed: true,
+          execution: "completed",
+          mutation: "committed",
+        };
+      }
+      if (outcome === "absent_after_timeout") {
+        return {
+          ...base,
+          executed: true,
+          execution: "committed_unconfirmed",
+          mutation: "unknown",
+        };
+      }
+      if (outcome === "pending_unknown" || outcome === "unknown") {
+        return {
+          ...base,
+          executed: true,
+          execution: "timed_out_running",
+          mutation: "unknown",
+        };
+      }
+      return {
+        ...base,
+        executed: true,
+        execution: "failed",
+        mutation: "none",
+      };
+    }
+
+    return {
+      ...base,
+      executed: true,
+      execution,
+      mutation,
+    };
+  }
+
+  function auditErrorFields(
+    tool: string,
+    error: unknown,
+    signal: AbortSignal
+  ): AuditOutcomeFields {
+    const mutating = MUTATING_TOOLS.has(tool);
+    const code = errorCode(error);
+    const name = (error as { name?: string })?.name;
+    if (signal.aborted || code === "cancelled") {
+      return {
+        ok: false,
+        executed: true,
+        execution: mutating
+          ? "outcome_unknown"
+          : "cancelled_before_mutation",
+        mutation: mutating ? "unknown" : "none",
+      };
+    }
+    if (code === "bridge_timeout") {
+      return {
+        ok: false,
+        executed: true,
+        execution: "timed_out_running",
+        mutation: mutating ? "unknown" : "none",
+      };
+    }
+    if (
+      code === "bridge_disconnected" ||
+      code === "bridge_unavailable" ||
+      name === "MarionetteConnectionError"
+    ) {
+      return {
+        ok: false,
+        executed: true,
+        execution: "connection_lost",
+        mutation: mutating ? "unknown" : "none",
+      };
+    }
+    if (
+      code === "space_delete_pending" ||
+      code === "space_delete_unknown"
+    ) {
+      return {
+        ok: false,
+        executed: true,
+        execution:
+          code === "space_delete_pending"
+            ? "timed_out_running"
+            : "outcome_unknown",
+        mutation: "unknown",
+      };
+    }
+    if (
+      code === "space_delete_not_found" ||
+      code === "space_delete_failed_before_commit" ||
+      code === "space_delete_ambiguous" ||
+      code === "recovery_required"
+    ) {
+      return {
+        ok: false,
+        executed: true,
+        execution: "failed",
+        mutation: "none",
+      };
+    }
+    return {
+      ok: false,
+      executed: true,
+      execution: "failed",
+      mutation: mutating ? "unknown" : "none",
+    };
+  }
+
+  /**
    * Runs a tool with policy and audit handling. `urls` carries URLs that are
    * not in the arguments (sessions, templates) for the domain allowlist.
    */
@@ -454,6 +636,7 @@ export function createZenMcpServer(
     options: { urls?: () => Promise<string[]>; extra?: ToolExtra } = {}
   ): Promise<ToolResult> => {
     const started = Date.now();
+    const operationId = randomUUID();
     const signal = options.extra?.signal ?? NEVER_ABORT;
     const report = createProgressReporter(options.extra);
     const policyFields = policyAuditFields(guard.policySnapshot, tool, args);
@@ -466,7 +649,13 @@ export function createZenMcpServer(
           started,
           args,
           urls,
-          { ok: false, executed: false },
+          {
+            ok: false,
+            executed: false,
+            operationId,
+            execution: "rejected_before_execution",
+            mutation: "none",
+          },
           error,
           policyFields
         )
@@ -487,7 +676,13 @@ export function createZenMcpServer(
           started,
           args,
           urls,
-          { ok: false, executed: false },
+          {
+            ok: false,
+            executed: false,
+            operationId,
+            execution: "rejected_before_execution",
+            mutation: "none",
+          },
           error,
           policyFields
         )
@@ -506,7 +701,13 @@ export function createZenMcpServer(
           started,
           args,
           urls,
-          { ok: false, executed: false },
+          {
+            ok: false,
+            executed: false,
+            operationId,
+            execution: "rejected_before_execution",
+            mutation: "none",
+          },
           error,
           policyFields
         )
@@ -514,23 +715,84 @@ export function createZenMcpServer(
       logToolEvent("warning", tool, errorCode(error), describeError(error));
       return errorResult(error, STRUCTURED_ERROR_TOOLS.has(tool));
     }
-    try {
-      const value = await raceWithAbort(
-        Promise.resolve().then(() => handler({ signal, report })),
-        signal
+
+    const auditStarted = guard.audit(
+      auditRecord(
+        tool,
+        started,
+        args,
+        urls,
+        {
+          ok: true,
+          executed: false,
+          operationId,
+          execution: "started",
+          mutation: "none",
+        },
+        undefined,
+        policyFields,
+        "started"
+      )
+    );
+    if (!auditStarted) {
+      const error = new BridgeRequestError(
+        "audit_unavailable",
+        "The audit log could not record this request, so browser work was not started."
       );
-      if (signal.aborted) {
-        throw new BridgeRequestError("cancelled", CANCELLED_MESSAGE);
+      logToolEvent("error", tool, error.code, error.message);
+      return errorResult(error, STRUCTURED_ERROR_TOOLS.has(tool));
+    }
+
+    let abandoned = false;
+    const work = Promise.resolve().then(() => handler({ signal, report }));
+    // A handler that outlives the client request is still observed. Its late
+    // result is appended with the same operationId instead of rewriting the
+    // original history or pretending it did not run.
+    work.then(
+      (lateValue) => {
+        if (!abandoned) return;
+        guard.audit(
+          auditRecord(
+            tool,
+            started,
+            args,
+            urls,
+            { ...auditResultFields(tool, lateValue), operationId },
+            undefined,
+            policyFields,
+            "settled"
+          )
+        );
+      },
+      (lateError) => {
+        if (!abandoned) return;
+        guard.audit(
+          auditRecord(
+            tool,
+            started,
+            args,
+            urls,
+            { ...auditErrorFields(tool, lateError, signal), operationId },
+            lateError,
+            policyFields,
+            "settled"
+          )
+        );
       }
+    );
+
+    try {
+      const value = await raceWithAbort(work, signal);
       guard.audit(
         auditRecord(
           tool,
           started,
           args,
           urls,
-          auditOutcomeForResult(tool, value),
+          { ...auditResultFields(tool, value), operationId },
           undefined,
-          policyFields
+          policyFields,
+          "completed"
         )
       );
       if (RESOURCE_CHANGING_TOOLS.has(tool)) {
@@ -548,15 +810,22 @@ export function createZenMcpServer(
       const failure = signal.aborted
         ? new BridgeRequestError("cancelled", CANCELLED_MESSAGE)
         : error;
+      // An aborted request may still have a handler running. Its late
+      // settlement is appended with the same operationId rather than assumed.
+      if (signal.aborted) abandoned = true;
       guard.audit(
         auditRecord(
           tool,
           started,
           args,
           urls,
-          { ok: false, executed: false },
+          {
+            ...auditErrorFields(tool, failure, signal),
+            operationId,
+          },
           failure,
-          policyFields
+          policyFields,
+          abandoned ? "abandoned" : "completed"
         )
       );
       const code = errorCode(failure);
@@ -624,7 +893,10 @@ export function createZenMcpServer(
         "zen_launch",
         {},
         async () => {
-          const connection = await runtime.connect({ allowLaunch: true });
+          const connection = await runtime.connect({
+            allowLaunch: true,
+            explicitLaunch: true,
+          });
           const status = await runtime.status();
           return {
             launched: connection.launched,
@@ -2756,7 +3028,7 @@ export function createZenMcpServer(
           .min(0)
           .max(2000)
           .optional()
-          .describe("Cap on tabs opened. Defaults to 300."),
+          .describe("Cap on tabs opened. Defaults to 100; the 40s restore deadline still applies."),
       },
       annotations: { readOnlyHint: false },
     },
@@ -2764,9 +3036,14 @@ export function createZenMcpServer(
       guarded(
         "zen_session_restore",
         { name, newSpaces, switchTo, maxTabs },
-        async () => {
-          await runtime.connect();
-          return sessions.restore(name, { newSpaces, switchTo, maxTabs });
+        async ({ signal }) => {
+          await runtime.connect({ signal });
+          return sessions.restore(name, {
+            newSpaces,
+            switchTo,
+            maxTabs,
+            signal,
+          });
         },
         {
           urls: async () => {
@@ -3221,6 +3498,25 @@ export function createZenMcpServer(
   ) =>
     registerJsonResource(server, uri, title, async () => {
       const started = Date.now();
+      if (
+        !guard.audit(
+          auditRecord(
+            `resource:${uri}`,
+            started,
+            undefined,
+            [],
+            { ok: true, executed: false },
+            undefined,
+            undefined,
+            "started"
+          )
+        )
+      ) {
+        throw new BridgeRequestError(
+          "audit_unavailable",
+          "The audit log could not record this resource read, so browser data was not read."
+        );
+      }
       let value: unknown;
       try {
         if (runtime.paused && !options.allowPaused) {
@@ -3239,16 +3535,24 @@ export function createZenMcpServer(
             undefined,
             [],
             { ok: false, executed: false },
-            error
+            error,
+            undefined,
+            "completed"
           )
         );
         throw error;
       }
       guard.audit(
-        auditRecord(`resource:${uri}`, started, undefined, [], {
-          ok: true,
-          executed: true,
-        })
+        auditRecord(
+          `resource:${uri}`,
+          started,
+          undefined,
+          [],
+          { ok: true, executed: true },
+          undefined,
+          undefined,
+          "completed"
+        )
       );
       return value;
     });
@@ -3468,13 +3772,18 @@ function auditRecord(
   urls: string[],
   fields: AuditOutcomeFields,
   error?: unknown,
-  policy?: PolicyAuditFields
+  policy?: PolicyAuditFields,
+  phase?: AuditRecord["phase"]
 ): AuditRecord {
   return {
     at: new Date().toISOString(),
     tool,
     ok: fields.ok,
     executed: fields.executed,
+    ...(phase ? { phase } : {}),
+    ...(fields.operationId ? { operationId: fields.operationId } : {}),
+    ...(fields.execution ? { execution: fields.execution } : {}),
+    ...(fields.mutation ? { mutation: fields.mutation } : {}),
     durationMs: Date.now() - started,
     ...(policy?.capability ? { capability: policy.capability } : {}),
     ...(policy

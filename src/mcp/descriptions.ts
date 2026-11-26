@@ -102,7 +102,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   zen_session_list:
     "List sessions with creation time, space, tab, and essential counts.",
   zen_session_restore:
-    "Reopen a saved session: spaces matched by name and reused unless newSpaces, duplicate URLs skipped, tabs opened in the background, folders and pins recreated. Partial failures are warnings; maxTabs defaults to 300.",
+    "Reopen a saved session with bounded, cancellable restore. Spaces are reused unless newSpaces; duplicate URLs skipped; tabs opened in background; folders and pins recreated. Partial work is reported with createdSpaceIds, skipped counts and no rollback claim; maxTabs defaults to 100.",
   zen_session_delete:
     "Delete a saved session. It never closes open tabs.",
   zen_space_templates:

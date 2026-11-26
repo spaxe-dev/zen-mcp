@@ -703,7 +703,7 @@ describe(
       }
     });
 
-    it("previews an allowed URL and refuses a privileged tab", async () => {
+    it("previews allowed URLs and refuses internal page navigation", async () => {
       const opened = await runtime.hub.openTabs({
         urls: [`${page.url}?glance=1`],
         space: spaceId,
@@ -711,22 +711,19 @@ describe(
       });
       const glanceId = opened.tabs[0]?.id ?? "";
       assert.ok(glanceId);
-      let privilegedId = "";
       try {
         const preview = await runtime.hub.openGlance({ tabId: glanceId });
         assert.equal(preview.opened, true, "Zen opens an http(s) glance");
         assert.equal(preview.url, `${page.url}?glance=1`);
 
-        const privileged = await runtime.hub.openTabs({
-          urls: ["about:robots"],
-          space: spaceId,
-          background: true,
-        });
-        privilegedId = privileged.tabs[0]?.id ?? "";
-        assert.ok(privilegedId, "opened an about: tab");
         await assert.rejects(
-          () => runtime.hub.openGlance({ tabId: privilegedId }),
-          (error: { code?: string }) => error.code === "invalid_url"
+          () =>
+            runtime.hub.openTabs({
+              urls: ["about:robots"],
+              space: spaceId,
+              background: true,
+            }),
+          (error: { code?: string }) => error.code === "internal_page"
         );
       } finally {
         await runtime.marionette
@@ -737,10 +734,9 @@ describe(
             }
           `)
           .catch(() => undefined);
-        const ids = [glanceId, privilegedId].filter(Boolean);
-        if (ids.length) {
-          await runtime.hub.closeTabs({ tabIds: ids }).catch(() => undefined);
-        }
+        await runtime.hub
+          .closeTabs({ tabIds: [glanceId] })
+          .catch(() => undefined);
       }
     });
 

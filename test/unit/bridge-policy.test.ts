@@ -211,6 +211,35 @@ describe("bridge policy gate", () => {
     policyError(() => gate.assertOperation("tabs.list"), "policy_invalid");
   });
 
+  it("keeps the revision floor across an invalid policy interval", async () => {
+    const revisionFive = createPolicy({ mode: "permissive", revision: 5 });
+    const revisionThree = createPolicy({ mode: "permissive", revision: 3 });
+    const observations: PolicyFileObservation[] = [
+      { status: "changed", text: "not json" },
+      { status: "changed", text: serializePolicy(revisionThree) },
+      {
+        status: "changed",
+        text: serializePolicy(createPolicy({ mode: "permissive", revision: 6 })),
+      },
+    ];
+    const gate = new BridgePolicyGate({
+      initial: snapshot(revisionFive),
+      readFile: async () => observations.shift() ?? { status: "unchanged" },
+    });
+
+    await gate.refresh();
+    assert.equal(gate.snapshot().source, "invalid");
+    policyError(() => gate.assertOperation("tabs.list"), "policy_invalid");
+
+    await gate.refresh();
+    assert.equal(gate.snapshot().source, "invalid");
+    policyError(() => gate.assertOperation("tabs.list"), "policy_invalid");
+
+    await gate.refresh();
+    assert.equal(gate.snapshot().revision, 6);
+    assert.equal(gate.snapshot().source, "file");
+  });
+
   it("applies a changed file and ignores a hand-edited rollback", async () => {
     const initial = createPolicy({ mode: "permissive", revision: 5 });
     let text = serializePolicy(

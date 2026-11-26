@@ -122,6 +122,8 @@ function validSnapshotShape(value: unknown): value is PolicySnapshot {
 
 export class BridgePolicyGate {
   #snapshot: PolicySnapshot;
+  #highestAcceptedRevision: number;
+  #highestAcceptedDigest: string;
   readonly #readFile?: PolicyFileReader;
   readonly #now: () => Date;
   /** True once a policy file has existed in this bridge session. */
@@ -133,6 +135,10 @@ export class BridgePolicyGate {
     this.#snapshot = options.initial
       ? { ...options.initial, policy: { ...options.initial.policy } }
       : restrictedSnapshot(this.#now());
+    this.#highestAcceptedRevision =
+      this.#snapshot.source === "invalid" ? 0 : this.#snapshot.revision;
+    this.#highestAcceptedDigest =
+      this.#snapshot.source === "invalid" ? "" : this.#snapshot.digest;
     this.#readFile = options.readFile;
     this.#sawFile =
       this.#snapshot.source === "file" || this.#snapshot.source === "invalid";
@@ -202,17 +208,11 @@ export class BridgePolicyGate {
     };
     // A hand-edited rollback or rewrite must not lower the revision the
     // browser enforces, even when the file keeps the old revision number.
-    if (
-      this.#snapshot.source !== "invalid" &&
-      (next.revision < this.#snapshot.revision ||
-        (next.revision === this.#snapshot.revision &&
-          !!next.digest &&
-          !!this.#snapshot.digest &&
-          next.digest !== this.#snapshot.digest))
-    ) {
+    if (!this.#canAdvance(next.revision, next.digest)) {
       return;
     }
     this.#snapshot = next;
+    this.#rememberAccepted(next.revision, next.digest);
   }
 
   /** Applies an authenticated update from the owning server. */
@@ -223,13 +223,8 @@ export class BridgePolicyGate {
     );
     if (!parsed.ok) return false;
     const update = value as PolicySnapshot;
-    if (update.revision < this.#snapshot.revision) return false;
-    if (
-      update.revision === this.#snapshot.revision &&
-      update.digest &&
-      this.#snapshot.digest &&
-      update.digest !== this.#snapshot.digest
-    ) {
+    if (update.source !== "invalid" &&
+        !this.#canAdvance(update.revision, update.digest)) {
       return false;
     }
     this.#snapshot = {
@@ -240,7 +235,32 @@ export class BridgePolicyGate {
     if (update.source === "file" || update.source === "invalid") {
       this.#sawFile = true;
     }
+    if (update.source !== "invalid") {
+      this.#rememberAccepted(update.revision, update.digest);
+    }
     return true;
+  }
+
+  #canAdvance(revision: number, digest: string): boolean {
+    if (revision < this.#highestAcceptedRevision) return false;
+    return !(
+      revision === this.#highestAcceptedRevision &&
+      digest &&
+      this.#highestAcceptedDigest &&
+      digest !== this.#highestAcceptedDigest
+    );
+  }
+
+  #rememberAccepted(revision: number, digest: string): void {
+    if (revision > this.#highestAcceptedRevision) {
+      this.#highestAcceptedRevision = revision;
+      this.#highestAcceptedDigest = digest;
+    } else if (
+      revision === this.#highestAcceptedRevision &&
+      !this.#highestAcceptedDigest
+    ) {
+      this.#highestAcceptedDigest = digest;
+    }
   }
 
   /**

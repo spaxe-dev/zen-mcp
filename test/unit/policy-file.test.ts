@@ -7,14 +7,12 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-  POLICY_LOCK_STALE_MS,
   PolicyFileError,
   initPolicyFile,
   loadPolicySnapshot,
@@ -315,13 +313,19 @@ describe("locking", () => {
     }
   });
 
-  it("reclaims a stale lock and writes once", () => {
+  it("fails closed on a stale lock until it is manually cleared", () => {
     const { file, cleanup } = tempFile();
     try {
       const lock = policyLockFilePath(file);
       writeFileSync(lock, "stale");
-      const past = new Date(Date.now() - POLICY_LOCK_STALE_MS * 2);
-      utimesSync(lock, past, past);
+      expectPolicyError(
+        () => savePolicyFile(createPolicy({ now: NOW }), { file }),
+        "locked"
+      );
+      assert.equal(existsSync(file), false);
+      assert.equal(existsSync(lock), true);
+
+      rmSync(lock);
       const snapshot = savePolicyFile(createPolicy({ now: NOW }), { file });
       assert.equal(snapshot.policy.revision, 1);
       assert.equal(existsSync(file), true);
