@@ -45,6 +45,14 @@ import type {
   WatchParams,
 } from "../shared/protocol.js";
 import type { PageTargetSpec } from "../shared/target.js";
+import {
+  loadPolicySnapshot,
+  policyFilePath,
+} from "../shared/policy-file.js";
+import {
+  evaluate,
+  type PolicySnapshot,
+} from "../shared/policy.js";
 import { hostOf, isUrlAllowed } from "../shared/url-policy.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 import {
@@ -78,6 +86,24 @@ const SEARCH_TABS_CONCURRENCY = 2;
 const SEARCH_TAB_TIMEOUT_MS = 12_000;
 const MAX_SEARCH_TOTAL_MATCHES = 200;
 const MAX_EVIDENCE_BATCH = 20;
+
+/** Bridge policy denials that end a watch instead of being retried forever. */
+const POLICY_STOP_CODES: ReadonlySet<string> = new Set([
+  "policy_invalid",
+  "policy_missing",
+  "policy_stale",
+  "policy_unavailable",
+  "restricted",
+  "capability_denied",
+  "mode_denied",
+  "permanently_denied",
+  "internal_page",
+  "site_blocked",
+  "site_rule_denied",
+  "site_default_denied",
+  "unscoped_url",
+  "unknown_capability",
+]);
 const MAX_BATCH_CONCURRENCY = 3;
 const MAX_QUOTES_PER_SOURCE = 5;
 const MAX_BATCH_CARD_FAILURES = 3;
@@ -95,6 +121,10 @@ export interface ZenRuntimeOptions {
   checkUpdate?: () => Promise<UpdateInfo>;
   /** Test seam: replaces the global installer behind the browser bar. */
   installUpdate?: () => Promise<{ ok: boolean; message?: string }>;
+  /** Policy loaded by the caller; the browser bridge enforces it too. */
+  policySnapshot?: PolicySnapshot;
+  /** Policy file the browser bridge may re-read. */
+  policyPath?: string;
 }
 
 export class ZenAccessError extends Error {
@@ -209,8 +239,17 @@ export class ZenRuntime {
       bridgeScriptPath: options.bridgeScriptPath,
       logger: this.#logger,
       allowedDomains: options.config.allowedDomains,
+      policy:
+        options.policySnapshot ??
+        loadPolicySnapshot({ legacy: options.config }),
+      policyPath: options.policyPath ?? policyFilePath(),
       installUpdate: options.installUpdate ?? (() => this.installUpdate()),
     });
+  }
+
+  /** Pushes a reloaded policy to the browser; the bridge enforces it. */
+  setPolicy(snapshot: PolicySnapshot): void {
+    this.hub.setPolicy(snapshot);
   }
 
   /**
@@ -1866,6 +1905,18 @@ export class ZenRuntime {
       );
     }
     this.#assertUrlAllowed(tab.url, "Refusing to watch");
+    const decision = evaluate(this.hub.policySnapshot, {
+      capability: "page.read",
+      urls: [tab.url],
+    });
+    if (!decision.allowed) {
+      throw new BridgeRequestError(
+        decision.site?.code ?? decision.code ?? "capability_denied",
+        decision.site?.reason ??
+          decision.reason ??
+          "The policy does not allow reading this page, so it cannot be watched."
+      );
+    }
 
     const intervalSeconds = Math.max(
       this.config.watchMinIntervalSeconds || 15,
@@ -1927,7 +1978,23 @@ export class ZenRuntime {
 
   listWatches(): WatchInfo[] {
     return [...this.#watches.values()]
-      .map((entry) => ({ ...entry.info }))
+      .map((entry) => {
+        const info = { ...entry.info };
+        const decision = evaluate(this.hub.policySnapshot, {
+          capability: "page.read",
+          urls: [info.url],
+        });
+        if (decision.allowed) return info;
+        return {
+          ...info,
+          title: "(restricted by policy)",
+          url: "",
+          label: "(restricted by policy)",
+          selector: null,
+          contains: null,
+          lastError: null,
+        };
+      })
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
@@ -1975,6 +2042,18 @@ export class ZenRuntime {
     }
     entry.running = true;
     try {
+      const decision = evaluate(this.hub.policySnapshot, {
+        capability: "page.read",
+        urls: [entry.info.url],
+      });
+      if (!decision.allowed) {
+        throw new BridgeRequestError(
+          decision.site?.code ?? decision.code ?? "capability_denied",
+          decision.site?.reason ??
+            decision.reason ??
+            "The policy no longer allows reading this page."
+        );
+      }
       const sample = await this.#readWatchSample(entry);
       entry.info.lastCheckedAt = Date.now();
       entry.info.lastError = null;
@@ -2021,11 +2100,11 @@ export class ZenRuntime {
       const message = String((error as Error)?.message ?? error);
       const code =
         error instanceof BridgeRequestError ? error.code : "";
-      if (code === "domain_not_allowed") {
+      if (code === "domain_not_allowed" || POLICY_STOP_CODES.has(code)) {
         this.#stopWatch(
           id,
           "Watch stopped",
-          `"${entry.info.label}" left the allowed domains, so watching stopped.`
+          `"${entry.info.label}" is no longer allowed by policy, so watching stopped.`
         );
         return;
       }

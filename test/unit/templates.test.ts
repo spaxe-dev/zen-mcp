@@ -675,4 +675,45 @@ describe("TemplateStore", () => {
       assert.equal(statSync(dir).mode & 0o777, 0o700);
     }
   );
+
+  it("hides or skips stored URLs the policy would not open", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "Scratch", 0)];
+    hub.tabs = [
+      makeTab({
+        url: "https://allowed.example/a",
+        spaceId: "space-1",
+        spaceName: "Scratch",
+        index: 0,
+      }),
+      makeTab({
+        url: "https://blocked.example/b",
+        spaceId: "space-1",
+        spaceName: "Scratch",
+        index: 1,
+      }),
+    ];
+    const unfiltered = new TemplateStore({ dir, hub });
+    await unfiltered.saveFromSpace("Scratch", "Mixed");
+
+    const filtered = new TemplateStore({
+      dir,
+      hub,
+      allowsUrl: (url) => !url.includes("blocked.example"),
+    });
+    const mixed = filtered.get("Mixed");
+    assert.deepEqual(mixed?.looseUrls, ["https://allowed.example/a"]);
+    const listed = filtered.list().find((entry) => entry.name === "Mixed");
+    assert.equal(
+      listed!.looseUrls.length +
+        listed!.folders.reduce((total, folder) => total + folder.urls.length, 0),
+      1
+    );
+
+    await filtered.saveFromSpace("Scratch", "Filtered");
+    assert.deepEqual(filtered.get("Filtered")?.looseUrls, [
+      "https://allowed.example/a",
+    ]);
+  });
 });

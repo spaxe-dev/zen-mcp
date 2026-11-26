@@ -904,4 +904,53 @@ describe("SessionStore", () => {
       assert.equal(statSync(dir).mode & 0o777, 0o700);
     }
   );
+
+  it("hides or skips stored tabs the policy would not open", async () => {
+    const dir = tempDir();
+    const hub = new FakeHub();
+    hub.spaces = [makeSpace("space-1", "One", 0)];
+    hub.tabs = [
+      makeTab({
+        url: "https://allowed.example/a",
+        spaceId: "space-1",
+        spaceName: "One",
+        index: 0,
+      }),
+      makeTab({
+        url: "https://blocked.example/b",
+        spaceId: "space-1",
+        spaceName: "One",
+        index: 1,
+      }),
+      makeTab({ url: "https://blocked.example/essential", essential: true }),
+    ];
+    const unfiltered = new SessionStore({ dir, hub });
+    await unfiltered.save("Mixed");
+
+    const filtered = new SessionStore({
+      dir,
+      hub,
+      allowsUrl: (url) => !url.includes("blocked.example"),
+    });
+    const snapshot = filtered.get("Mixed");
+    assert.deepEqual(
+      snapshot?.spaces[0]?.tabs.map((tab) => tab.url),
+      ["https://allowed.example/a"]
+    );
+    assert.deepEqual(snapshot?.essentials, []);
+    assert.deepEqual(filtered.list()[0], {
+      name: "Mixed",
+      createdAt: snapshot!.createdAt,
+      spaceCount: 1,
+      tabCount: 1,
+      essentialCount: 0,
+    });
+
+    hub.tabs = hub.tabs.map((tab) => ({ ...tab }));
+    await filtered.save("Filtered");
+    assert.deepEqual(
+      filtered.get("Filtered")?.spaces[0]?.tabs.map((tab) => tab.url),
+      ["https://allowed.example/a"]
+    );
+  });
 });

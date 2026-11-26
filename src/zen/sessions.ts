@@ -118,6 +118,12 @@ export interface SessionStoreOptions {
   /** Directory that holds sessions.json. */
   dir: string;
   hub: SessionHub;
+  /**
+   * Policy predicate for stored URLs. The MCP server supplies it so a policy
+   * change hides or skips URLs that may no longer be opened. Callers that
+   * supply no predicate keep the previous behavior.
+   */
+  allowsUrl?: (url: string) => boolean;
 }
 
 interface SessionsFile {
@@ -128,11 +134,13 @@ interface SessionsFile {
 export class SessionStore {
   readonly #dir: string;
   readonly #hub: SessionHub;
+  readonly #allowsUrl: (url: string) => boolean;
   #warnedInvalid = false;
 
   constructor(options: SessionStoreOptions) {
     this.#dir = options.dir;
     this.#hub = options.hub;
+    this.#allowsUrl = options.allowsUrl ?? (() => true);
   }
 
   /** Absolute path of the sessions file. */
@@ -141,25 +149,46 @@ export class SessionStore {
   }
 
   list(): SessionSummary[] {
-    return this.#read().sessions.map((session) => ({
-      name: session.name,
-      createdAt: session.createdAt,
-      spaceCount: session.spaces.length,
-      tabCount: session.spaces.reduce(
-        (total, space) => total + space.tabs.length,
-        0
-      ),
-      essentialCount: session.essentials.length,
-    }));
+    return this.#read().sessions.map((session) => {
+      const visible = this.#visibleSnapshot(session);
+      return {
+        name: visible.name,
+        createdAt: visible.createdAt,
+        spaceCount: visible.spaces.length,
+        tabCount: visible.spaces.reduce(
+          (total, space) => total + space.tabs.length,
+          0
+        ),
+        essentialCount: visible.essentials.length,
+      };
+    });
   }
 
   get(name: string): SessionSnapshot | null {
     const key = name.trim().toLowerCase();
-    return (
-      this.#read().sessions.find(
-        (session) => session.name.toLowerCase() === key
-      ) ?? null
+    const session = this.#read().sessions.find(
+      (entry) => entry.name.toLowerCase() === key
     );
+    return session ? this.#visibleSnapshot(session) : null;
+  }
+
+  /** Drops stored tabs whose URL the current policy would not open. */
+  #visibleSnapshot(session: SessionSnapshot): SessionSnapshot {
+    const visibleTabs = (tabs: SessionTab[]): SessionTab[] =>
+      tabs.filter((tab) => this.#allowsUrl(tab.url));
+    return {
+      ...session,
+      spaces: session.spaces.map((space) => {
+        const tabs = visibleTabs(space.tabs);
+        const labels = new Set(tabs.map((tab) => tab.folder));
+        return {
+          ...space,
+          tabs,
+          folders: space.folders.filter((folder) => labels.has(folder.label)),
+        };
+      }),
+      essentials: visibleTabs(session.essentials),
+    };
   }
 
   /** Snapshot every space, folder and tab in the target window. */
@@ -197,7 +226,7 @@ export class SessionStore {
     for (const tab of allTabs) {
       if (!tab.essential) continue;
       const url = snapshotUrl(tab.url);
-      if (!url) continue;
+      if (!url || !this.#allowsUrl(url)) continue;
       essentials.push({
         url,
         title: boundedText(tab.title, MAX_TITLE_LENGTH),
@@ -217,7 +246,7 @@ export class SessionStore {
 
       for (const tab of spaceTabs) {
         const url = snapshotUrl(tab.url);
-        if (!url) continue;
+        if (!url || !this.#allowsUrl(url)) continue;
 
         const folderRecord = tab.folderId
           ? folderById.get(tab.folderId)

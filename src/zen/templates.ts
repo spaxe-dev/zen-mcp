@@ -88,6 +88,12 @@ export interface TemplateStoreOptions {
   /** Directory that holds templates.json. */
   dir: string;
   hub: TemplateHub;
+  /**
+   * Policy predicate for stored URLs. The MCP server supplies it so a policy
+   * change hides or skips URLs that may no longer be opened. Callers that
+   * supply no predicate keep the previous behavior.
+   */
+  allowsUrl?: (url: string) => boolean;
 }
 
 interface TemplatesFile {
@@ -184,11 +190,13 @@ export const BUILTIN_TEMPLATES: SpaceTemplate[] = [
 export class TemplateStore {
   readonly #dir: string;
   readonly #hub: TemplateHub;
+  readonly #allowsUrl: (url: string) => boolean;
   #warnedInvalid = false;
 
   constructor(options: TemplateStoreOptions) {
     this.#dir = options.dir;
     this.#hub = options.hub;
+    this.#allowsUrl = options.allowsUrl ?? (() => true);
   }
 
   /** Absolute path of the templates file. */
@@ -201,7 +209,22 @@ export class TemplateStore {
     return [
       ...BUILTIN_TEMPLATES.map(cloneTemplate),
       ...this.#read().templates.map(cloneTemplate),
-    ];
+    ].map((entry) => this.#visibleTemplate(entry));
+  }
+
+  /** Drops stored URLs the current policy would not open. */
+  #visibleTemplate(entry: SpaceTemplate): SpaceTemplate {
+    const folders = entry.folders
+      .map((folder) => ({
+        ...folder,
+        urls: folder.urls.filter((url) => this.#allowsUrl(url)),
+      }))
+      .filter((folder) => folder.urls.length > 0);
+    return {
+      ...entry,
+      folders,
+      looseUrls: entry.looseUrls.filter((url) => this.#allowsUrl(url)),
+    };
   }
 
   get(name: string): SpaceTemplate | null {
@@ -258,7 +281,7 @@ export class TemplateStore {
       .sort((a, b) => a.index - b.index);
     for (const tab of tabs) {
       const url = httpUrl(tab.url);
-      if (!url) continue;
+      if (!url || !this.#allowsUrl(url)) continue;
       const folderRecord = tab.folderId
         ? folderById.get(tab.folderId)
         : undefined;

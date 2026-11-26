@@ -24,6 +24,22 @@ import {
 import { offerSkillInstall } from "./onboard/skill-offer.js";
 import { createTheme } from "./onboard/theme.js";
 import { BRAND, SERVER_VERSION } from "./shared/brand.js";
+import {
+  CAPABILITY_IDS,
+  POLICY_MODES,
+  isCapabilityId,
+  isPermanentDeny,
+  isPolicyMode,
+  type PolicyMode,
+  type PolicySnapshot,
+} from "./shared/policy.js";
+import {
+  PolicyFileError,
+  initPolicyFile,
+  loadPolicySnapshot,
+  policyFilePath,
+  updatePolicyFile,
+} from "./shared/policy-file.js";
 import { createLogger } from "./utils/logger.js";
 import { runDoctor, type DoctorReport } from "./zen/doctor.js";
 import {
@@ -171,6 +187,40 @@ configCommand
   .argument("<value>", "New value. Use an empty string to clear a path.")
   .action((key: string, value: string) => configSet(key, value));
 
+const policyCommand = program
+  .command("policy")
+  .description(
+    "Show or change the capability policy. Agents cannot change it."
+  );
+
+policyCommand
+  .command("show")
+  .description("Print the effective policy and its source.")
+  .option("--json", "Print the policy document and metadata as JSON.")
+  .action((options: { json?: boolean }) => policyShow(options));
+
+policyCommand
+  .command("set")
+  .description("Allow or deny one capability in the policy file.")
+  .argument("<capability>", `One of: ${CAPABILITY_IDS.join(", ")}.`)
+  .argument("<access>", "allow or deny.")
+  .action((capability: string, access: string) =>
+    policySet(capability, access)
+  );
+
+policyCommand
+  .command("mode")
+  .description(`Set the access mode: ${POLICY_MODES.join(", ")}.`)
+  .argument("<mode>", "restricted, normal, permissive, or full.")
+  .action((mode: string) => policyMode(mode));
+
+policyCommand
+  .command("init")
+  .description(
+    "Create policy.json from the current config. Never overwrites an existing file."
+  )
+  .action(() => policyInit());
+
 program.action(() => serve());
 
 await program.parseAsync(process.argv);
@@ -181,8 +231,17 @@ await program.parseAsync(process.argv);
 
 async function serve(): Promise<void> {
   const config = loadConfig();
-  const runtime = new ZenRuntime({ config });
-  const server = createZenMcpServer(runtime, config);
+  const policy = loadPolicySnapshot({ legacy: config });
+  for (const warning of policy.warnings) {
+    logger.warn(warning);
+  }
+  if (policy.error) {
+    logger.warn(`policy: ${policy.error}`);
+  }
+  const runtime = new ZenRuntime({ config, policySnapshot: policy });
+  const server = createZenMcpServer(runtime, config, policy, {
+    watchPolicy: true,
+  });
   const transport = new StdioServerTransport();
 
   let stopping = false;
@@ -587,6 +646,142 @@ async function onboard(options: {
   }
   if (failed > 0) process.exitCode = 1;
   await offerSkillInstall();
+}
+
+function printPolicySummary(snapshot: PolicySnapshot, file: string): void {
+  const mode = snapshot.policy.mode;
+  console.log(`Policy file: ${file}`);
+  console.log(
+    `Effective: ${mode} mode, revision ${snapshot.revision}, source ${snapshot.source}`
+  );
+  console.log(`Updated: ${snapshot.updatedAt}`);
+  console.log(`Digest: ${snapshot.digest || "(none)"}`);
+  const websites = snapshot.policy.websites;
+  console.log(
+    `Websites: default ${websites.default}, ${websites.allow.length} allowed, ` +
+      `${websites.block.length} blocked, ${websites.rules.length} rule(s)`
+  );
+  const overrides = Object.entries(snapshot.policy.capabilities);
+  const restrictions = Object.entries(snapshot.policy.restrictions);
+  if (overrides.length > 0) {
+    console.log("Capability overrides:");
+    for (const [id, access] of overrides) {
+      console.log(`  ${id}: ${access}`);
+    }
+  }
+  if (restrictions.length > 0) {
+    console.log("Permanent restrictions:");
+    for (const [id] of restrictions) {
+      console.log(`  ${id}: deny`);
+    }
+  }
+  if (snapshot.error) {
+    console.log(`Error (${snapshot.errorCode ?? "policy"}): ${snapshot.error}`);
+  }
+  for (const warning of snapshot.warnings) {
+    console.log(`Warning: ${warning}`);
+  }
+}
+
+function policyShow(options: { json?: boolean }): void {
+  const file = policyFilePath();
+  const snapshot = loadPolicySnapshot({ file, legacy: loadConfig() });
+  if (options.json) {
+    console.log(JSON.stringify({ path: file, ...snapshot }, null, 2));
+    return;
+  }
+  printPolicySummary(snapshot, file);
+}
+
+function policySet(capability: string, access: string): void {
+  if (!isCapabilityId(capability)) {
+    console.error(`Unknown capability "${capability}".`);
+    process.exitCode = 1;
+    return;
+  }
+  if (access !== "allow" && access !== "deny") {
+    console.error('Access must be "allow" or "deny".');
+    process.exitCode = 1;
+    return;
+  }
+  if (access === "allow" && isPermanentDeny(capability)) {
+    console.error(
+      `"${capability}" is permanently denied and cannot be allowed.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (access === "allow") {
+    console.log(
+      `Allowing "${capability}" removes any permanent restriction for it.`
+    );
+  }
+  try {
+    const snapshot = updatePolicyFile((policy) => {
+      policy.capabilities = policy.capabilities ?? {};
+      if (access === "allow") {
+        policy.capabilities[capability] = "allow";
+        if (policy.restrictions) {
+          delete policy.restrictions[capability];
+        }
+      } else {
+        policy.capabilities[capability] = "deny";
+      }
+    });
+    console.log(
+      `Set ${capability} to ${access}; revision ${snapshot.revision}.`
+    );
+  } catch (error) {
+    reportPolicyError(error);
+  }
+}
+
+function policyMode(mode: string): void {
+  if (!isPolicyMode(mode)) {
+    console.error(`Unknown mode "${mode}". Use: ${POLICY_MODES.join(", ")}.`);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const snapshot = updatePolicyFile((policy) => {
+      policy.mode = mode as PolicyMode;
+    });
+    console.log(`Policy mode is now ${mode}; revision ${snapshot.revision}.`);
+  } catch (error) {
+    reportPolicyError(error);
+  }
+}
+
+function policyInit(): void {
+  const config = loadConfig();
+  try {
+    const snapshot = initPolicyFile({ legacy: config });
+    printPolicySummary(snapshot, policyFilePath());
+    if (snapshot.policy.mode === "restricted") {
+      console.log(
+        "Created a restricted policy. Use `zen-mcp policy mode normal` when " +
+          "you are ready to grant browser access."
+      );
+    }
+    if (config.readOnly || config.allowedDomains.length > 0) {
+      console.log(
+        "config.json still sets readOnly or allowedDomains. Those legacy " +
+          "runtime checks stay active and may deny more than the policy. " +
+          "Remove them when the policy file should be the only rule set."
+      );
+    }
+  } catch (error) {
+    reportPolicyError(error);
+  }
+}
+
+function reportPolicyError(error: unknown): void {
+  if (error instanceof PolicyFileError) {
+    console.error(`${error.message} (${error.code})`);
+  } else {
+    console.error(String((error as Error)?.message ?? error));
+  }
+  process.exitCode = 1;
 }
 
 function configShow(): void {
