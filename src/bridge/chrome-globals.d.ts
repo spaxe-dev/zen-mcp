@@ -20,13 +20,17 @@ interface Window {
   __zenMcpConfig?: {
     url: string;
     token: string;
+    tokenId: string;
     bridgeVersion: string;
     serverVersion: string;
+    policy?: import("../shared/policy.js").PolicySnapshot;
+    policyPath?: string;
   };
   __zenMcpWindowId?: string;
   __zenMcpBridge?: {
     version: string;
-    token: string;
+    /** Non-secret digest of the session token, never the token itself. */
+    tokenId: string;
     windowId: string;
     isConnected(): boolean;
     reconnect(): void;

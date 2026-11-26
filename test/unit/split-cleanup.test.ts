@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createOps } from "../../src/bridge/ops.js";
+import { testGate } from "./policy-gate-fixture.js";
 import {
   isSyntheticSplitTab,
   planSplitCleanup,
@@ -241,7 +242,7 @@ describe("split.close residue cleanup", () => {
       },
     };
     const win = createFakeWindow({ tabs, selected: other, splitter });
-    const ops = createOps(win, "w1");
+    const ops = createOps(win, "w1", testGate());
     const ids = await tabIdsByLabel(ops);
 
     const result: any = await ops.dispatch("split.close", {
@@ -277,7 +278,7 @@ describe("split.close residue cleanup", () => {
       },
     };
     const win = createFakeWindow({ tabs, selected: tabA, splitter });
-    const ops = createOps(win, "w1");
+    const ops = createOps(win, "w1", testGate());
     const ids = await tabIdsByLabel(ops);
 
     const result: any = await ops.dispatch("split.close", {});
@@ -304,7 +305,7 @@ describe("split.close residue cleanup", () => {
         },
       },
     });
-    const ops = createOps(win, "w1");
+    const ops = createOps(win, "w1", testGate());
     await tabIdsByLabel(ops);
 
     const result: any = await ops.dispatch("split.close", {});
@@ -330,7 +331,7 @@ describe("split.close residue cleanup", () => {
         },
       },
     });
-    const ops = createOps(win, "w1");
+    const ops = createOps(win, "w1", testGate());
     await tabIdsByLabel(ops);
 
     await assert.rejects(
@@ -348,7 +349,7 @@ describe("split.close residue cleanup", () => {
       selected: other,
       splitter: { unsplitCurrentView() {} },
     });
-    const ops = createOps(win, "w1");
+    const ops = createOps(win, "w1", testGate());
     await tabIdsByLabel(ops);
 
     const result: any = await ops.dispatch("split.close", {

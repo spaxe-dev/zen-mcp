@@ -140,6 +140,10 @@ import {
 } from "./essentials-state.js";
 import { planSplitCleanup } from "./split-cleanup.js";
 import { documentIdForTab } from "./tab-identity.js";
+import {
+  BridgePolicyError,
+  type BridgePolicyGate,
+} from "./policy-gate.js";
 
 type ChromeWindow = any;
 type ChromeTab = any;
@@ -252,7 +256,8 @@ async function waitForGlanceUrl(
 function watchGlanceRedirects(
   result: unknown,
   manager: { closeGlance?: (options?: Record<string, unknown>) => unknown },
-  allowedDomains: string[]
+  allowedDomains: string[],
+  isPolicyAllowed?: (url: string) => boolean
 ): void {
   const tab = result as {
     linkedBrowser?: {
@@ -278,7 +283,13 @@ function watchGlanceRedirects(
     const current = glanceUrlOf(result);
     if (!current) return;
     const target = normalizeWebUrl(current);
-    if (target && isUrlAllowed(target.href, allowedDomains)) return;
+    if (
+      target &&
+      isUrlAllowed(target.href, allowedDomains) &&
+      (isPolicyAllowed ? isPolicyAllowed(target.href) : true)
+    ) {
+      return;
+    }
     stop();
     try {
       manager.closeGlance?.({ noAnimation: true, skipPermitUnload: true });
@@ -342,7 +353,11 @@ interface ResolvedFrame {
  * Operations executed inside a Zen browser window with full chrome access.
  * Values are returned as plain objects so they can cross the WebSocket as JSON.
  */
-export function createOps(win: ChromeWindow, windowId: string) {
+export function createOps(
+  win: ChromeWindow,
+  windowId: string,
+  policy: BridgePolicyGate
+) {
   const tabIds = new WeakMap<ChromeTab, string>();
   const tabsById = new Map<string, ChromeTab>();
   /**
@@ -1012,10 +1027,14 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
   const frameIsVisible = (
     url: string,
-    allowedDomains: string[] | undefined
+    allowedDomains: string[] | undefined,
+    isPolicyAllowed?: (url: string) => boolean
   ): boolean => {
     if (!isHttpUrl(url)) return false;
-    return !allowedDomains?.length || isUrlAllowed(url, allowedDomains);
+    if (allowedDomains?.length && !isUrlAllowed(url, allowedDomains)) {
+      return false;
+    }
+    return isPolicyAllowed ? isPolicyAllowed(url) : true;
   };
 
   const requireFramePath = (raw: unknown): number[] => {
@@ -1047,7 +1066,11 @@ export function createOps(win: ChromeWindow, windowId: string) {
         }
         const path = [...prefix, index];
         const url = frameUrlOfContext(child);
-        if (!frameIsVisible(url, allowedDomains)) {
+        if (
+          !frameIsVisible(url, allowedDomains, (frameUrl) =>
+            policy.allows("page.read", frameUrl)
+          )
+        ) {
           skipped += 1;
           continue;
         }
@@ -1497,6 +1520,198 @@ export function createOps(win: ChromeWindow, windowId: string) {
     strictFileInteractability: false,
   };
 
+  const redactTab = (tab: TabInfo): TabInfo => {
+    const url = tab.url || tab.requestedUrl || "";
+    if (policy.allowsMetadata(url)) return tab;
+    return {
+      ...tab,
+      title: "(restricted by policy)",
+      url: "",
+      requestedUrl: "",
+    };
+  };
+
+  /**
+   * Resolves every URL this call would touch from browser-owned tab state,
+   * before the handler runs. The capability itself is always checked first so
+   * a denied or unknown operation cannot be smuggled through a tab-id error.
+   */
+  const policyPreflight = (method: string, params: unknown): void => {
+    policy.assertCapability(method);
+    const p =
+      params && typeof params === "object"
+        ? (params as Record<string, unknown>)
+        : {};
+    // tabClosed is a lifecycle-only wait. A tab that already closed, or has
+    // no http(s) URL left, exposes no page content; an open http(s) tab still
+    // gets the normal site check below.
+    if (p.tabClosed === true) {
+      const closedTabId = typeof p.tabId === "string" ? p.tabId : "";
+      const closedTab = closedTabId ? tabsById.get(closedTabId) : undefined;
+      if (!closedTab || !/^https?:/i.test(tabUrl(closedTab))) return;
+    }
+    const tabId = typeof p.tabId === "string" ? p.tabId : "";
+    const tab = tabId ? tabsById.get(tabId) : undefined;
+    const tabScoped = new Set([
+      "tabs.read",
+      "tabs.findText",
+      "tabs.waitFor",
+      "tabs.click",
+      "tabs.type",
+      "tabs.evidence",
+      "tabs.evidenceClear",
+    ]);
+    if (!tab || !tabScoped.has(method)) return;
+    const urls = [tabUrl(tab)];
+    if (
+      ["tabs.read", "tabs.waitFor", "tabs.click", "tabs.type"].includes(
+        method
+      ) &&
+      p.framePath !== undefined
+    ) {
+      const framePath = requireFramePath(p.framePath);
+      if (framePath.length) {
+        const frame = resolveFrame(
+          tab,
+          framePath,
+          Array.isArray(p.allowedDomains)
+            ? (p.allowedDomains as string[])
+            : undefined
+        );
+        urls.push(frame.url);
+      }
+    }
+    policy.assertOperation(method, urls, { requireUrl: true });
+  };
+
+  const assertFrameStillAllowed = (
+    method: string,
+    params: unknown
+  ): void => {
+    const p =
+      params && typeof params === "object"
+        ? (params as Record<string, unknown>)
+        : {};
+    const tabId = typeof p.tabId === "string" ? p.tabId : "";
+    const tab = tabId ? tabsById.get(tabId) : undefined;
+    if (!tab) return;
+    const urls = [tabUrl(tab)];
+    if (p.framePath !== undefined) {
+      const framePath = requireFramePath(p.framePath);
+      if (framePath.length) {
+        const frameUrl = currentFrameUrl(tab, framePath);
+        if (frameUrl) urls.push(frameUrl);
+      }
+    }
+    policy.assertOperation(method, urls, { requireUrl: true });
+  };
+
+  /** Revalidates actual URLs after an operation, then filters metadata. */
+  const policyPostflight = (
+    method: string,
+    params: unknown,
+    result: unknown
+  ): unknown => {
+    const value = result as any;
+    switch (method) {
+      case "status": {
+        if (value?.activeTab && !policy.allowsMetadata(value.activeTab.url)) {
+          value.activeTab = {
+            ...value.activeTab,
+            title: "(restricted by policy)",
+            url: "",
+          };
+        }
+        return value;
+      }
+      case "tabs.list": {
+        value.tabs = Array.isArray(value?.tabs)
+          ? value.tabs.map(redactTab)
+          : [];
+        return value;
+      }
+      case "tabs.select": {
+        if (value?.tab) value.tab = redactTab(value.tab);
+        return value;
+      }
+      case "tabs.read": {
+        policy.assertOperation("tabs.read", [String(value?.url ?? "")], {
+          requireUrl: true,
+        });
+        if (Array.isArray(value?.frames)) {
+          value.frames = value.frames.filter((frame: PageFrame) =>
+            policy.allows("page.read", frame.url)
+          );
+        }
+        assertFrameStillAllowed("tabs.read", params);
+        return value;
+      }
+      case "tabs.click":
+      case "tabs.type":
+      case "tabs.findText":
+      case "tabs.evidence":
+      case "tabs.waitFor": {
+        const p =
+          params && typeof params === "object"
+            ? (params as Record<string, unknown>)
+            : {};
+        const tabId = typeof p.tabId === "string" ? p.tabId : "";
+        const tab = tabId ? tabsById.get(tabId) : undefined;
+        // A matched closure wait has no page left to re-check. Reusing its
+        // emptied URL would fail a successful lifecycle wait as internal_page.
+        const closedWait =
+          p.tabClosed === true &&
+          !!value &&
+          typeof value === "object" &&
+          (value as { matched?: unknown }).matched === true;
+        if (tab && !closedWait && tab.closing !== true) {
+          policy.assertOperation(method, [tabUrl(tab)], {
+            requireUrl: true,
+          });
+          assertFrameStillAllowed(method, params);
+        }
+        return value;
+      }
+      case "tabs.evidenceClear": {
+        const p =
+          params && typeof params === "object"
+            ? (params as Record<string, unknown>)
+            : {};
+        const tabId = typeof p.tabId === "string" ? p.tabId : "";
+        const tab = tabId ? tabsById.get(tabId) : undefined;
+        if (tab) {
+          policy.assertOperation(method, [tabUrl(tab)], {
+            requireUrl: true,
+          });
+        }
+        return value;
+      }
+      case "history.search": {
+        value.entries = (value?.entries ?? []).filter((entry: HistoryEntry) =>
+          policy.allows("history.read", entry.url)
+        );
+        if (value.groups) value.groups = groupHistoryEntries(value.entries);
+        return value;
+      }
+      case "bookmarks.search": {
+        value.entries = (value?.entries ?? []).filter(
+          (entry: BookmarksResult["entries"][number]) =>
+            policy.allows("bookmarks.read", entry.url)
+        );
+        return value;
+      }
+      case "history.recentlyClosed": {
+        value.entries = (value?.entries ?? []).filter(
+          (entry: RecentlyClosedEntry) =>
+            policy.allows("history.read", entry.url)
+        );
+        return value;
+      }
+      default:
+        return value;
+    }
+  };
+
   const ops: {
     [K in BridgeMethod]: (params: BridgeMethodMap[K]["params"]) => Promise<BridgeMethodMap[K]["result"]> | BridgeMethodMap[K]["result"];
   } = {
@@ -1653,6 +1868,9 @@ export function createOps(win: ChromeWindow, windowId: string) {
         );
       }
       const urls = [...new Set(incoming.map(normalizeUrl))];
+      // Check the requested URLs before any tab exists. The post-check below
+      // covers redirects that commit a different URL.
+      policy.assertOperation("tabs.open", urls, { requireUrl: true });
       const container =
         params.container === undefined ||
         params.container === null ||
@@ -1723,6 +1941,30 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
       // Give Zen a beat to adopt the tabs before reading their labels/URLs.
       await new Promise((resolve) => setTimeout(resolve, switchTo ? 260 : 160));
+
+      // A requested URL can redirect. Close tabs that committed a blocked
+      // URL instead of returning a window into a site policy forbids.
+      const blocked = opened.filter((tab) => {
+        const actual = tabUrl(tab) || requested.get(tab) || "";
+        return !policy.allows("nav.open", actual);
+      });
+      if (blocked.length) {
+        const blockedUrls: string[] = [];
+        for (const tab of blocked) {
+          blockedUrls.push(tabUrl(tab) || requested.get(tab) || "");
+          try {
+            const id = tabIds.get(tab);
+            if (id) tabsById.delete(id);
+            tabIds.delete(tab);
+            win.gBrowser.removeTab(tab, { closeWindowWithLastTab: false });
+          } catch {
+            // Best effort cleanup; the denial below still applies.
+          }
+        }
+        policy.assertOperation("tabs.open", blockedUrls, {
+          requireUrl: true,
+        });
+      }
 
       const tabs: OpenedTab[] = opened
         .filter((tab) => tab?.isConnected && !tab.closing)
@@ -1900,6 +2142,12 @@ export function createOps(win: ChromeWindow, windowId: string) {
       const frame = framePath.length
         ? resolveFrame(tab, framePath, allowedDomains)
         : null;
+      // Re-check the browser-owned URL immediately before content is read.
+      policy.assertOperation(
+        "tabs.read",
+        [frame?.url ?? tabUrl(tab)],
+        { requireUrl: true }
+      );
       const contentType = frame ? null : contentTypeOf(tab);
 
       // Marionette's content context only sees tabs in gBrowser, so tabs in an
@@ -2185,6 +2433,15 @@ export function createOps(win: ChromeWindow, windowId: string) {
           "following a link to"
         );
       }
+      policy.assertOperation(
+        "tabs.click",
+        [
+          tabUrl(tab),
+          ...(resolved.frameUrl ? [resolved.frameUrl] : []),
+          ...(target.href ? [target.href] : []),
+        ],
+        { requireUrl: true }
+      );
 
       const before = await captureSignature(
         resolved.actor,
@@ -2292,6 +2549,11 @@ export function createOps(win: ChromeWindow, windowId: string) {
           { reason: "not_editable" }
         );
       }
+      policy.assertOperation(
+        "tabs.type",
+        [tabUrl(tab), ...(resolved.frameUrl ? [resolved.frameUrl] : [])],
+        { requireUrl: true }
+      );
 
       const before = await captureSignature(
         resolved.actor,
@@ -2603,12 +2865,35 @@ export function createOps(win: ChromeWindow, windowId: string) {
               }
               throw error;
             }
+            try {
+              policy.assertOperation("tabs.waitFor", [tabUrl(tab)], {
+                requireUrl: true,
+              });
+            } catch (error) {
+              if (error instanceof BridgePolicyError) {
+                lastError = "the page left the policy";
+                matched = false;
+                break;
+              }
+              throw error;
+            }
             let actor: any = null;
             try {
-              actor = framePath.length
-                ? resolveFrame(tab, framePath, allowedDomains).actor
-                : pageActor(tab);
+              const frame = framePath.length
+                ? resolveFrame(tab, framePath, allowedDomains)
+                : null;
+              policy.assertOperation(
+                "tabs.waitFor",
+                [tabUrl(tab), ...(frame ? [frame.url] : [])],
+                { requireUrl: true }
+              );
+              actor = frame?.actor ?? pageActor(tab);
             } catch (error) {
+              if (error instanceof BridgePolicyError) {
+                lastError = "the page left the policy";
+                matched = false;
+                break;
+              }
               if (
                 error instanceof OpsError &&
                 error.code === "domain_not_allowed"
@@ -2802,6 +3087,9 @@ export function createOps(win: ChromeWindow, windowId: string) {
           "PDF documents render in a viewer that exposes no HTML text."
         );
       }
+      policy.assertOperation("tabs.findText", [tabUrl(tab)], {
+        requireUrl: true,
+      });
 
       let snapshot = null as ReturnType<typeof coerceEvidenceIndex>;
       try {
@@ -2997,6 +3285,10 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "text to locate a quote in."
         );
       }
+      // The tab can navigate while this call waits for the page to settle.
+      policy.assertOperation("tabs.evidence", [state.url], {
+        requireUrl: true,
+      });
 
       // Let late-rendering content settle before taking the text snapshot.
       await sleep(EVIDENCE_SETTLE_MS);
@@ -3589,6 +3881,7 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "configured domain allowlist."
         );
       }
+      policy.assertOperation("glance.open", [url], { requireUrl: true });
 
       const manager = win.gZenGlanceManager;
       if (!manager || typeof manager.openGlance !== "function") {
@@ -3683,7 +3976,17 @@ export function createOps(win: ChromeWindow, windowId: string) {
             "configured domain allowlist, so it was closed."
         );
       }
-      watchGlanceRedirects(result, manager, allowedDomains);
+      try {
+        policy.assertOperation("glance.open", [loaded.href], {
+          requireUrl: true,
+        });
+      } catch (error) {
+        closePreview();
+        throw error;
+      }
+      watchGlanceRedirects(result, manager, allowedDomains, (candidate) =>
+        policy.allows("nav.glance", candidate)
+      );
       return {
         opened: true,
         url: loaded.href,
@@ -4168,18 +4471,23 @@ export function createOps(win: ChromeWindow, windowId: string) {
 
   return {
     dispatch(method: string, params: unknown): Promise<unknown> {
-      const handler = (ops as Record<string, ((p: unknown) => unknown) | undefined>)[
-        method
-      ];
-      if (!handler) {
+      // Only the fixed operation map is callable. An inherited name such as
+      // `constructor`, `toString` or `__proto__` is not an operation.
+      const handler = Object.hasOwn(ops, method)
+        ? (ops as Record<string, ((p: unknown) => unknown) | undefined>)[method]
+        : undefined;
+      if (typeof handler !== "function") {
         throw new OpsError(
           "unknown_method",
           `Unknown bridge method "${method}". Update Zen MCP in the browser (re-run zen_launch).`
         );
       }
-      return Promise.resolve(
-        handler(params as never) as Promise<unknown>
-      );
+      return (async () => {
+        await policy.refresh();
+        policyPreflight(method, params);
+        const result = await handler(params as never);
+        return policyPostflight(method, params, result);
+      })();
     },
     /** Stable id for a tab seen by a chrome observer. */
     tabIdFor: idForTab,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { createOps } from "../../src/bridge/ops.js";
+import { testGate } from "./policy-gate-fixture.js";
 
 const originalServices = (globalThis as { Services?: unknown }).Services;
 
@@ -85,7 +86,11 @@ async function tabIdFor(ops: ReturnType<typeof createOps>): Promise<string> {
 describe("Glance URL policy", () => {
   it("refuses an about: tab before calling Glance", async () => {
     const calls: GlanceCall[] = [];
-    const ops = createOps(fakeWindow("about:config", calls) as never, "win");
+    const ops = createOps(
+      fakeWindow("about:config", calls) as never,
+      "win",
+      testGate()
+    );
     const tabId = await tabIdFor(ops);
 
     await assert.rejects(
@@ -97,7 +102,11 @@ describe("Glance URL policy", () => {
 
   it("refuses a file: URL before calling Glance", async () => {
     const calls: GlanceCall[] = [];
-    const ops = createOps(fakeWindow("https://allowed.example/", calls) as never, "win");
+    const ops = createOps(
+      fakeWindow("https://allowed.example/", calls) as never,
+      "win",
+      testGate()
+    );
 
     await assert.rejects(
       async () =>
@@ -114,7 +123,8 @@ describe("Glance URL policy", () => {
     const calls: GlanceCall[] = [];
     const ops = createOps(
       fakeWindow("https://blocked.example/article", calls) as never,
-      "win"
+      "win",
+      testGate()
     );
     const tabId = await tabIdFor(ops);
 
@@ -133,7 +143,8 @@ describe("Glance URL policy", () => {
     const calls: GlanceCall[] = [];
     const ops = createOps(
       fakeWindow("https://allowed.example/article", calls) as never,
-      "win"
+      "win",
+      testGate()
     );
     const tabId = await tabIdFor(ops);
 
@@ -153,7 +164,8 @@ describe("Glance URL policy", () => {
       const calls: GlanceCall[] = [];
       const ops = createOps(
         fakeWindow("https://allowed.example/", calls) as never,
-        "win"
+        "win",
+        testGate()
       );
 
       await assert.rejects(
@@ -169,7 +181,8 @@ describe("Glance URL policy", () => {
     const allowedCalls: GlanceCall[] = [];
     const allowedOps = createOps(
       fakeWindow("https://deep.sub.allowed.example/a", allowedCalls) as never,
-      "win"
+      "win",
+      testGate()
     );
     const allowedId = await tabIdFor(allowedOps);
 
@@ -186,7 +199,8 @@ describe("Glance URL policy", () => {
         "https://allowed.example.attacker.test/a",
         blockedCalls
       ) as never,
-      "win"
+      "win",
+      testGate()
     );
     const blockedId = await tabIdFor(blockedOps);
 
@@ -211,7 +225,8 @@ describe("Glance URL policy", () => {
         async () => glanceTab("https://blocked.example/landing"),
         closes
       ) as never,
-      "win"
+      "win",
+      testGate()
     );
 
     await assert.rejects(
@@ -236,7 +251,8 @@ describe("Glance URL policy", () => {
         async () => true,
         closes
       ) as never,
-      "win"
+      "win",
+      testGate()
     );
 
     await assert.rejects(

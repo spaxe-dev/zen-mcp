@@ -9,6 +9,12 @@ import type {
   ServerToBridge,
   UiQuestion,
 } from "../shared/protocol.js";
+import { POLICY_MAX_BYTES } from "../shared/policy-schema.js";
+import {
+  BridgePolicyGate,
+  type PolicyFileObservation,
+} from "./policy-gate.js";
+import { createBridgeSurface } from "./bridge-surface.js";
 import { createOps } from "./ops.js";
 import { observeBrowserEvents } from "./browser-events.js";
 import {
@@ -18,6 +24,70 @@ import {
 } from "./evidence-reveal.js";
 import { PendingStopStore, deliverStop } from "./pending-stop.js";
 import { ZenMcpUi } from "./ui.js";
+
+interface PolicyFileStat {
+  lastModified?: number;
+  size?: number;
+}
+
+interface IOUtilsLike {
+  stat(path: string): Promise<PolicyFileStat>;
+  readUTF8(path: string, options?: { maxBytes?: number }): Promise<string>;
+}
+
+function isMissingFile(error: unknown): boolean {
+  const value = error as { name?: string; message?: string; result?: number };
+  return (
+    value?.name === "NotFoundError" ||
+    // NS_ERROR_FILE_NOT_FOUND
+    value?.result === 0x80520012 ||
+    /not.?found/i.test(String(value?.message ?? ""))
+  );
+}
+
+/**
+ * Re-reads `policy.json` using browser I/O, which is independent of the MCP
+ * server and its working directory. A failed read is reported, never treated
+ * as "no rules". Without IOUtils the initial authenticated snapshot stands.
+ */
+function createPolicyFileReader(
+  path: string | undefined
+): (() => Promise<PolicyFileObservation>) | undefined {
+  if (!path) return undefined;
+  let lastSignature: string | null = null;
+  return async () => {
+    const io = (globalThis as { IOUtils?: IOUtilsLike }).IOUtils;
+    if (!io || typeof io.stat !== "function" || typeof io.readUTF8 !== "function") {
+      return { status: "unchanged" };
+    }
+    let info: PolicyFileStat;
+    try {
+      info = await io.stat(path);
+    } catch (error) {
+      if (isMissingFile(error)) {
+        if (lastSignature === "missing") return { status: "unchanged" };
+        lastSignature = "missing";
+        return { status: "missing" };
+      }
+      return { status: "unreadable" };
+    }
+    const signature = `${Number(info.lastModified ?? 0)}:${Number(
+      info.size ?? 0
+    )}`;
+    if (signature === lastSignature) return { status: "unchanged" };
+    if (Number(info.size ?? 0) > POLICY_MAX_BYTES) {
+      lastSignature = signature;
+      return { status: "unreadable" };
+    }
+    try {
+      const text = await io.readUTF8(path, { maxBytes: POLICY_MAX_BYTES });
+      lastSignature = signature;
+      return { status: "changed", text };
+    } catch {
+      return { status: "unreadable" };
+    }
+  };
+}
 
 /**
  * Browser-chrome bridge. The MCP server loads this bundle into every Zen
@@ -137,13 +207,27 @@ import { ZenMcpUi } from "./ui.js";
     onUpdateAction: (action) =>
       send({ type: "ui.updateAction", action, ts: Date.now() }),
   });
-  const ops = createOps(win, windowId);
+  const policyGate = new BridgePolicyGate({
+    initial: config.policy,
+    readFile: createPolicyFileReader(config.policyPath),
+  });
+  const ops = createOps(win, windowId, policyGate);
   const browserEvents = observeBrowserEvents(
     win,
     (tab) => ops.tabIdFor(tab),
     (event) => {
       if (event.kind === "dialog" && event.phase === "shown") {
         ops.noteDialogShown();
+      }
+      // Page metadata is checked here, before it leaves the browser. The host
+      // applies the same rule again as a second boundary.
+      if (event.kind !== "dialog" && event.url) {
+        if (!policyGate.allowsMetadata(event.url)) {
+          if (event.kind === "navigation" || event.kind === "document") {
+            return;
+          }
+          event = { ...event, url: "", title: "", detail: "" };
+        }
       }
       send({ type: "browser.event", event });
     }
@@ -275,6 +359,9 @@ import { ZenMcpUi } from "./ui.js";
     switch (message.type) {
       case "welcome":
         return;
+      case "policy.update":
+        policyGate.acceptUpdate(message.policy);
+        return;
       case "server.ping":
         send({ type: "bridge.pong", ts: Date.now() });
         return;
@@ -351,6 +438,11 @@ import { ZenMcpUi } from "./ui.js";
         return;
       case "req": {
         try {
+          await policyGate.refresh();
+          policyGate.assertRequest(
+            message.policyRevision,
+            message.policyDigest
+          );
           const result = await ops.dispatch(message.method, message.params);
           if (message.method === "tabs.evidence") {
             const params = message.params as { tabId?: unknown } | undefined;
@@ -489,9 +581,9 @@ import { ZenMcpUi } from "./ui.js";
     }
   }
 
-  win.__zenMcpBridge = {
+  win.__zenMcpBridge = createBridgeSurface({
     version: config.bridgeVersion,
-    token: config.token,
+    tokenId: config.tokenId,
     windowId,
     isConnected: () => socket?.readyState === WebSocket.OPEN,
     reconnect: () => {
@@ -504,7 +596,7 @@ import { ZenMcpUi } from "./ui.js";
       connect();
     },
     destroy,
-  };
+  });
 
   win.addEventListener("unload", destroy, { once: true });
   connect();

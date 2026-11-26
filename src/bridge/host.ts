@@ -1,10 +1,15 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WebSocket, WebSocketServer as WsServer } from "ws";
 import { WebSocketServer } from "ws";
 import { BRIDGE_PROTOCOL_VERSION, SERVER_VERSION } from "../shared/brand.js";
+import {
+  createRestrictedPolicy,
+  evaluate,
+  type PolicySnapshot,
+} from "../shared/policy.js";
 import { EventLog, filterPausedEvents } from "./event-log.js";
 import type { EventInput } from "./event-log.js";
 import {
@@ -95,6 +100,10 @@ export interface BridgeHubOptions {
   serverVersion?: string;
   /** Hostname allowlist applied to navigation and page content. */
   allowedDomains?: string[];
+  /** Policy the browser bridge enforces; sent at injection and on change. */
+  policy?: PolicySnapshot;
+  /** `policy.json` the bridge may re-read between revisions. */
+  policyPath?: string;
   /**
    * Runs the one-click update. Only reachable from the authenticated banner;
    * no MCP tool can call it.
@@ -246,10 +255,17 @@ export class BridgeHub {
   readonly #logger: Logger;
   readonly #serverVersion: string;
   readonly #token = randomBytes(32).toString("base64url");
+  /** Non-secret identifier for this session, safe for the bridge global. */
+  readonly #tokenId = createHash("sha256")
+    .update(this.#token)
+    .digest("hex")
+    .slice(0, 16);
   readonly #bridgeScriptPath: string;
   readonly #bridgeDir: string;
   readonly #bridgeFile: string;
   readonly #allowedDomains: string[];
+  readonly #policyPath?: string;
+  #policy: PolicySnapshot;
 
   #server: WsServer | null = null;
   #url: string | null = null;
@@ -299,7 +315,31 @@ export class BridgeHub {
     this.#bridgeDir = dirname(this.#bridgeScriptPath);
     this.#bridgeFile = basename(this.#bridgeScriptPath);
     this.#allowedDomains = [...(options.allowedDomains ?? [])];
+    this.#policyPath = options.policyPath;
+    this.#policy =
+      options.policy ??
+      ({
+        policy: createRestrictedPolicy(new Date()),
+        source: "default",
+        revision: 0,
+        digest: "",
+        updatedAt: new Date(0).toISOString(),
+        warnings: [],
+      } satisfies PolicySnapshot);
     this.#updateInstaller = options.installUpdate;
+  }
+
+  get policySnapshot(): PolicySnapshot {
+    return this.#policy;
+  }
+
+  /**
+   * Applies a newer policy to this session's bridges. The browser enforces it
+   * independently; this only keeps the server and browser on the same version.
+   */
+  setPolicy(snapshot: PolicySnapshot): void {
+    this.#policy = snapshot;
+    this.#broadcast({ type: "policy.update", policy: snapshot });
   }
 
   get port(): number {
@@ -512,6 +552,10 @@ export class BridgeHub {
           protocol: BRIDGE_PROTOCOL_VERSION,
           serverVersion: this.#serverVersion,
         });
+        // Ordering matters: the authenticated policy update is queued before
+        // any request to this window, so the bridge never evaluates against a
+        // silently missing policy.
+        this.#send(connection, { type: "policy.update", policy: this.#policy });
         this.#resendPendingQuestions(connection);
         const banner = this.banner;
         if (banner) {
@@ -1054,6 +1098,8 @@ export class BridgeHub {
         id,
         method,
         params: params as unknown,
+        policyRevision: this.#policy.revision,
+        policyDigest: this.#policy.digest,
       });
       if (!sent) {
         settle(() =>
@@ -1639,7 +1685,13 @@ export class BridgeHub {
     // No URL is not proof of an allowed page: file:, about: and extension
     // URLs all arrive empty here, so their titles never leave the browser.
     if (kind !== "dialog") {
-      const allowed = url !== "" && isUrlAllowed(url, this.#allowedDomains);
+      const allowed =
+        url !== "" &&
+        isUrlAllowed(url, this.#allowedDomains) &&
+        evaluate(this.#policy, {
+          capability: "tab.list",
+          urls: [url],
+        }).allowed;
       if (!allowed) {
         if (kind === "navigation" || kind === "document") {
           this.#filteredEvents += 1;
@@ -1957,8 +2009,11 @@ export class BridgeHub {
     const config = {
       url: this.#url,
       token: this.#token,
+      tokenId: this.#tokenId,
       bridgeVersion: this.#serverVersion,
       serverVersion: this.#serverVersion,
+      policy: this.#policy,
+      policyPath: this.#policyPath,
     };
     const script = buildInjectionScript(
       config,
@@ -2097,8 +2152,11 @@ function buildInjectionScript(
   config: {
     url: string;
     token: string;
+    tokenId: string;
     bridgeVersion: string;
     serverVersion: string;
+    policy?: PolicySnapshot;
+    policyPath?: string;
   },
   resource: { alias: string; bridgeDir: string; bridgeFile: string }
 ): string {
@@ -2168,7 +2226,7 @@ for (const target of windows) {
     if (existing) {
       if (
         existing.version === __cfg.config.bridgeVersion &&
-        existing.token === __cfg.config.token
+        existing.tokenId === __cfg.config.tokenId
       ) {
         if (existing.isConnected()) {
           results.reused++;
@@ -2196,8 +2254,11 @@ for (const target of windows) {
     target.__zenMcpConfig = {
       url: __cfg.config.url,
       token: __cfg.config.token,
+      tokenId: __cfg.config.tokenId,
       bridgeVersion: __cfg.config.bridgeVersion,
       serverVersion: __cfg.config.serverVersion,
+      policy: __cfg.config.policy,
+      policyPath: __cfg.config.policyPath,
     };
     Services.scriptloader.loadSubScript(
       "resource://" + __cfg.resourceAlias + "/" + __cfg.bridgeFile,
