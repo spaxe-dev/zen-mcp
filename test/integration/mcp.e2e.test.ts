@@ -304,6 +304,21 @@ describe(
       };
     };
 
+    /**
+     * A new tab starts on about:blank, which the policy denies. Wait for the
+     * browser-owned URL to become http(s) and the load to finish before reading.
+     */
+    const waitForLoadedTab = async (id: string): Promise<any> => {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const listed = await call("zen_tabs_list");
+        const tab = listed.tabs.find((entry: any) => entry.id === id);
+        if (tab && !tab.loading && /^https?:/i.test(tab.url)) return tab;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      throw new Error(`tab ${id} did not finish loading`);
+    };
+
     before(async () => {
       framePage = await startPageServer(FRAME_PAGE);
       FRAME_URL = framePage.url.replace(/\/page$/, "");
@@ -360,6 +375,20 @@ describe(
       assert.equal(status.appName, "Zen");
       assert.ok(status.bridge.connections >= 1);
 
+      // A profile reused across live runs can still hold a test space from a
+      // previous run. Clear only test-owned spaces before creating this one.
+      const existing = await call("zen_spaces_list");
+      for (const stale of existing.spaces) {
+        if (!/^MCP Test Space/.test(stale.name)) continue;
+        if (stale.active) {
+          const other = existing.spaces.find(
+            (entry: any) => !/^MCP Test Space/.test(entry.name)
+          );
+          if (other) await call("zen_space_switch", { space: other.id });
+        }
+        await call("zen_space_delete", { space: stale.id });
+      }
+
       const created = await call("zen_space_create", {
         name: "MCP Test Space",
         icon: "🧪",
@@ -380,7 +409,7 @@ describe(
       assert.equal(opened.tabs[0].spaceId, spaceId);
       assert.equal(opened.tabs[0].active, false);
 
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await waitForLoadedTab(tabId);
       const read = await call("zen_read_page", { tabId });
       assert.equal(read.title, "MCP Test Page");
       assert.match(read.text, new RegExp(MARKER));
@@ -455,7 +484,7 @@ describe(
       });
       secondTabId = opened.tabs[0].id;
 
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await waitForLoadedTab(secondTabId);
       const batch = await call("zen_read_pages", {
         tabIds: [tabId, secondTabId, "missing-tab-id"],
       });
@@ -788,6 +817,9 @@ describe(
         assert.equal(newTab.matched, true);
         assert.equal(newTab.newTabId, tempId);
 
+        // The close wait revalidates the tab's actual URL, so let it leave
+        // about:blank first.
+        await waitForLoadedTab(tempId);
         const closeWait = call("zen_wait_for", {
           tabId: tempId,
           tab_closed: true,
@@ -819,7 +851,7 @@ describe(
       });
       const navTabId = opened.tabs[0].id;
       try {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await waitForLoadedTab(navTabId);
         const stable = await call("zen_wait_for", {
           tabId: navTabId,
           document_changed: true,
@@ -1286,7 +1318,7 @@ describe(
       });
       const navTabId = opened.tabs[0].id;
       try {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await waitForLoadedTab(navTabId);
         const snapshot = await call("zen_read_page", {
           tabId: navTabId,
           format: "snapshot",
@@ -1352,7 +1384,7 @@ describe(
       });
       const complexTabId = opened.tabs[0].id;
       try {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await waitForLoadedTab(complexTabId);
         const snapshot = await call("zen_read_page", {
           tabId: complexTabId,
           format: "snapshot",
@@ -1842,18 +1874,32 @@ describe(
         list.sessions.some((entry: any) => entry.name === "mcp-e2e-session")
       );
 
+      const beforeRestore = await call("zen_spaces_list");
+      const beforeIds = new Set(
+        beforeRestore.spaces.map((entry: any) => entry.id)
+      );
       const restored = await call("zen_session_restore", {
         name: "mcp-e2e-session",
         newSpaces: true,
       });
       assert.ok(restored.tabsOpened >= 2);
 
+      // Restoring with newSpaces copies every space in the session. Delete
+      // every copy this run created so a reused profile does not accumulate
+      // "(restored)" spaces on later runs.
       const spaces = await call("zen_spaces_list");
-      const restoredSpace = spaces.spaces.find((entry: any) =>
-        entry.name.startsWith("MCP Test Space (restored")
+      const restoredSpaces = spaces.spaces.filter(
+        (entry: any) =>
+          !beforeIds.has(entry.id) && /\(restored\)$/.test(entry.name)
       );
-      assert.ok(restoredSpace);
-      await call("zen_space_delete", { space: restoredSpace.id });
+      assert.ok(
+        restoredSpaces.some((entry: any) =>
+          entry.name.startsWith("MCP Test Space (restored")
+        )
+      );
+      for (const entry of restoredSpaces) {
+        await call("zen_space_delete", { space: entry.id });
+      }
 
       const deleted = await call("zen_session_delete", {
         name: "mcp-e2e-session",
@@ -2035,30 +2081,30 @@ describe(
         arguments: {},
       });
       assert.equal(launch.isError, true);
-      assert.match(textOf(launch), /read-only/i);
+      assert.match(textOf(launch), /restricted/i);
 
       const open = await readOnlyClient!.callTool({
         name: "zen_tabs_open",
         arguments: { urls: ["https://example.com/"] },
       });
       assert.equal(open.isError, true);
-      assert.match(textOf(open), /read-only/i);
+      assert.match(textOf(open), /restricted/i);
 
       const evidence = await readOnlyClient!.callTool({
         name: "zen_show_evidence",
         arguments: { url: "https://example.com/", quote: "Example Domain" },
       });
       assert.equal(evidence.isError, true);
-      assert.match(textOf(evidence), /read-only/i);
+      assert.match(textOf(evidence), /restricted/i);
 
       // A read is not blocked by the policy; it fails later on the missing
-      // bridge and must not mention read-only mode.
+      // bridge and must not mention a policy restriction.
       const spaces = await readOnlyClient!.callTool({
         name: "zen_spaces_list",
         arguments: {},
       });
       assert.equal(spaces.isError, true);
-      assert.doesNotMatch(textOf(spaces), /read-only/i);
+      assert.doesNotMatch(textOf(spaces), /restricted/i);
 
       const config = JSON.parse(
         textOf(
@@ -2066,7 +2112,7 @@ describe(
         )
       );
       assert.equal(config.readOnly, true);
-      assert.equal(config.dataDir, readOnlyDir);
+      assert.equal(config.dataDir, "<data>");
 
       const audit = JSON.parse(
         textOf(
@@ -2083,7 +2129,7 @@ describe(
       );
       assert.ok(
         audit.entries.some(
-          (entry: any) => entry.error?.code === "read_only"
+          (entry: any) => entry.error?.code === "restricted"
         )
       );
     });
@@ -2094,35 +2140,35 @@ describe(
         arguments: { urls: ["https://blocked.test/page"] },
       });
       assert.equal(blocked.isError, true);
-      assert.match(textOf(blocked), /allowlist/i);
+      assert.match(textOf(blocked), /allowed website list/i);
 
       const glance = await allowlistClient!.callTool({
         name: "zen_glance",
         arguments: { url: "https://blocked.test/preview" },
       });
       assert.equal(glance.isError, true);
-      assert.match(textOf(glance), /allowlist/i);
+      assert.match(textOf(glance), /allowed website list/i);
 
       const evidence = await allowlistClient!.callTool({
         name: "zen_show_evidence",
         arguments: { url: "https://blocked.test/page", quote: "Quoted text" },
       });
       assert.equal(evidence.isError, true);
-      assert.match(textOf(evidence), /allowlist/i);
+      assert.match(textOf(evidence), /allowed website list/i);
 
       const schemeLess = await allowlistClient!.callTool({
         name: "zen_show_evidence",
         arguments: { url: "blocked.test/page", quote: "Quoted text" },
       });
       assert.equal(schemeLess.isError, true);
-      assert.match(textOf(schemeLess), /allowlist/i);
+      assert.match(textOf(schemeLess), /allowed website list/i);
 
       const scheme = await allowlistClient!.callTool({
         name: "zen_tabs_open",
         arguments: { urls: ["file:///etc/passwd"] },
       });
       assert.equal(scheme.isError, true);
-      assert.match(textOf(scheme), /scheme/i);
+      assert.match(textOf(scheme), /internal_page|internal browser pages/i);
 
       const config = JSON.parse(
         textOf(
@@ -2142,7 +2188,7 @@ describe(
       );
       assert.ok(
         audit.entries.some(
-          (entry: any) => entry.error?.code === "domain_not_allowed"
+          (entry: any) => entry.error?.code === "site_default_denied"
         )
       );
     });

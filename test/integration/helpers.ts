@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type ZenMcpConfig } from "../../src/config.js";
+import { createPolicy } from "../../src/shared/policy.js";
+import { serializePolicy } from "../../src/shared/policy-schema.js";
 
 /**
  * Real-Zen tests are opt-in: they launch a browser, need a disposable profile,
@@ -102,6 +104,14 @@ export function testServerEnv(): Record<string, string> {
     process.env.ZEN_MCP_TEST_DATA_DIR ??
     mkdtempSync(join(base, "zen-mcp-e2e-"));
   mkdirSync(dir, { recursive: true });
+  // A config with no legacy restriction loads as restricted, which would block
+  // every browser action in this suite. The tools under test have their own
+  // policy coverage; end-to-end tests need the browser surface available.
+  writeFileSync(
+    join(dir, "policy.json"),
+    serializePolicy(createPolicy({ mode: "permissive" })),
+    "utf8"
+  );
   return {
     ...(process.env as Record<string, string>),
     ZEN_MCP_CONFIG: join(dir, "config.json"),
